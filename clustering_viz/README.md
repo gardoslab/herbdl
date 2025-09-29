@@ -21,12 +21,13 @@ pip install requirements.txt
 ```
 
 To recreate the visualization you will need:
-
-1. Access to one of the checkpoints listed below:
+1. One of the checkpoints listed below:
 - Asteraceae Family, top 50 species checkpoint:`/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/kaggle22/astera_50/checkpoint-1300`
 - Checkpoint for all species in Kaggle 2022 dataset: `/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/kaggle22/checkpoint-139125`
-2. Access to the specimen images: `/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/`
-3. Access to the test image paths: `/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/datasets/val_astera_50.json`
+- Or your own checkpoint you wish to use. 
+2. Download the images from the FGVC Kaggle 2022 competition or:
+- Access to the specimen images: `/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/`
+- Access to the test image paths: `/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/datasets/val_astera_50.json`
 4. Run the cells in the `kaggle22_clustering.ipynb` notebook, the notebook will output a JSON file containing the Plotly plot. 
 5. In `index.html` in the `<script>` section, replace the JSON filepath that is being fetched with the one that was just generated. 
 
@@ -38,4 +39,4 @@ If you are logged in at SCC OnDemand you can view the t-SNE visualization here:
 
 Otherwise, you can view the visualization [here](https://scc-ondemand1.bu.edu/pun/sys/dashboard/files/fs//projectnb/herbdl/workspaces/mvoong/herbdl/clustering_viz/index.html).
 
-In the plot, each point represents a herbarium specimen. You can click on any point to view the associated image. All images are stored within the `/projectnb/herbdl` project, which is how the visualization is able to access and display them. The image display operates like a stack with the ability to display up to two images. 
+In the plot, each point represents a herbarium specimen. You can click on any point to view the associated image. All images are stored within the `/projectnb/herbdl` project, which is how the visualization is able to access and display them. The image display operates like a stack with the ability to display up to two images.
