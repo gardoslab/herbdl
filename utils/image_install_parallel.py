@@ -13,6 +13,15 @@ from image_utils import get_file_size_in_mb, resize_with_aspect_ratio
 from PIL import UnidentifiedImageError
 
 import datetime as dt
+from urllib.parse import urlparse
+import threading
+import time
+
+HOST_COOLDOWN_DEFAULT = 30 * 60
+host_block_until = {}
+host_lock = threading.Lock()
+counter_lock = threading.Lock()
+
 
 """
 Image install script to download images from a GBIF multimedia.txt file. 
@@ -23,8 +32,11 @@ CWD = os.getcwd()
 
 today = dt.datetime.now().strftime("%Y-%m-%d")
 
+logging.basicConfig(filename=f'{CWD}/image_install_{today}.log',
+                    level=logging.INFO,
+                    filemode='w')
 logger = logging.getLogger(__name__)
-logging.basicConfig(filename=f'{CWD}/image_install_{today}.log', level=logging.INFO, filemode='w')
+
 
 link_logger = logging.getLogger("link_logger")
 link_logger.setLevel(logging.INFO)
@@ -47,6 +59,8 @@ print(f"Number of existing ids to check for duplicates: {len(existing_gbif_ids)}
 n_installed = len(os.listdir(INSTALL_PATH))
 print(f"Number of already installed images: {n_installed}")
 
+
+
 user_agents = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15",
@@ -67,119 +81,200 @@ session.mount("https://", adapter)
 min_delay = 15
 max_delay = 30
 
+def _host_from_url(url):
+    return urlparse(url).netloc.split(":")[0]
+
+def is_host_blocked(url):
+    host = _host_from_url(url)
+    now = time.time()
+    with host_lock:
+        until = host_block_until.get(host)
+        if until and now < until:
+            return True
+        if until and now >= until:
+            del host_block_until[host]
+    return False
+
+def block_host(url, retry_after=None):
+    host = _host_from_url(url)
+    now = time.time()
+    seconds = HOST_COOLDOWN_DEFAULT
+    if retry_after:
+        try:
+            seconds = int(retry_after)
+        except Exception:
+            try:
+                from email.utils import parsedate_to_datetime
+                dt_retry = parsedate_to_datetime(retry_after)
+                seconds = max(0, (dt_retry - dt.datetime.now(dt.timezone.utc)).total_seconds())
+
+            except Exception:
+                seconds = HOST_COOLDOWN_DEFAULT
+    with host_lock:
+        host_block_until[host] = now + seconds
+    logger.warning(f"Rate limited by host '{host}'. Cooling down for ~{int(seconds)}s.")
+
+
 def is_duplicate(gbif_id):
     return str(gbif_id) in existing_gbif_ids
     
-def download_image(gbif_id, image_url, local_path):
+def download_image_from_candidates(gbif_id, candidate_urls, local_path):
+    """
+    Try each URL for this gbif_id until one succeeds.
+    Skips hosts under cooldown; on 429, cools down that host and tries the next.
+    """
+    random.shuffle(candidate_urls)
+    for image_url in candidate_urls:
+        if is_host_blocked(image_url):
+            logger.info(f"Host on cooldown; skipping for {gbif_id}: {image_url}")
+            continue
 
-    try:
-        image_response = session.get(image_url, stream=True, verify=False, headers={
-            "User-Agent": random.choice(user_agents),
-            "Connection": "keep-alive",
-            "Referer": "https://scc-ondemand1.bu.edu/"
-        })
+        try:
+            time.sleep(random.uniform(0.2, 0.8))
+            image_response = session.get(
+                image_url,
+                stream=True,
+                verify=False,
+                headers={
+                    "User-Agent": random.choice(user_agents),
+                    "Connection": "keep-alive",
+                    "Referer": "https://scc-ondemand1.bu.edu/",
+                },
+                timeout=60,
+            )
 
-        if image_response.status_code == 200:
+            status = image_response.status_code
 
-            if image_response.headers.get('Content-Type') not in ['image/jpeg', 'image/jpg', "image/tiff", "image/png"] or "image" not in image_response.headers.get('Content-Type', ""):
-                logger.error(f"Invalid content type for {gbif_id} from {image_url}: {image_response.headers.get('Content-Type')}. Skipping. ")
+            if status == 429:
+                block_host(image_url, image_response.headers.get("Retry-After"))
                 del image_response
-                return False
+                continue
 
-            with open(local_path, 'wb') as out_file:
+            if status >= 500:
+                logger.error(f"Server error {status} for {gbif_id} from {image_url}; trying another source.")
+                del image_response
+                continue
+
+            if status != 200:
+                logger.error(f"HTTP {status} for {gbif_id} from {image_url}; trying another source.")
+                del image_response
+                continue
+
+            ctype = (image_response.headers.get("Content-Type") or "").lower()
+            if "image" not in ctype:
+                logger.error(f"Invalid content type for {gbif_id} from {image_url}: {ctype}. Skipping.")
+                del image_response
+                continue
+
+            with open(local_path, "wb") as out_file:
                 shutil.copyfileobj(image_response.raw, out_file)
 
-            logger.info(f"Downloaded {gbif_id} to {local_path}")
+            logger.info(f"Downloaded {gbif_id} to {local_path} from {image_url}")
             del image_response
-
             return True
-        else:
-            raise Exception(f"HTTP {image_response.status_code}")
 
-    except Exception as e:
-        logger.error(f"Error downloading {gbif_id} from {image_url}: {e}")
-        return False
+        except Exception as e:
+            logger.error(f"Error downloading {gbif_id} from {image_url}: {e}")
+            continue
+
+    return False
 
 
 def resize_image(gbif_id, local_path):
-    result = resize_with_aspect_ratio(local_path, local_path)
-    if result:
-        logger.info(f"Resized {gbif_id} to 1000x1000. Path: {local_path}")
+    changed, new_size = resize_with_aspect_ratio(local_path, local_path, max_size=1600, format="JPEG", quality=85)
+    if changed:
+        logger.info(f"Resized {gbif_id} to {new_size}. Path: {local_path}")
     else:
-        logger.info(f"Skipped resizing {gbif_id} as it is already 1000x1000")
+        logger.info(f"Skipped resizing {gbif_id}; already <= target. Path: {local_path}")
+
     
 
-def process_row(row):
+def process_id(gbif_id, candidate_urls):
     global n_installed
-    gbif_id = row['gbifID']
-    image_url = row['identifier']
-    local_path = os.path.join(INSTALL_PATH, f"{gbif_id}.jpg")
 
-    downloaded=False
+    local_path = os.path.join(INSTALL_PATH, f"{gbif_id}.jpg")
+    downloaded = False
 
     if is_duplicate(gbif_id):
-        logger.warning(f"Image {gbif_id} is a duplicate, skipping download.")
+        logger.warning(f"Image {gbif_id} is a duplicate from earlier datasets; skipping download.")
         if os.path.exists(local_path):
-            os.remove(local_path)
-            logger.warning(f"Removed existing file for duplicate {gbif_id} at {local_path}.")
+            try:
+                os.remove(local_path)
+                logger.warning(f"Removed existing file for duplicate {gbif_id} at {local_path}.")
+            except Exception as e:
+                logger.error(f"Failed removing duplicate file for {gbif_id}: {e}")
         return
 
     if os.path.exists(local_path):
-        logger.warning(f"Image {gbif_id} already exists in {local_path}, checking size...")
-        size = get_file_size_in_mb(local_path)
+        logger.warning(f"Image {gbif_id} already exists at {local_path}, checking size...")
+        try:
+            size = get_file_size_in_mb(local_path)
+        except FileNotFoundError:
+            size = 0
         if size < 0.01:
-            logger.warning(f"Image {gbif_id} is too small ({size} MB), redownloading")
-            downloaded = download_image(gbif_id, image_url, local_path)
+            logger.warning(f"Image {gbif_id} is too small ({size:.4f} MB), redownloading from alternatives")
+            downloaded = download_image_from_candidates(gbif_id, candidate_urls, local_path)
     else:
-        logger.info(f"Downloading {gbif_id} to {local_path}. Image URL: {image_url}")
-        downloaded = download_image(gbif_id, image_url, local_path)
+        logger.info(f"Attempting {gbif_id} → {local_path} (trying {len(candidate_urls)} source(s))")
+        downloaded = download_image_from_candidates(gbif_id, candidate_urls, local_path)
 
     if downloaded:
-        n_installed += 1
-
-    if n_installed % 50000 == 0 and n_installed > 0:
-        send_notification("Image Installation", f"Installed {n_installed} images. Remaining: {len(df) - n_installed}")
-        logger.info(f"Installed {n_installed} images")
+        with counter_lock:
+            n_installed += 1
+            current = n_installed
+            
+        if current % 50000 == 0 and current > 0:
+            send_notification("Image Installation", f"Installed {current} images. Remaining: {total_to_install - current}")
+            logger.info(f"Installed {current} images")
 
     try:
         if downloaded:
             resize_image(gbif_id, local_path)
-
-    except (OSError, UnidentifiedImageError) as e:            
-        os.remove(local_path)
-        logger.error(f"Error resizing {gbif_id}: {e}.")
-        # process_row(row)
+    except (OSError, UnidentifiedImageError) as e:
+        try:
+            os.remove(local_path)
+        except Exception:
+            pass
+        logger.error(f"Error resizing {gbif_id}: {e}. File removed.")
 
 
 if __name__ == "__main__":
     parser = ArgumentParser()
-    parser.add_argument("-c", "--country", dest="country",
-                        help="Country to download samples from", metavar="COUNTRY CODE")
-
+    parser.add_argument("-c", "--country", dest="country", help="Country to download samples from", metavar="COUNTRY CODE")
     args = parser.parse_args()
     country = args.country
 
-    df = pd.read_csv(GBIF_MULTIMEDIA_DATA, delimiter="\t", usecols=['gbifID', 'identifier'], on_bad_lines='skip')
-    print(f"Length of multimedia.txt: {len(df)}")
+    cols = ['gbifID','identifier','countryCode']
+    df = pd.read_csv(GBIF_MULTIMEDIA_DATA,
+                 delimiter="\t",
+                 usecols=lambda c: c in cols,
+                 on_bad_lines='skip')
 
-    if country:
+
+    print(f"Length of multimedia.txt (rows): {len(df)}")
+
+    if 'countryCode' in df.columns and country:
         df = df[df['countryCode'] == country]
 
-    send_notification("Image Installation", f"Starting image installation for {len(df)} images")
 
-    with ThreadPoolExecutor(max_workers=5) as executor:  # Adjust max_workers as needed
-        futures = [executor.submit(process_row, row) for index, row in df.iterrows()]
+    grouped = df.groupby('gbifID')['identifier'].apply(list)
+    unique_ids = grouped.index.tolist()
+    total_to_install = len(unique_ids)
+    print(f"Unique gbifIDs to process: {total_to_install}")
+
+    send_notification("Image Installation", f"Starting image installation for {total_to_install} unique images")
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        futures = [executor.submit(process_id, gbif_id, grouped.loc[gbif_id]) for gbif_id in unique_ids]
 
         for future in as_completed(futures):
             try:
                 future.result()
-
             except KeyboardInterrupt:
-                logger.error("Process interrupted by user. Installed {n_installed} images so far. Exiting...")
+                logger.error(f"Process interrupted by user. Installed {n_installed} images so far. Exiting...")
                 print(f"Installed {n_installed} images")
                 executor.shutdown(wait=False)
-                
             except Exception as exc:
                 logger.error(f"Generated an exception: {exc}")
 
-    print(f'All done. Number of installed images: {n_installed}')
+    print(f"All done. Number of installed images: {n_installed}")
