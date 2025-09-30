@@ -1,4 +1,3 @@
-# image_utils.py
 import os
 from PIL import Image, ImageOps, ImageFile
 
