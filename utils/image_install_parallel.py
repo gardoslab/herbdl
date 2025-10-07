@@ -30,6 +30,16 @@ Accurate as of September Fall 2025.
 
 CWD = os.getcwd()
 
+CHECKPOINT_FILE = os.path.join(CWD, "processed_ids.txt")
+
+if os.path.exists(CHECKPOINT_FILE):
+    with open(CHECKPOINT_FILE) as f:
+        processed_ids = set(line.strip() for line in f)
+else:
+    processed_ids = set()
+
+checkpoint_lock = threading.Lock()
+
 today = dt.datetime.now().strftime("%Y-%m-%d")
 
 logging.basicConfig(filename=f'{CWD}/image_install_{today}.log',
@@ -192,6 +202,10 @@ def resize_image(gbif_id, local_path):
 def process_id(gbif_id, candidate_urls):
     global n_installed
 
+    if gbif_id in processed_ids:
+        logger.info(f"{gbif_id} already processed (checkpoint), skipping.")
+        return
+
     local_path = os.path.join(INSTALL_PATH, f"{gbif_id}.jpg")
     downloaded = False
 
@@ -230,6 +244,10 @@ def process_id(gbif_id, candidate_urls):
     try:
         if downloaded:
             resize_image(gbif_id, local_path)
+            with checkpoint_lock:
+                with open(CHECKPOINT_FILE, "a") as f:
+                    f.write(str(gbif_id) + "\n")
+                processed_ids.add(gbif_id)
     except (OSError, UnidentifiedImageError) as e:
         try:
             os.remove(local_path)
