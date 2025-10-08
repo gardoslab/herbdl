@@ -4,27 +4,25 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>herbaria</title>
-    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/3.1.0/plotly.min.js" integrity="sha512-iXeIWNSxrG0kro2hgWe7onPrTS2g9AeLbojfGJM89zhrunfCSEkHUux9ACjjpem5ob1J2uJ5cNxAn7gJOwygrQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 </head>
 
 <body> 
     <div id="parent-container" style="display: flex; align-items: flex-start; gap: 20px;">
-        
         <div id="image-container" style="display: flex; flex-direction: column; gap: 20px; align-items: center;">
-            <p>Image:</p>
-            <img id="image-display-1" src="" alt="Last Clicked Image 1" style="max-width: 300px;">
             <p id="image-name-1" style="margin-top: 10px;">No Image Selected</p>
-            <p>Image 2:</p>
-            <img id="image-display-2" src="" alt="Last Clicked Image 2" style="max-width: 300px;">
+            <img id="image-display-1" src="" alt="Last Clicked Image 1" style="max-width: 300px;">
+            <p>*****</p>
             <p id="image-name-2" style="margin-top: 10px;">No Image Selected</p>
+            <img id="image-display-2" src="" alt="Last Clicked Image 2" style="max-width: 300px;">
         </div>
         <div id="plot-div" style="width: 70%; height: 500px;">
             <!-- Plotly chart will be drawn inside this DIV -->
         </div>
     </div>
     <script>
-     // Fetch the JSON file
-        fetch("asteraceae_tsne_plot.json")
+        // change the json file here to visualize a different file 
+        fetch("asteraceae_tsne_plot_astera_50checkpoint-1300.json")
             .then(response => {
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
@@ -85,7 +83,7 @@
             })
             .catch(error => {
                 console.error("Error loading JSON data:", error);
-            });
+        });
     </script>
 </body>
 </html>
