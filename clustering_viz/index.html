@@ -25,6 +25,13 @@
             justify-items: center;
             margin-top: 120px;
         }
+        .toggle-button {
+            margin-top: 10px;
+            flex-direction: row;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/3.1.0/plotly.min.js" integrity="sha512-iXeIWNSxrG0kro2hgWe7onPrTS2g9AeLbojfGJM89zhrunfCSEkHUux9ACjjpem5ob1J2uJ5cNxAn7gJOwygrQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 </head>
@@ -32,12 +39,12 @@
 <body>
     <div id="parent-container" style="display: flex; flex-direction: row; align-items: flex-start; gap: 20px; width: 100%">
         <div id="images" style="display: flex; flex-direction: column; justify-content: center; align-items: center;">
-            <button id="clearButton" style="margin-top: 20px;">Clear Images</button>
+            <button id="clearButton" style="margin-top: 20px;">Clear All Images</button>
             <div id="image-grid-container" class="image-grid">
                 <div class="column" class="column">
                     <img id="image-display-0" class="responsive-image" src="" alt="Last Clicked Image 1">
                     <p id="image-name-0" style="margin-top: 10px; text-align: center;">No Image Selected</p>
-                    <div id="toggle-button-0" style="flex-direction: row">    
+                    <div id="toggle-button-0" class="toggle-button">    
                         <input type="checkbox" id="image-0-toggle">
                         <label for="toggle-0">keep sample</label>
                     </div>
@@ -45,7 +52,7 @@
                 <div class="column" class="column">
                     <img id="image-display-1" class="responsive-image" src="" alt="Last Clicked Image 2">
                     <p id="image-name-1" style="margin-top: 10px; text-align: center;">No Image Selected</p>
-                    <div id="toggle-button-1" style="flex-direction: row">
+                    <div id="toggle-button-1" class="toggle-button">
                         <input type="checkbox" id="image-1-toggle">
                         <label for="toggle-1">keep sample</label>
                     </div>
@@ -53,7 +60,7 @@
                 <div class="column" class="column" style="grid-column: 1 / span 2; display: flex; flex-direction: column; align-items: center;">
                     <img id="image-display-2" class="responsive-image" src="" alt="Last Clicked Image 3">
                     <p id="image-name-2" style="margin-top: 10px; text-align: center;">No Image Selected</p>
-                    <div id="toggle-button-2" style="flex-direction: row">
+                    <div id="toggle-button-2" class="toggle-button">
                         <input type="checkbox" id="image-2-toggle">
                         <label for="toggle-2">keep sample</label>
                     </div>
@@ -87,14 +94,16 @@
 
                 // set the directory path for the images 
                 const dirPath = '/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images';
+                const sccLink = 'https://scc-ondemand1.bu.edu/pun/sys/dashboard/files/fs/';
 
-                // hover over a point and preview the image
+                // hover over a point and preview the image, unhover when away from a point
                 const hoverPreview = document.getElementById('hover-preview');
                 tsnePlot.on('plotly_hover', function(eventData){
                     const point = eventData.points[0];
                     const imagePath = point.customdata;
                     if (imagePath) {
-                        hoverPreview.src = 'https://scc-ondemand1.bu.edu/pun/sys/dashboard/files/fs/' + dirPath + imagePath[0];
+                        // set the src of the hover preview to the SCC plus the directory path and then the image filename
+                        hoverPreview.src = sccLink + dirPath + imagePath[0];
                         hoverPreview.style.display = 'block';
                     }
                 });
@@ -106,7 +115,7 @@
                 // move preview image with mouse
                 tsnePlot.addEventListener('mousemove', function(e){
                     hoverPreview.style.left = (e.clientX + 38) + 'px';
-                    // check boundaries to keep the preview image within the viewportc
+                    // check boundaries to keep the preview image within the viewport
                     if (e.clientY > 350){
                         hoverPreview.style.top = (e.clientY - 350) + 'px';
                     } else {
@@ -117,29 +126,60 @@
                 // selecting images by clicking on points
                 tsnePlot.on('plotly_click', function(data){
                     const clickedImages = JSON.parse(localStorage.getItem('clickedImages')) || [];
-                    const clickedPoint = data.points[0];
-                    const imagePath = clickedPoint.customdata; // get the image path from customdata
                     const clickedNames = JSON.parse(localStorage.getItem('clickedNames')) || [];
-                    const imgName = clickedPoint.data.legendgroup; // get the name 
+                    const clickedPoint = data.points[0];
 
+                    // get the image path from customdata
+                    const imagePath = clickedPoint.customdata; 
+
+                    // get the species name for the clicked point
+                    const imgName = clickedPoint.data.legendgroup;
+                    
+                    // check which spots are able to be filled 
+                    const checkedBoxArr = [];
+                    for (let i = 0; i < 3; i++) {
+                        const checkbox = document.getElementById(`image-${i}-toggle`);
+                        if(!checkbox.checked) {
+                            checkedBoxArr.push(i);
+                        }
+                    }
+                    
+                    // populate the images 
                     if (imagePath) {
-                        // check each image slot and replace only if the checkbox is not selected
-                        for (let i = 0; i < 3; i++) {
-                            const checkbox = document.getElementById(`image-${i}-toggle`);
-                            if (!checkbox.checked) {
-                                // Replace the image and name in this slot
-                                document.getElementById(`image-display-${i}`).src = 'https://scc-ondemand1.bu.edu/pun/sys/dashboard/files/fs/' + dirPath + imagePath[0];
-                                document.getElementById(`image-name-${i}`).textContent = imgName || 'No Image Selected';
-
-                                // Update the stack
-                                clickedImages[i] = 'https://scc-ondemand1.bu.edu/pun/sys/dashboard/files/fs/' + dirPath + imagePath[0];
-                                clickedNames[i] = imgName || '';
-                            }
+                        // add new image path to the array 
+                        clickedImages.unshift(sccLink + dirPath + imagePath[0]);
+                        
+                        // keep the last three entries only 
+                        if (clickedImages.length > 3){
+                            clickedImages.pop();
                         }
 
-                        // Save the updated stack to localStorage
+                        // save the updated array to local storage 
                         localStorage.setItem('clickedImages', JSON.stringify(clickedImages));
+                        
+                        // update the displayed images 
+                        for (let i of checkedBoxArr) {
+                            document.getElementById(`image-display-${i}`).src = clickedImages[i] || '';
+                        }
+                    }
+                    
+                    // populate the species names 
+                    if (imgName) {
+                        // add the new species name to the array 
+                        clickedNames.unshift(imgName);
+
+                        // keep the last three entries only 
+                        if (clickedNames.length > 3) {
+                            clickedNames.pop();
+                        }
+
+                        // save the updated array to local storage 
                         localStorage.setItem('clickedNames', JSON.stringify(clickedNames));
+
+                        // update the displayed names 
+                        for (let i of checkedBoxArr) {
+                            document.getElementById(`image-name-${i}`).textContent = clickedNames[i] || '';
+                        }
                     }
                 });
             })
@@ -154,12 +194,12 @@
             document.getElementById('image-display-1').src = '';
             document.getElementById('image-display-2').src = '';
 
-            // clear the image names
+            // clear the species names associated with the images
             document.getElementById('image-name-0').textContent = 'No Image Selected';
             document.getElementById('image-name-1').textContent = 'No Image Selected';
             document.getElementById('image-name-2').textContent = 'No Image Selected';
 
-            // uncheck all checkboxes
+            // uncheck all the image checkboxes
             for (let i = 0; i < 3; i++) {
                 document.getElementById(`image-${i}-toggle`).checked = false;
             }
