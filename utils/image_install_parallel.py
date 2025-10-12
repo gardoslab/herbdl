@@ -31,17 +31,24 @@ Accurate as of September Fall 2025.
 CWD = os.getcwd()
 
 CHECKPOINT_FILE = os.path.join(CWD, "processed_ids.txt")
-
-if os.path.exists(CHECKPOINT_FILE):
-    with open(CHECKPOINT_FILE) as f:
-        processed_ids = set(line.strip() for line in f)
-else:
-    processed_ids = set()
+FAILED_FILE = os.path.join(CWD, "failed_ids.txt")
 
 checkpoint_lock = threading.Lock()
 
-today = dt.datetime.now().strftime("%Y-%m-%d")
+if os.path.exists(FAILED_FILE):
+    with open(FAILED_FILE) as f:
+        failed_ids = {line.strip() for line in f if line.strip()}
+else:
+    failed_ids = set()
 
+if os.path.exists(CHECKPOINT_FILE):
+    with open(CHECKPOINT_FILE) as f:
+        processed_ids = {line.strip() for line in f if line.strip()}
+else:
+    processed_ids = set()
+
+
+today = dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 logging.basicConfig(filename=f'{CWD}/image_install_{today}.log',
                     level=logging.INFO,
                     filemode='w')
@@ -51,8 +58,9 @@ logger = logging.getLogger(__name__)
 link_logger = logging.getLogger("link_logger")
 link_logger.setLevel(logging.INFO)
 
-INSTALL_PATH = "/projectnb/herbdl/data/GBIF-F25/images"
+INSTALL_PATH = "/projectnb/herbdl/data/GBIF-F25h"
 GBIF_MULTIMEDIA_DATA = "/projectnb/herbdl/data/GBIF-F25/multimedia.txt"
+
 
 existing_gbif_datasets = ["/projectnb/herbdl/data/harvard-herbaria/gbif/multimedia.txt", "/projectnb/herbdl/data/GBIF-F24/multimedia.txt"]
 existing_gbif_dfs = [pd.read_csv(f, delimiter="\t", usecols=['gbifID']) for f in existing_gbif_datasets]
@@ -66,7 +74,7 @@ print(list(existing_gbif_ids)[:10])
 
 print(f"Number of existing ids to check for duplicates: {len(existing_gbif_ids)}")
 
-n_installed = len(os.listdir(INSTALL_PATH))
+n_installed = sum(len(files) for _, _, files in os.walk(INSTALL_PATH))
 print(f"Number of already installed images: {n_installed}")
 
 
@@ -90,6 +98,16 @@ session.mount("https://", adapter)
 
 min_delay = 15
 max_delay = 30
+
+def get_hierarchical_path(base_dir, gbif_id, ext=".jpg"):
+    stem = str(gbif_id)
+    prefix1 = stem[:3] if len(stem) >= 3 else stem
+    prefix2 = stem[3:6] if len(stem) >= 6 else "000"
+
+    dest_dir = os.path.join(base_dir, prefix1, prefix2)
+    os.makedirs(dest_dir, exist_ok=True)
+    return os.path.join(dest_dir, f"{stem}{ext}")
+
 
 def _host_from_url(url):
     return urlparse(url).netloc.split(":")[0]
@@ -197,17 +215,26 @@ def resize_image(gbif_id, local_path):
     else:
         logger.info(f"Skipped resizing {gbif_id}; already <= target. Path: {local_path}")
 
-    
 
 def process_id(gbif_id, candidate_urls):
     global n_installed
+    gbif_id = str(gbif_id)
+
+    with counter_lock:
+        current_total = n_installed
+    if current_total % 10000 == 0 and current_total > 0:
+        logger.info(f"Checkpointed {current_total} images so far.")
 
     if gbif_id in processed_ids:
         logger.info(f"{gbif_id} already processed (checkpoint), skipping.")
         return
+    if gbif_id in failed_ids:
+        logger.info(f"{gbif_id} previously failed, skipping.")
+        return
 
-    local_path = os.path.join(INSTALL_PATH, f"{gbif_id}.jpg")
+    local_path = get_hierarchical_path(INSTALL_PATH, gbif_id, ".jpg")
     downloaded = False
+    existing_valid = False
 
     if is_duplicate(gbif_id):
         logger.warning(f"Image {gbif_id} is a duplicate from earlier datasets; skipping download.")
@@ -220,40 +247,62 @@ def process_id(gbif_id, candidate_urls):
         return
 
     if os.path.exists(local_path):
-        logger.warning(f"Image {gbif_id} already exists at {local_path}, checking size...")
+        logger.info(f"Image {gbif_id} already exists at {local_path}, verifying size...")
         try:
             size = get_file_size_in_mb(local_path)
         except FileNotFoundError:
-            size = 0
+            size = 0.0
+
         if size < 0.01:
             logger.warning(f"Image {gbif_id} is too small ({size:.4f} MB), redownloading from alternatives")
             downloaded = download_image_from_candidates(gbif_id, candidate_urls, local_path)
+            if downloaded:
+                logger.info(f"Successfully re-downloaded {gbif_id}, proceeding to resize.")
+        else:
+            with checkpoint_lock:
+                if gbif_id not in processed_ids:
+                    with open(CHECKPOINT_FILE, "a") as f:
+                        f.write(gbif_id + "\n"); f.flush(); os.fsync(f.fileno())
+                    processed_ids.add(gbif_id)
+            return
     else:
         logger.info(f"Attempting {gbif_id} → {local_path} (trying {len(candidate_urls)} source(s))")
         downloaded = download_image_from_candidates(gbif_id, candidate_urls, local_path)
+        if downloaded:
+            logger.info(f"Successfully downloaded {gbif_id}, proceeding to resize.")
 
     if downloaded:
         with counter_lock:
             n_installed += 1
             current = n_installed
-            
-        if current % 50000 == 0 and current > 0:
+        if current % 50000 == 0:
             send_notification("Image Installation", f"Installed {current} images. Remaining: {total_to_install - current}")
             logger.info(f"Installed {current} images")
-
-    try:
-        if downloaded:
+        try:
             resize_image(gbif_id, local_path)
             with checkpoint_lock:
-                with open(CHECKPOINT_FILE, "a") as f:
-                    f.write(str(gbif_id) + "\n")
-                processed_ids.add(gbif_id)
-    except (OSError, UnidentifiedImageError) as e:
-        try:
-            os.remove(local_path)
-        except Exception:
-            pass
-        logger.error(f"Error resizing {gbif_id}: {e}. File removed.")
+                if gbif_id not in processed_ids:
+                    with open(CHECKPOINT_FILE, "a") as f:
+                        f.write(gbif_id + "\n"); f.flush(); os.fsync(f.fileno())
+                    processed_ids.add(gbif_id)
+        except (OSError, UnidentifiedImageError) as e:
+            try:
+                os.remove(local_path)
+            except Exception:
+                pass
+            logger.error(f"Error resizing {gbif_id}: {e}. File removed.")
+            downloaded = False
+
+    if not downloaded:
+        logger.warning(f"All download attempts failed for {gbif_id}. Marking as failed.")
+        with checkpoint_lock:
+            if gbif_id not in failed_ids:
+                with open(FAILED_FILE, "a") as f:
+                    f.write(gbif_id + "\n"); f.flush(); os.fsync(f.fileno())
+                failed_ids.add(gbif_id)
+
+
+
 
 
 if __name__ == "__main__":
@@ -285,14 +334,14 @@ if __name__ == "__main__":
     with ThreadPoolExecutor(max_workers=5) as executor:
         futures = [executor.submit(process_id, gbif_id, grouped.loc[gbif_id]) for gbif_id in unique_ids]
 
+    try:
         for future in as_completed(futures):
-            try:
-                future.result()
-            except KeyboardInterrupt:
-                logger.error(f"Process interrupted by user. Installed {n_installed} images so far. Exiting...")
-                print(f"Installed {n_installed} images")
-                executor.shutdown(wait=False)
-            except Exception as exc:
-                logger.error(f"Generated an exception: {exc}")
+            future.result()
+    except KeyboardInterrupt:
+        logger.warning("Interrupted by user. Waiting for threads to finish...")
+        executor.shutdown(wait=True, cancel_futures=True)
+    finally:
+        logger.info(f"Final processed IDs: {len(processed_ids)}, failed: {len(failed_ids)}")
+
 
     print(f"All done. Number of installed images: {n_installed}")
