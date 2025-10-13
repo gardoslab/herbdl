@@ -189,7 +189,9 @@ def download_image_from_candidates(gbif_id, candidate_urls, local_path):
                 continue
 
             ctype = (image_response.headers.get("Content-Type") or "").lower()
-            if "image" not in ctype:
+            if not ctype:
+                logger.warning(f"Missing Content-Type header for {gbif_id} from {image_url}, attempting download anyway.")
+            elif ctype and any(bad in ctype for bad in ["text/html", "text/plain", "application/json", "application/xml"]):
                 logger.error(f"Invalid content type for {gbif_id} from {image_url}: {ctype}. Skipping.")
                 del image_response
                 continue
