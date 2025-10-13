@@ -211,7 +211,7 @@ def download_image_from_candidates(gbif_id, candidate_urls, local_path):
 
 
 def resize_image(gbif_id, local_path):
-    changed, new_size = resize_with_aspect_ratio(local_path, local_path, max_size=1600, format="JPEG", quality=85)
+    changed, new_size = resize_with_aspect_ratio(local_path, local_path, max_size=1024, format="JPEG", quality=85)
     if changed:
         logger.info(f"Resized {gbif_id} to {new_size}. Path: {local_path}")
     else:
