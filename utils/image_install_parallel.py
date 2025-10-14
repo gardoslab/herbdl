@@ -2,6 +2,7 @@ import pandas as pd
 import os
 import shutil
 import requests as req
+from requests.exceptions import ConnectTimeout, ReadTimeout, Timeout
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 import logging
@@ -18,6 +19,7 @@ import threading
 import time
 
 HOST_COOLDOWN_DEFAULT = 30 * 60
+HOST_COOLDOWN_TIMEOUT = 60 * 60
 host_block_until = {}
 host_lock = threading.Lock()
 counter_lock = threading.Lock()
@@ -87,7 +89,7 @@ user_agents = [
 
 session = req.Session()
 retry_strategy = Retry(
-    total=5,
+    total=2,
     backoff_factor=1,
     status_forcelist=[429, 500, 502, 503, 504],
     allowed_methods=["HEAD", "GET", "OPTIONS"]
@@ -123,11 +125,11 @@ def is_host_blocked(url):
             del host_block_until[host]
     return False
 
-def block_host(url, retry_after=None):
+def block_host(url, retry_after=None, timeout_issue=False):
     host = _host_from_url(url)
     now = time.time()
-    seconds = HOST_COOLDOWN_DEFAULT
-    if retry_after:
+    seconds = HOST_COOLDOWN_TIMEOUT if timeout_issue else HOST_COOLDOWN_DEFAULT
+    if retry_after and not timeout_issue:
         try:
             seconds = int(retry_after)
         except Exception:
@@ -140,7 +142,8 @@ def block_host(url, retry_after=None):
                 seconds = HOST_COOLDOWN_DEFAULT
     with host_lock:
         host_block_until[host] = now + seconds
-    logger.warning(f"Rate limited by host '{host}'. Cooling down for ~{int(seconds)}s.")
+    reason = "timeout issues" if timeout_issue else "rate limiting"
+    logger.warning(f"Blocking host '{host}' due to {reason}. Cooling down for ~{int(seconds)}s.")
 
 
 def is_duplicate(gbif_id):
@@ -203,6 +206,10 @@ def download_image_from_candidates(gbif_id, candidate_urls, local_path):
             del image_response
             return True
 
+        except (ConnectTimeout, ReadTimeout, Timeout) as e:
+            logger.error(f"Timeout error for {gbif_id} from {image_url}: {e}")
+            block_host(image_url, timeout_issue=True)
+            continue
         except Exception as e:
             logger.error(f"Error downloading {gbif_id} from {image_url}: {e}")
             continue
