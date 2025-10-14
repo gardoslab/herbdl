@@ -31,6 +31,7 @@ Accurate as of September Fall 2025.
 """
 
 CWD = os.getcwd()
+LOG_DIR = "/projectnb/herbdl/logs"
 
 CHECKPOINT_FILE = os.path.join(CWD, "processed_ids.txt")
 FAILED_FILE = os.path.join(CWD, "failed_ids.txt")
@@ -51,7 +52,8 @@ else:
 
 
 today = dt.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-logging.basicConfig(filename=f'{CWD}/image_install_{today}.log',
+os.makedirs(LOG_DIR, exist_ok=True)
+logging.basicConfig(filename=f'{LOG_DIR}/image_install_{today}.log',
                     level=logging.INFO,
                     filemode='w')
 logger = logging.getLogger(__name__)
