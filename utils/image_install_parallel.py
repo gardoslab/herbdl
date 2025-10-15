@@ -24,6 +24,9 @@ host_block_until = {}
 host_lock = threading.Lock()
 counter_lock = threading.Lock()
 
+host_error_counts = {}
+HOST_ERROR_THRESHOLD = 20
+circuit_breaker_lock = threading.Lock()
 
 """
 Image install script to download images from a GBIF multimedia.txt file. 
@@ -127,6 +130,25 @@ def is_host_blocked(url):
             del host_block_until[host]
     return False
 
+def is_host_circuit_broken(url):
+    host = _host_from_url(url)
+    with circuit_breaker_lock:
+        error_count = host_error_counts.get(host, 0)
+        if error_count >= HOST_ERROR_THRESHOLD:
+            return True
+    return False
+
+def increment_host_errors(url):
+    host = _host_from_url(url)
+    with circuit_breaker_lock:
+        host_error_counts[host] = host_error_counts.get(host, 0) + 1
+        current_count = host_error_counts[host]
+        
+        if current_count == HOST_ERROR_THRESHOLD:
+            logger.error(f"CIRCUIT BREAKER ACTIVATED: Host '{host}' has reached {HOST_ERROR_THRESHOLD} errors. All future URLs from this host will be skipped.")
+        elif current_count < HOST_ERROR_THRESHOLD:
+            logger.warning(f"Host '{host}' error count: {current_count}/{HOST_ERROR_THRESHOLD}")
+
 def block_host(url, retry_after=None, timeout_issue=False):
     host = _host_from_url(url)
     now = time.time()
@@ -158,6 +180,9 @@ def download_image_from_candidates(gbif_id, candidate_urls, local_path):
     """
     random.shuffle(candidate_urls)
     for image_url in candidate_urls:
+        if is_host_circuit_broken(image_url):
+            logger.info(f"Host circuit broken (>{HOST_ERROR_THRESHOLD} errors); skipping for {gbif_id}: {image_url}")
+            continue
         if is_host_blocked(image_url):
             logger.info(f"Host on cooldown; skipping for {gbif_id}: {image_url}")
             continue
@@ -179,16 +204,19 @@ def download_image_from_candidates(gbif_id, candidate_urls, local_path):
             status = image_response.status_code
 
             if status == 429:
+                increment_host_errors(image_url)
                 block_host(image_url, image_response.headers.get("Retry-After"))
                 del image_response
                 continue
 
             if status >= 500:
+                increment_host_errors(image_url)
                 logger.error(f"Server error {status} for {gbif_id} from {image_url}; trying another source.")
                 del image_response
                 continue
 
             if status != 200:
+                increment_host_errors(image_url)
                 logger.error(f"HTTP {status} for {gbif_id} from {image_url}; trying another source.")
                 del image_response
                 continue
@@ -197,6 +225,7 @@ def download_image_from_candidates(gbif_id, candidate_urls, local_path):
             if not ctype:
                 logger.warning(f"Missing Content-Type header for {gbif_id} from {image_url}, attempting download anyway.")
             elif ctype and any(bad in ctype for bad in ["text/html", "text/plain", "application/json", "application/xml"]):
+                increment_host_errors(image_url)
                 logger.error(f"Invalid content type for {gbif_id} from {image_url}: {ctype}. Skipping.")
                 del image_response
                 continue
@@ -209,10 +238,12 @@ def download_image_from_candidates(gbif_id, candidate_urls, local_path):
             return True
 
         except (ConnectTimeout, ReadTimeout, Timeout) as e:
+            increment_host_errors(image_url)
             logger.error(f"Timeout error for {gbif_id} from {image_url}: {e}")
             block_host(image_url, timeout_issue=True)
             continue
         except Exception as e:
+            increment_host_errors(image_url)
             logger.error(f"Error downloading {gbif_id} from {image_url}: {e}")
             continue
 
@@ -353,6 +384,9 @@ if __name__ == "__main__":
         executor.shutdown(wait=True, cancel_futures=True)
     finally:
         logger.info(f"Final processed IDs: {len(processed_ids)}, failed: {len(failed_ids)}")
+        logger.info(f"Circuit breaker status: {len([h for h, c in host_error_counts.items() if c >= HOST_ERROR_THRESHOLD])} hosts permanently blocked")
+        for host, count in sorted(host_error_counts.items(), key=lambda x: x[1], reverse=True)[:10]:
+            logger.info(f"  {host}: {count} errors")
 
 
     print(f"All done. Number of installed images: {n_installed}")
