@@ -4,25 +4,80 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>herbaria</title>
+    <style>
+        .responsive-image {
+            max-width: 100%;
+            max-height: 325px;
+            object-fit: contain;
+        }
+        .column {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }
+        .image-grid {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            align-items: start;
+            justify-items: center;
+            margin-top: 120px;
+        }
+        .toggle-button {
+            margin-top: 10px;
+            flex-direction: row;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+    </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/3.1.0/plotly.min.js" integrity="sha512-iXeIWNSxrG0kro2hgWe7onPrTS2g9AeLbojfGJM89zhrunfCSEkHUux9ACjjpem5ob1J2uJ5cNxAn7gJOwygrQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 </head>
 
-<body> 
-    <div id="parent-container" style="display: flex; align-items: flex-start; gap: 20px;">
-        <div id="image-container" style="display: flex; flex-direction: column; gap: 20px; align-items: center;">
-            <p id="image-name-1" style="margin-top: 10px;">No Image Selected</p>
-            <img id="image-display-1" src="" alt="Last Clicked Image 1" style="max-width: 300px;">
-            <p>*****</p>
-            <p id="image-name-2" style="margin-top: 10px;">No Image Selected</p>
-            <img id="image-display-2" src="" alt="Last Clicked Image 2" style="max-width: 300px;">
+<body>
+    <div id="parent-container" style="display: flex; flex-direction: row; align-items: flex-start; gap: 20px; width: 100%">
+        <div id="images" style="display: flex; flex-direction: column; justify-content: center; align-items: center;">
+            <button id="clearButton" style="margin-top: 20px;">Clear All Images</button>
+            <div id="image-grid-container" class="image-grid">
+                <div class="column" class="column">
+                    <img id="image-display-0" class="responsive-image" src="" alt="Last Clicked Image 1">
+                    <p id="image-name-0" style="margin-top: 10px; text-align: center;">No Image Selected</p>
+                    <div id="toggle-button-0" class="toggle-button">    
+                        <input type="checkbox" id="image-0-toggle">
+                        <label for="toggle-0">keep sample</label>
+                    </div>
+                </div>
+                <div class="column" class="column">
+                    <img id="image-display-1" class="responsive-image" src="" alt="Last Clicked Image 2">
+                    <p id="image-name-1" style="margin-top: 10px; text-align: center;">No Image Selected</p>
+                    <div id="toggle-button-1" class="toggle-button">
+                        <input type="checkbox" id="image-1-toggle">
+                        <label for="toggle-1">keep sample</label>
+                    </div>
+                </div>
+                <div class="column" class="column" style="grid-column: 1 / span 2; display: flex; flex-direction: column; align-items: center;">
+                    <img id="image-display-2" class="responsive-image" src="" alt="Last Clicked Image 3">
+                    <p id="image-name-2" style="margin-top: 10px; text-align: center;">No Image Selected</p>
+                    <div id="toggle-button-2" class="toggle-button">
+                        <input type="checkbox" id="image-2-toggle">
+                        <label for="toggle-2">keep sample</label>
+                    </div>
+            </div>
+            <div></div>
+        </div> 
         </div>
-        <div id="plot-div" style="width: 70%; height: 500px;">
+        <div id="plot-div" style="flex: 2; width: 90%; height: 800px">
             <!-- Plotly chart will be drawn inside this DIV -->
         </div>
     </div>
+
+    <!-- Floating image preview (hidden by default) -->
+    <img id="hover-preview" src="" style="display:none; position:fixed; pointer-events:none; max-width:200px; z-index:1000; border:2px solid #333; background:#fff;"/>
     <script>
         // change the json file here to visualize a different file 
-        fetch("asteraceae_tsne_plot_astera_50checkpoint-1300.json")
+        fetch("asteraceae_tsne_plot_astera_50_checkpoint-1300.json")
             .then(response => {
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
@@ -34,57 +89,125 @@
 
                 // render the plot using plotly
                 Plotly.newPlot('plot-div', plotData.data, plotData.layout);
+
+                var tsnePlot = document.getElementById('plot-div');
+
+                // set the directory path for the images 
+                const dirPath = '/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images';
+                const sccLink = 'https://scc-ondemand1.bu.edu/pun/sys/dashboard/files/fs/';
+
+                // hover over a point and preview the image, unhover when away from a point
+                const hoverPreview = document.getElementById('hover-preview');
+                tsnePlot.on('plotly_hover', function(eventData){
+                    const point = eventData.points[0];
+                    const imagePath = point.customdata;
+                    if (imagePath) {
+                        // set the src of the hover preview to the SCC plus the directory path and then the image filename
+                        hoverPreview.src = sccLink + dirPath + imagePath[0];
+                        hoverPreview.style.display = 'block';
+                    }
+                });
                 
-                var tsnePlot = document.getElementById('plot-div')
+                tsnePlot.on('plotly_unhover', function(){
+                    hoverPreview.style.display = 'none';
+                });
+
+                // move preview image with mouse
+                tsnePlot.addEventListener('mousemove', function(e){
+                    hoverPreview.style.left = (e.clientX + 38) + 'px';
+                    // check boundaries to keep the preview image within the viewport
+                    if (e.clientY > 350){
+                        hoverPreview.style.top = (e.clientY - 350) + 'px';
+                    } else {
+                        hoverPreview.style.top = (e.clientY + 38) + 'px';
+                    }
+                });
                 
+                // selecting images by clicking on points
                 tsnePlot.on('plotly_click', function(data){
                     const clickedImages = JSON.parse(localStorage.getItem('clickedImages')) || [];
+                    const clickedNames = JSON.parse(localStorage.getItem('clickedNames')) || [];
                     const clickedPoint = data.points[0];
-                    const imagePath = clickedPoint.customdata; // get the image path from customdata
+
+                    // get the image path from customdata
+                    const imagePath = clickedPoint.customdata; 
+
+                    // get the species name for the clicked point
+                    const imgName = clickedPoint.data.legendgroup;
                     
-                    const clickedNames = JSON.parse(localStorage.getItem('clickedNames')) || []; //
-                    const imgName = clickedPoint.data.legendgroup; // get the name 
-
+                    // check which spots are able to be filled 
+                    const checkedBoxArr = [];
+                    for (let i = 0; i < 3; i++) {
+                        const checkbox = document.getElementById(`image-${i}-toggle`);
+                        if(!checkbox.checked) {
+                            checkedBoxArr.push(i);
+                        }
+                    }
+                    
+                    // populate the images 
                     if (imagePath) {
-                        // add the new image path to the list
-                        clickedImages.unshift('https://scc-ondemand1.bu.edu/pun/sys/dashboard/files/fs/' + imagePath[0]);
-
-                        // keep only the last two entries
-                        if (clickedImages.length > 2) {
+                        // add new image path to the array 
+                        clickedImages.unshift(sccLink + dirPath + imagePath[0]);
+                        
+                        // keep the last three entries only 
+                        if (clickedImages.length > 3){
                             clickedImages.pop();
                         }
-                        
-                        // save the updated list to local storage
+
+                        // save the updated array to local storage 
                         localStorage.setItem('clickedImages', JSON.stringify(clickedImages));
                         
-
-                        // update the displayed images
-                        document.getElementById('image-display-1').src = clickedImages[0] || '';
-                        document.getElementById('image-display-2').src = clickedImages[1] || '';
+                        // update the displayed images 
+                        for (let i of checkedBoxArr) {
+                            document.getElementById(`image-display-${i}`).src = clickedImages[i] || '';
+                        }
                     }
                     
-                    if (imgName){
-                        // add the new species name to the list
+                    // populate the species names 
+                    if (imgName) {
+                        // add the new species name to the array 
                         clickedNames.unshift(imgName);
 
-                        // keep only the last two entries
-                        if (clickedNames.length > 2){
+                        // keep the last three entries only 
+                        if (clickedNames.length > 3) {
                             clickedNames.pop();
                         }
-                        
-                        // save the updated list to local storage
+
+                        // save the updated array to local storage 
                         localStorage.setItem('clickedNames', JSON.stringify(clickedNames));
-                        
-                        // update the displayed names
-                        document.getElementById('image-name-1').textContent = clickedNames[0] || '';
-                        document.getElementById('image-name-2').textContent = clickedNames[1] || '';
+
+                        // update the displayed names 
+                        for (let i of checkedBoxArr) {
+                            document.getElementById(`image-name-${i}`).textContent = clickedNames[i] || '';
+                        }
                     }
-                })
+                });
             })
             .catch(error => {
                 console.error("Error loading JSON data:", error);
         });
+
+        // clear all of the images in that are displayed
+        document.getElementById('clearButton').addEventListener('click', function() {
+            // clear the displayed images
+            document.getElementById('image-display-0').src = '';
+            document.getElementById('image-display-1').src = '';
+            document.getElementById('image-display-2').src = '';
+
+            // clear the species names associated with the images
+            document.getElementById('image-name-0').textContent = 'No Image Selected';
+            document.getElementById('image-name-1').textContent = 'No Image Selected';
+            document.getElementById('image-name-2').textContent = 'No Image Selected';
+
+            // uncheck all the image checkboxes
+            for (let i = 0; i < 3; i++) {
+                document.getElementById(`image-${i}-toggle`).checked = false;
+            }
+
+            // clear the stack in localStorage
+            localStorage.setItem('clickedImages', JSON.stringify([]));
+            localStorage.setItem('clickedNames', JSON.stringify([]));
+        });
     </script>
 </body>
 </html>
-
