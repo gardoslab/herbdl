@@ -25,7 +25,7 @@ host_lock = threading.Lock()
 counter_lock = threading.Lock()
 
 host_error_counts = {}
-HOST_ERROR_THRESHOLD = 20
+HOST_ERROR_THRESHOLD = 50
 circuit_breaker_lock = threading.Lock()
 
 """
@@ -96,7 +96,7 @@ session = req.Session()
 retry_strategy = Retry(
     total=2,
     backoff_factor=1,
-    status_forcelist=[429, 500, 502, 503, 504],
+    status_forcelist=[500, 502, 503, 504],
     allowed_methods=["HEAD", "GET", "OPTIONS"]
 )
 adapter = HTTPAdapter(max_retries=retry_strategy)
@@ -138,7 +138,9 @@ def is_host_circuit_broken(url):
             return True
     return False
 
-def increment_host_errors(url):
+def increment_host_errors(url, is_rate_limit=False):
+    if is_rate_limit:
+        return
     host = _host_from_url(url)
     with circuit_breaker_lock:
         host_error_counts[host] = host_error_counts.get(host, 0) + 1
@@ -172,19 +174,74 @@ def block_host(url, retry_after=None, timeout_issue=False):
 
 def is_duplicate(gbif_id):
     return str(gbif_id) in existing_gbif_ids
+
+def extract_image_from_iiif_manifest(manifest_url, gbif_id):
+    try:
+        response = session.get(
+            manifest_url,
+            headers={
+                "User-Agent": random.choice(user_agents),
+                "Accept": "application/json",
+            },
+            timeout=120,
+        )
+        
+        if response.status_code != 200:
+            logger.warning(f"Failed to fetch IIIF manifest for {gbif_id}: HTTP {response.status_code}")
+            return []
+        
+        manifest = response.json()
+        image_urls = []
+        
+        if 'items' in manifest:
+            for item in manifest['items']:
+                if item.get('type') == 'Canvas' and 'items' in item:
+                    for anno_page in item['items']:
+                        if anno_page.get('type') == 'AnnotationPage' and 'items' in anno_page:
+                            for anno in anno_page['items']:
+                                if 'body' in anno:
+                                    body = anno['body']
+                                    if 'service' in body:
+                                        for service in body['service']:
+                                            if 'id' in service:
+                                                base_url = service['id']
+                                                image_urls.append(f"{base_url}/full/1600,/0/default.jpg")
+                                                image_urls.append(f"{base_url}/full/1200,/0/default.jpg")
+                                                image_urls.append(f"{base_url}/full/800,/0/default.jpg")
+        
+        if image_urls:
+            logger.info(f"Extracted {len(image_urls)} image URLs from IIIF manifest for {gbif_id}")
+        
+        return image_urls
+        
+    except Exception as e:
+        logger.warning(f"Error parsing IIIF manifest for {gbif_id}: {e}")
+        return []
     
 def download_image_from_candidates(gbif_id, candidate_urls, local_path):
     """
     Try each URL for this gbif_id until one succeeds.
     Skips hosts under cooldown; on 429, cools down that host and tries the next.
     """
-    random.shuffle(candidate_urls)
-    for image_url in candidate_urls:
+
+    expanded_urls = []
+    for url in candidate_urls:
+        if '/manifest' in url or url.endswith('.json'):
+            extracted = extract_image_from_iiif_manifest(url, gbif_id)
+            if extracted:
+                expanded_urls.extend(extracted)
+            else:
+                expanded_urls.append(url)
+        else:
+            expanded_urls.append(url)
+
+
+    random.shuffle(expanded_urls)
+    for image_url in expanded_urls:
         if is_host_circuit_broken(image_url):
             logger.info(f"Host circuit broken (>{HOST_ERROR_THRESHOLD} errors); skipping for {gbif_id}: {image_url}")
             continue
         if is_host_blocked(image_url):
-            logger.info(f"Host on cooldown; skipping for {gbif_id}: {image_url}")
             continue
 
         try:
@@ -198,13 +255,13 @@ def download_image_from_candidates(gbif_id, candidate_urls, local_path):
                     "Connection": "keep-alive",
                     "Referer": "https://scc-ondemand1.bu.edu/",
                 },
-                timeout=60,
+                timeout=180,
             )
 
             status = image_response.status_code
 
             if status == 429:
-                increment_host_errors(image_url)
+                increment_host_errors(image_url, is_rate_limit=True)
                 block_host(image_url, image_response.headers.get("Retry-After"))
                 del image_response
                 continue
@@ -224,7 +281,7 @@ def download_image_from_candidates(gbif_id, candidate_urls, local_path):
             ctype = (image_response.headers.get("Content-Type") or "").lower()
             if not ctype:
                 logger.warning(f"Missing Content-Type header for {gbif_id} from {image_url}, attempting download anyway.")
-            elif ctype and any(bad in ctype for bad in ["text/html", "text/plain", "application/json", "application/xml"]):
+            elif ctype and any(bad in ctype for bad in ["text/html", "text/plain", "application/xml"]):
                 increment_host_errors(image_url)
                 logger.error(f"Invalid content type for {gbif_id} from {image_url}: {ctype}. Skipping.")
                 del image_response
@@ -238,7 +295,6 @@ def download_image_from_candidates(gbif_id, candidate_urls, local_path):
             return True
 
         except (ConnectTimeout, ReadTimeout, Timeout) as e:
-            increment_host_errors(image_url)
             logger.error(f"Timeout error for {gbif_id} from {image_url}: {e}")
             block_host(image_url, timeout_issue=True)
             continue
@@ -267,11 +323,7 @@ def process_id(gbif_id, candidate_urls):
     if current_total % 10000 == 0 and current_total > 0:
         logger.info(f"Checkpointed {current_total} images so far.")
 
-    if gbif_id in processed_ids:
-        logger.info(f"{gbif_id} already processed (checkpoint), skipping.")
-        return
-    if gbif_id in failed_ids:
-        logger.info(f"{gbif_id} previously failed, skipping.")
+    if gbif_id in processed_ids or gbif_id in failed_ids:
         return
 
     local_path = get_hierarchical_path(INSTALL_PATH, gbif_id, ".jpg")
