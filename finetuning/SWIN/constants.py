@@ -1,0 +1,1 @@
+LARGE_384_22K = "microsoft/swin-large-patch4-window7-224-in22k" 

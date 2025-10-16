@@ -22,7 +22,7 @@ from typing import Optional
 import evaluate
 import numpy as np
 import torch
-from datasets import load_dataset
+from datasets import load_dataset, Dataset
 from PIL import Image
 from torchvision.transforms import (
     CenterCrop,
@@ -48,17 +48,9 @@ from transformers import (
     set_seed,
 )
 from transformers.trainer_utils import get_last_checkpoint
-from transformers.utils import send_example_telemetry
 from transformers.utils.versions import require_version
 
 import wandb
-
-os.environ["WANDB_PROJECT"]="herbdl"
-
-os.environ["WANDB_LOG_MODEL"]="true"
-
-# turn off watch to log faster
-os.environ["WANDB_WATCH"]="false"
 
 learning_rate_type=os.getenv("LR_TYPE", "other")
 frozen = os.getenv("FROZEN", "false").lower() == "true"
@@ -70,14 +62,6 @@ print(f"__CUSTOM__: Frozen type: {frozen_type}")
 run_group = os.getenv("RUN_GROUP", "other") # SWIN_frozen, SWIN_linear
 name = os.getenv("RUN_NAME", "other") # SWIN_frozen, SWIN_linear
 run_id = os.getenv("RUN_ID", "other") # (unique id)
-
-wandb.init(
-    entity="bu-spark-ml",
-    project="herbdl",
-    resume="allow",
-    name=name,
-    id=run_id
-)
 
 
 """ Fine-tuning a 🤗 Transformers model for image classification"""
@@ -111,6 +95,7 @@ class DataTrainingArguments:
     dataset_config_name: Optional[str] = field(
         default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
     )
+    data_file: Optional[str] = field(default=None, metadata={"help": "The input data file (a jsonlines or CSV file)."})
     data_dir: Optional[str] = field(default=None, metadata={"help": "The data directory containing input files."})
     image_column_name: Optional[str] = field(
         default="image_path",
@@ -161,6 +146,25 @@ class DataTrainingArguments:
         default=None,
         metadata={"help": "The number of processes to use for the preprocessing."},
     )
+    train_val_split: Optional[float] = field(
+        default=0.2,
+        metadata={
+            "help": "The proportion of the train set used as validation set in case there's no validation split"
+        },
+    )
+    # dataloader_num_workers: Optional[int] = field(
+    #     default=0, metadata={"help": "The number of subprocesses to use for data loading."}
+    # )
+    # bf16: bool = field(
+    #     default=False,
+    #     metadata={"help": "Whether to use bf16 (mixed) precision training."},
+    # )
+    # ddp_backend: str = field(
+    #     default="no_c10d",
+    #     metadata={"help": " The backend to use for distributed training. Must be one of 'nccl, 'mpi', 'ccl', 'gloo', 'hccl."},
+    # )
+
+
 
     def __post_init__(self):
         if self.dataset_name is None and self.train_file is None and self.validation_file is None:
@@ -172,9 +176,6 @@ class DataTrainingArguments:
             if self.validation_file is not None:
                 extension = self.validation_file.split(".")[-1]
                 assert extension in ["csv", "json"], "`validation_file` should be a csv or a json file."
-            if self.validation_file is not None:
-                extension = self.validation_file.split(".")[-1]
-                assert extension == "json", "`validation_file` should be a json file."
 
 
 @dataclass
@@ -226,7 +227,6 @@ class ModelArguments:
         metadata={"help": "Will enable to load a pretrained model whose head dimensions are different."},
     )
 
-
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
@@ -240,15 +240,32 @@ def main():
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
-    # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
-    # information sent is the one passed as arguments along with your Python/PyTorch versions.
-    send_example_telemetry("run_image_classification", model_args, data_args)
-
     # Setup logging
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
         handlers=[logging.StreamHandler(sys.stdout)],
+    )
+
+    wandb.init(
+        entity="gardoslab",
+        project="herbdl",
+        resume="allow",
+        name=os.getenv("RUN_NAME", "other"),
+        id=run_id,
+        config={
+            "model_name": model_args.model_name_or_path,
+            "training_file": data_args.train_file,
+            "frozen": frozen,
+            "frozen_type": frozen_type,
+            "learning_rate_type": learning_rate_type,
+            "learning_rate": training_args.learning_rate,
+            "batch_size": training_args.per_device_train_batch_size,
+            "weight_decay": training_args.weight_decay,
+            "num_train_epochs": training_args.num_train_epochs,
+            "warmup_steps": training_args.warmup_steps,
+            "gradient_accumulation_steps": training_args.gradient_accumulation_steps,
+        }
     )
 
     if training_args.should_log:
@@ -312,6 +329,8 @@ def main():
             cache_dir=model_args.cache_dir,
             # use_auth_token=True if model_args.use_auth_token else None,
         )
+        print(dataset)
+        print(dataset["train"].features)
 
     dataset_column_names = dataset["train"].column_names if "train" in dataset else dataset["validation"].column_names
     if data_args.image_column_name not in dataset_column_names:
@@ -335,22 +354,30 @@ def main():
     # If we don't have a validation split, split off a percentage of train as validation.
     data_args.train_val_split = None if "validation" in dataset.keys() else data_args.train_val_split
     if isinstance(data_args.train_val_split, float) and data_args.train_val_split > 0.0:
-        split = dataset["train"].train_test_split(data_args.train_val_split)
+        from collections import Counter
+
+        counts = Counter(dataset["train"][data_args.label_column_name])
+        valid_labels = {l for l, c in counts.items() if c > 1}
+        filtered = dataset["train"].filter(lambda x: x[data_args.label_column_name] in valid_labels)
+
+        dataset['train'] = filtered
+        split = dataset["train"].train_test_split(data_args.train_val_split, seed=42, shuffle=False)
         dataset["train"] = split["train"]
         dataset["validation"] = split["test"]
+        print(f"Split the dataset into train and validation with proportions {1 - data_args.train_val_split} and {data_args.train_val_split}.")
+        print(f"Training split has {len(dataset['train'])} examples and validation split has {len(dataset['validation'])} examples.")
 
     # Prepare label mappings.
     # We'll include these in the model's config to get human readable labels in the Inference API.
     labels = dataset["train"].unique(data_args.label_column_name)
-    label2id, id2label = {}, {}
-    for i, label in enumerate(labels):
-        label2id[label] = str(i)
-        id2label[str(i)] = label
+    num_labels = len(labels)
+    id2label = {i: str(i) for i in range(num_labels)}
+    label2id = {str(i): i for i in range(num_labels)}
 
-    # Load the accuracy metric from the datasets package
+    # Load the accuracy metric
     accuracy_metric = evaluate.load("accuracy", cache_dir=model_args.cache_dir)
 
-    # Load f1 score metric from datasets package
+    # Load f1 score metric
     f1_metric = evaluate.load("f1", cache_dir=model_args.cache_dir)
 
     # Define our compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with a
