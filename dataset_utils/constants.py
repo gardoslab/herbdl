@@ -13,6 +13,10 @@ KAGGLE_HERBARIUM_22_VAL_CSV     = DATA_PATH + "kaggle-herbaria/val_2022.csv"
 KAGGLE_HERBARIUM_22_TRAIN       = DATA_PATH + "kaggle-herbaria/herbarium-2022/train_images/"
 KAGGLE_HERBARIUM_22_TEST        = DATA_PATH + "kaggle-herbaria/herbarium-2022/test_images/"
 
+KAGGLE_HERBARIUM_INDEX = DATA_PATH + "kaggle-herbaria/index.csv"
+
 # GBIF DATASETS - Harvard Herbaria
 GBIF_HARVARD_INSTALL_PATH    = DATA_PATH + "harvard-herbaria/images"
 GBIF_HARVARD_MULTIMEDIA_DATA = DATA_PATH + "harvard-herbaria/gbif/multimedia.txt"
+
+GBIF_HARVARD_INDEX = DATA_PATH + "harvard-herbaria/harvard_index.csv"
