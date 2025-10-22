@@ -10,4 +10,6 @@ python run_duplicate_analysis.py \
     --dataset2_filename_col "filepath" \
     --dataset2_label_col "scientificName" \
     --save_path ./kaggle_harvard_results \
-    --issue_types "exact_duplicates"
+    --issue_types "exact_duplicates" \
+    --load_results ./kaggle_harvard_results \
+    --remove_duplicates

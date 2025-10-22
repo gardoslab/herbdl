@@ -22,3 +22,7 @@ venv
 *.pyc
 *.sh.*
 .ipynb_checkpoints
+
+**/node_modules
+*.png
+*.jpg
