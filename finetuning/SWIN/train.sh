@@ -5,14 +5,14 @@ module load miniconda
 module load academic-ml/fall-2025
 
 #set env variable
-export LR_TYPE="linear"
+export LR_TYPE="cosine"
 export FROZEN="true"
 
 # v1 - freeze all except last linear layer, # v2 - all layers except last transformer block and linear layer, v3 - all layers except last 2 transformer blocks and linear layer, v4 - all layers except last 3 transformer blocks and linear layer
 export RUN_GROUP="SWIN_frozen_v3"
 export FROZEN_TYPE="v3" 
 export RUN_NAME="SWIN_v3_full_kaggle"
-export RUN_ID="swin_fr_v3_141025"
+export RUN_ID="swin_fr_v2_241025"
 
 conda activate herb_env
 
@@ -21,18 +21,17 @@ save_dir="/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/KA
 python SWIN_finetuning.py \
     --output_dir  $save_dir \
     --logging_dir $save_dir \
-    --model_name_or_path "microsoft/swin-large-patch4-window7-224-in22k"\
+    --model_name_or_path "microsoft/swin-base-patch4-window7-224-in22k"\
     --train_file "/projectnb/herbdl/data/kaggle-herbaria/train.json" \
     --validation_file "/projectnb/herbdl/data/kaggle-herbaria/val.json" \
     --image_column_name filepath \
     --label_column_name scientificNameEncoded \
     --max_seq_length=15 \
-    --num_train_epochs=25 \
+    --num_train_epochs=10 \
     --remove_unused_columns=False \
     --do_train \
-    --do_eval \
-    --per_device_train_batch_size=128 \
-    --per_device_eval_batch_size=128 \
+    --per_device_train_batch_size=256 \
+    --per_device_eval_batch_size=256 \
     --warmup_steps=500 \
     --learning_rate=0.005 --save_strategy="epoch" --save_total_limit=5 --eval_strategy="epoch" \
     --lr_scheduler_type=$LR_TYPE \
