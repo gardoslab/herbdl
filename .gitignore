@@ -21,3 +21,6 @@ venv
 *.pyc
 *.sh.*
 .ipynb_checkpoints
+**/output/**
+**/node_modules/**
+*.pkl
