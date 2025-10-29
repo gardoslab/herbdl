@@ -22,3 +22,5 @@ venv
 *.pyc
 *.sh.*
 .ipynb_checkpoints
+utils/processed_ids.txt
+utils/failed_ids.txt
