@@ -22,7 +22,7 @@ from typing import Optional
 import evaluate
 import numpy as np
 import torch
-from datasets import load_dataset, Dataset
+from datasets import load_dataset
 from PIL import Image
 from torchvision.transforms import (
     CenterCrop,
@@ -34,7 +34,6 @@ from torchvision.transforms import (
     Resize,
     ToTensor,
 )
-from torchvision.io import read_image, ImageReadMode
 
 import transformers
 from transformers import (
@@ -51,6 +50,8 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils.versions import require_version
 
 import wandb
+
+os.environ['WANDB_DISABLED'] = 'false'
 
 learning_rate_type=os.getenv("LR_TYPE", "other")
 frozen = os.getenv("FROZEN", "false").lower() == "true"
@@ -357,7 +358,7 @@ def main():
         from collections import Counter
 
         counts = Counter(dataset["train"][data_args.label_column_name])
-        valid_labels = {l for l, c in counts.items() if c > 1}
+        valid_labels = {l for l, c in counts.items() if c > 1}  # noqa: E741
         filtered = dataset["train"].filter(lambda x: x[data_args.label_column_name] in valid_labels)
 
         dataset['train'] = filtered

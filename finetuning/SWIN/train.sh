@@ -12,7 +12,7 @@ export FROZEN="true"
 export RUN_GROUP="SWIN_frozen_v3"
 export FROZEN_TYPE="v3" 
 export RUN_NAME="SWIN_v3_full_kaggle"
-export RUN_ID="swin_fr_v2_241025"
+export RUN_ID="swin_fr_v3_101125"
 
 conda activate herb_env
 
@@ -30,18 +30,13 @@ python SWIN_finetuning.py \
     --num_train_epochs=10 \
     --remove_unused_columns=False \
     --do_train \
+    --do_eval \
     --per_device_train_batch_size=256 \
-    --per_device_eval_batch_size=256 \
+    --per_device_eval_batch_size=128 \
     --warmup_steps=500 \
-    --learning_rate=0.005 --save_strategy="epoch" --save_total_limit=5 --eval_strategy="epoch" \
+    --learning_rate=0.005 --save_strategy="epoch" --save_total_limit=5  --eval_strategy="steps" --eval_steps=8964 \
     --lr_scheduler_type=$LR_TYPE \
-    --ignore_mismatched_sizes --overwrite_output_dir --report_to="wandb" \
+    --ignore_mismatched_sizes --report_to="wandb" \
     --bf16
-    # --push_to_hub --hub_token="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" \
 
-# 
-# --do_train \
-# 
-# --resume_from_checkpoint="/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/kaggle22/checkpoint-139125" \
-# microsoft/swin-large-patch4-window12-384-in22k
-# qsub -l h_rt=36:00:00 -pe omp 16 -P herbdl -l gpus=4 -l gpu_c=8.0 -m beas -M faridkar@bu.edu train.sh
+# qsub -l h_rt=48:00:00 -pe omp 16 -P herbdl -l gpus=2 -l gpu_c=8.0 -m beas -M faridkar@bu.edu train.sh
