@@ -8,6 +8,7 @@ models--*
 *.json
 *.env
 finetuning/venv
+finetuning/output
 venv
 *.e*
 *.o*
@@ -21,6 +22,10 @@ venv
 *.pyc
 *.sh.*
 .ipynb_checkpoints
+
+**/node_modules
+*.png
+*.jpg
 **/output/**
 **/node_modules/**
 *.pkl
