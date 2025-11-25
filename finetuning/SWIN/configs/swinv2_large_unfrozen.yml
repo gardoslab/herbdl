@@ -1,0 +1,71 @@
+# SWIN V2 Large Unfrozen (Full Fine-tuning) Configuration
+# Model configuration
+model:
+  model_name_or_path: "microsoft/swinv2-large-patch4-window12-192-22k"
+  config_name: null
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+# Data configuration
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val.json"
+  image_column_name: "filepath"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: 50000
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+
+# Training configuration
+training:
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWINV2_LARGE_UNFROZEN"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWINV2_LARGE_UNFROZEN"
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 128
+  per_device_eval_batch_size: 32
+  learning_rate: 0.0001  # Lower learning rate for full fine-tuning
+  num_train_epochs: 50
+  warmup_steps: 500
+  weight_decay: 0.01  # Add weight decay for regularization
+  gradient_accumulation_steps: 1
+  lr_scheduler_type: "cosine"
+  lr_scheduler_kwargs:
+    eta_min: 0.000001
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 5
+  eval_strategy: "steps"
+  eval_steps: 8964
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 8
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 42
+
+# Custom configuration
+custom:
+  lr_type: "cosine"
+  frozen: false  # No freezing - full fine-tuning
+  frozen_type: "none"
+  run_group: "SWINV2_Large"
+  run_name: "SWINV2_Large_Unfrozen"
+  run_id: "swinv2_large_unfrozen_112425"
+
+# WandB configuration
+wandb:
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"

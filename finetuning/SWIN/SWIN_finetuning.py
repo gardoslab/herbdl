@@ -13,9 +13,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 
+import argparse
 import logging
 import os
 import sys
+import yaml
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -52,17 +54,6 @@ from transformers.utils.versions import require_version
 import wandb
 
 os.environ['WANDB_DISABLED'] = 'false'
-
-learning_rate_type=os.getenv("LR_TYPE", "other")
-frozen = os.getenv("FROZEN", "false").lower() == "true"
-print(f"__CUSTOM__: Learning rate type: {learning_rate_type}")
-
-frozen_type = os.getenv("FROZEN_TYPE", "v1")
-print(f"__CUSTOM__: Frozen type: {frozen_type}")
-
-run_group = os.getenv("RUN_GROUP", "other") # SWIN_frozen, SWIN_linear
-name = os.getenv("RUN_NAME", "other") # SWIN_frozen, SWIN_linear
-run_id = os.getenv("RUN_ID", "other") # (unique id)
 
 
 """ Fine-tuning a 🤗 Transformers model for image classification"""
@@ -153,19 +144,6 @@ class DataTrainingArguments:
             "help": "The proportion of the train set used as validation set in case there's no validation split"
         },
     )
-    # dataloader_num_workers: Optional[int] = field(
-    #     default=0, metadata={"help": "The number of subprocesses to use for data loading."}
-    # )
-    # bf16: bool = field(
-    #     default=False,
-    #     metadata={"help": "Whether to use bf16 (mixed) precision training."},
-    # )
-    # ddp_backend: str = field(
-    #     default="no_c10d",
-    #     metadata={"help": " The backend to use for distributed training. Must be one of 'nccl, 'mpi', 'ccl', 'gloo', 'hccl."},
-    # )
-
-
 
     def __post_init__(self):
         if self.dataset_name is None and self.train_file is None and self.validation_file is None:
@@ -228,18 +206,93 @@ class ModelArguments:
         metadata={"help": "Will enable to load a pretrained model whose head dimensions are different."},
     )
 
+def load_config_from_yaml(config_path):
+    """Load configuration from YAML file."""
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    return config
+
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
 
-    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
-    if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
-        # If we pass only one argument to the script and it's the path to a json file,
-        # let's parse it to get our arguments.
-        model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
-    else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+    # Parse command line arguments for config file
+    arg_parser = argparse.ArgumentParser(description="SWIN Fine-tuning with YAML config")
+    arg_parser.add_argument('--config', type=str, required=True, help='Path to YAML config file')
+    args = arg_parser.parse_args()
+
+    # Load YAML config
+    config = load_config_from_yaml(args.config)
+
+    # Extract custom parameters
+    learning_rate_type = config['custom']['lr_type']
+    frozen = config['custom']['frozen']
+    frozen_type = config['custom']['frozen_type']
+    run_group = config['custom']['run_group']
+    run_name = config['custom']['run_name']
+    run_id = config['custom']['run_id']
+
+    print(f"__CUSTOM__: Learning rate type: {learning_rate_type}")
+    print(f"__CUSTOM__: Frozen: {frozen}")
+    print(f"__CUSTOM__: Frozen type: {frozen_type}")
+
+    # Create ModelArguments from config
+    model_args = ModelArguments(
+        model_name_or_path=config['model']['model_name_or_path'],
+        config_name=config['model']['config_name'],
+        cache_dir=config['model']['cache_dir'],
+        model_revision=config['model']['model_revision'],
+        image_processor_name=config['model']['image_processor_name'],
+        token=config['model']['token'],
+        trust_remote_code=config['model']['trust_remote_code'],
+        ignore_mismatched_sizes=config['model']['ignore_mismatched_sizes'],
+    )
+
+    # Create DataTrainingArguments from config
+    data_args = DataTrainingArguments(
+        dataset_name=config['data']['dataset_name'],
+        dataset_config_name=config['data']['dataset_config_name'],
+        data_file=config['data']['data_file'],
+        data_dir=config['data']['data_dir'],
+        train_file=config['data']['train_file'],
+        validation_file=config['data']['validation_file'],
+        image_column_name=config['data']['image_column_name'],
+        label_column_name=config['data']['label_column_name'],
+        max_seq_length=config['data']['max_seq_length'],
+        max_train_samples=config['data']['max_train_samples'],
+        max_eval_samples=config['data']['max_eval_samples'],
+        overwrite_cache=config['data']['overwrite_cache'],
+        preprocessing_num_workers=config['data']['preprocessing_num_workers'],
+        train_val_split=config['data']['train_val_split'],
+    )
+
+    # Create TrainingArguments from config
+    training_args = TrainingArguments(
+        output_dir=config['training']['output_dir'],
+        logging_dir=config['training']['logging_dir'],
+        do_train=config['training']['do_train'],
+        do_eval=config['training']['do_eval'],
+        per_device_train_batch_size=config['training']['per_device_train_batch_size'],
+        per_device_eval_batch_size=config['training']['per_device_eval_batch_size'],
+        learning_rate=config['training']['learning_rate'],
+        num_train_epochs=config['training']['num_train_epochs'],
+        warmup_steps=config['training']['warmup_steps'],
+        weight_decay=config['training']['weight_decay'],
+        gradient_accumulation_steps=config['training']['gradient_accumulation_steps'],
+        lr_scheduler_type=config['training']['lr_scheduler_type'],
+        logging_strategy=config['training']['logging_strategy'],
+        save_strategy=config['training']['save_strategy'],
+        save_total_limit=config['training']['save_total_limit'],
+        eval_strategy=config['training']['eval_strategy'],
+        eval_steps=config['training']['eval_steps'],
+        report_to=config['training']['report_to'],
+        bf16=config['training']['bf16'],
+        dataloader_num_workers=config['training']['dataloader_num_workers'],
+        remove_unused_columns=config['training']['remove_unused_columns'],
+        overwrite_output_dir=config['training']['overwrite_output_dir'],
+        seed=config['training']['seed'],
+    )
 
     # Setup logging
     logging.basicConfig(
@@ -248,26 +301,50 @@ def main():
         handlers=[logging.StreamHandler(sys.stdout)],
     )
 
+    # Initialize wandb with complete config
+    wandb_config = {
+        # Model config
+        "model_name": model_args.model_name_or_path,
+        "model_revision": model_args.model_revision,
+        "ignore_mismatched_sizes": model_args.ignore_mismatched_sizes,
+        # Data config
+        "train_file": data_args.train_file,
+        "validation_file": data_args.validation_file,
+        "image_column_name": data_args.image_column_name,
+        "label_column_name": data_args.label_column_name,
+        "max_train_samples": data_args.max_train_samples,
+        "max_eval_samples": data_args.max_eval_samples,
+        "train_val_split": data_args.train_val_split,
+        # Training config
+        "learning_rate": training_args.learning_rate,
+        "per_device_train_batch_size": training_args.per_device_train_batch_size,
+        "per_device_eval_batch_size": training_args.per_device_eval_batch_size,
+        "num_train_epochs": training_args.num_train_epochs,
+        "warmup_steps": training_args.warmup_steps,
+        "weight_decay": training_args.weight_decay,
+        "gradient_accumulation_steps": training_args.gradient_accumulation_steps,
+        "lr_scheduler_type": training_args.lr_scheduler_type,
+        "bf16": training_args.bf16,
+        "seed": training_args.seed,
+        # Custom config
+        "frozen": frozen,
+        "frozen_type": frozen_type,
+        "learning_rate_type": learning_rate_type,
+    }
+
     wandb.init(
-        entity="gardoslab",
-        project="herbdl",
-        resume="allow",
-        name=os.getenv("RUN_NAME", "other"),
+        entity=config['wandb']['entity'],
+        project=config['wandb']['project'],
+        resume=config['wandb']['resume'],
+        name=run_name,
+        group=run_group,
         id=run_id,
-        config={
-            "model_name": model_args.model_name_or_path,
-            "training_file": data_args.train_file,
-            "frozen": frozen,
-            "frozen_type": frozen_type,
-            "learning_rate_type": learning_rate_type,
-            "learning_rate": training_args.learning_rate,
-            "batch_size": training_args.per_device_train_batch_size,
-            "weight_decay": training_args.weight_decay,
-            "num_train_epochs": training_args.num_train_epochs,
-            "warmup_steps": training_args.warmup_steps,
-            "gradient_accumulation_steps": training_args.gradient_accumulation_steps,
-        }
+        config=wandb_config
     )
+
+    # Set the learning rate scheduler parameters from config
+    if 'lr_scheduler_kwargs' in config['training'] and config['training']['lr_scheduler_kwargs']:
+        training_args.learning_rate_kwargs = config['training']['lr_scheduler_kwargs']
 
     if training_args.should_log:
         # The default of training_args.log_level is passive, so we set log level at info here to have that default.
@@ -502,6 +579,7 @@ def main():
             dataset["validation"] = (
                 dataset["validation"].shuffle(seed=training_args.seed).select(range(data_args.max_eval_samples))
             )
+        logger.info(f"Number of unique labels in the validation dataset: {len(dataset['validation'].unique(data_args.label_column_name))}")
         # Set the validation transforms
         dataset["validation"].set_transform(val_transforms)
 
