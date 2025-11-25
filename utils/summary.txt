@@ -1,0 +1,131 @@
+======================================================================
+Image Installation Progress Analysis
+======================================================================
+
+Loading processed and failed IDs...
+  Processed IDs loaded: 7,111,574
+  Failed IDs loaded: 14,116,883
+
+Loading multimedia.txt (this may take a moment)...
+  Total rows in multimedia.txt: 58,992,242
+
+======================================================================
+OVERALL STATISTICS
+======================================================================
+Total unique gbifIDs in multimedia.txt:  50,423,204
+Total image URLs in multimedia.txt:      58,992,242
+Average images per gbifID:               1.17
+
+======================================================================
+INSTALLATION PROGRESS
+======================================================================
+Successfully processed:                  7,111,574
+Failed:                                  14,116,883
+Total attempted (processed + failed):    21,228,457
+Remaining (not yet attempted):           29,194,747
+
+Progress:                                14.10%
+Failed:                                  28.00%
+Remaining:                               57.90%
+
+======================================================================
+IMAGES PER GBIFID DISTRIBUTION
+======================================================================
+Number of images | Count of gbifIDs
+-----------------------------------
+               1 | 44,046,176
+               2 | 4,764,050
+               3 | 1,394,805
+               4 | 118,991
+               5 | 32,256
+               6 | 20,372
+               7 | 12,968
+               8 | 9,767
+               9 | 6,044
+              10 | 4,560
+              11 | 2,855
+              12 | 2,480
+              13 | 1,584
+              14 | 1,308
+              15 | 928
+              16 | 768
+              17 | 504
+              18 | 440
+              19 | 311
+              20 | 248
+              21 | 220
+              22 | 200
+              23 | 174
+              24 | 167
+              25 | 117
+              26 | 99
+              27 | 94
+              28 | 95
+              29 | 53
+              30 | 82
+              31 | 65
+              32 | 39
+              33 | 45
+              34 | 35
+              35 | 39
+              36 | 24
+              37 | 19
+              38 | 29
+              39 | 25
+              40 | 9
+              41 | 8
+              42 | 9
+              43 | 8
+              44 | 12
+              45 | 10
+              46 | 10
+              47 | 4
+              48 | 4
+              49 | 4
+              50 | 8
+              51 | 5
+              52 | 12
+              53 | 12
+              54 | 8
+              56 | 1
+              57 | 6
+              58 | 2
+              59 | 2
+              60 | 5
+              61 | 3
+              62 | 2
+              63 | 1
+              64 | 5
+              65 | 3
+              66 | 1
+              68 | 1
+              71 | 1
+              73 | 1
+              74 | 1
+              77 | 1
+              81 | 1
+              87 | 1
+              89 | 1
+              95 | 4
+              99 | 1
+             109 | 1
+
+======================================================================
+IMAGE URL ANALYSIS
+======================================================================
+Image URLs for processed gbifIDs:        7,974,075
+Image URLs for failed gbifIDs:           17,099,447
+Image URLs for remaining gbifIDs:        33,918,720
+Total:                                   58,992,242
+
+======================================================================
+NOTES
+======================================================================
+- Each gbifID may reference multiple image URLs
+- The script downloads ONE image per gbifID (trying all URLs until one succeeds)
+- 'Processed' means we successfully downloaded at least one image for that ID
+- 'Failed' means all image URLs for that ID failed to download
+
+======================================================================
+Output written to: summary.txt
+======================================================================
