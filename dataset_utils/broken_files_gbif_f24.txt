@@ -1,0 +1,5 @@
+/projectnb/herbdl/data/GBIF-F24/IMAGES/1930388783.jpg	image file is truncated (2 bytes not processed)
+/projectnb/herbdl/data/GBIF-F24/IMAGES/4058712350.jpg	image file is truncated (12 bytes not processed)
+/projectnb/herbdl/data/GBIF-F24/IMAGES/1928738854.jpg	image file is truncated (4 bytes not processed)
+/projectnb/herbdl/data/GBIF-F24/IMAGES/1928738836.jpg	image file is truncated (0 bytes not processed)
+/projectnb/herbdl/data/GBIF-F24/IMAGES/1931320258.jpg	image file is truncated (41 bytes not processed)
