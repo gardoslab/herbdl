@@ -3,8 +3,8 @@ Image Installation Progress Analysis
 ======================================================================
 
 Loading processed and failed IDs...
-  Processed IDs loaded: 7,111,574
-  Failed IDs loaded: 14,116,883
+  Processed IDs loaded: 8,359,808
+  Failed IDs loaded: 14,479,431
 
 Loading multimedia.txt (this may take a moment)...
   Total rows in multimedia.txt: 58,992,242
@@ -19,14 +19,14 @@ Average images per gbifID:               1.17
 ======================================================================
 INSTALLATION PROGRESS
 ======================================================================
-Successfully processed:                  7,111,574
-Failed:                                  14,116,883
-Total attempted (processed + failed):    21,228,457
-Remaining (not yet attempted):           29,194,747
+Successfully processed:                  8,359,808
+Failed:                                  14,479,431
+Total attempted (processed + failed):    22,839,239
+Remaining (not yet attempted):           27,583,965
 
-Progress:                                14.10%
-Failed:                                  28.00%
-Remaining:                               57.90%
+Progress:                                16.58%
+Failed:                                  28.72%
+Remaining:                               54.70%
 
 ======================================================================
 IMAGES PER GBIFID DISTRIBUTION
@@ -113,9 +113,9 @@ Number of images | Count of gbifIDs
 ======================================================================
 IMAGE URL ANALYSIS
 ======================================================================
-Image URLs for processed gbifIDs:        7,974,075
-Image URLs for failed gbifIDs:           17,099,447
-Image URLs for remaining gbifIDs:        33,918,720
+Image URLs for processed gbifIDs:        9,281,212
+Image URLs for failed gbifIDs:           17,519,051
+Image URLs for remaining gbifIDs:        32,191,979
 Total:                                   58,992,242
 
 ======================================================================
