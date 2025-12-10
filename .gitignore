@@ -8,6 +8,7 @@ models--*
 *.json
 *.env
 finetuning/venv
+finetuning/output
 venv
 *.e*
 *.o*
@@ -24,3 +25,5 @@ venv
 **/output/**
 **/node_modules/**
 *.pkl
+utils/processed_ids.txt
+utils/failed_ids.txt
