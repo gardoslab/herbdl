@@ -12,12 +12,12 @@ Experimented with:
 2. `index.html` - to view visualization using t-SNE for Top 50 most occurring species in the Asteraceae Family. Points on the graph are clickable, view the herbarium specimen associated with that specific point and compare up to two images at a time. Change the JSON file to visualize a different plot. 
 
 ## Recreating the Visualization
-Using the SCC, first create a Virtual Environment. Check out [these instructions](https://www.bu.edu/tech/support/research/software-and-programming/common-languages/python/python-installs/virtualenv/#create) for creating an environment using `virtualenv` for your project on the SCC. 
+Using the SCC, first create a Virtual Environment. Check out [these instructions](https://www.bu.edu/tech/support/research/software-and-programming/common-languages/python/python-installs/virtualenv/#create) for creating an environment using `virtualenv` for your project on the SCC.
 
-After creating the Virtual Environment, activate the environment and then install the necessary packages into the virtualenv by running and running the following command:
+After creating the Virtual Environment, activate the environment and then install the necessary packages into the virtualenv by running the following command:
 
 ```
-pip install requirements.txt
+pip install -r requirements.txt
 ```
 
 To recreate the visualization you will need:
@@ -28,10 +28,45 @@ To recreate the visualization you will need:
 2. Download the images from the FGVC Kaggle 2022 competition or:
 - Access to the specimen images: `/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/`
 - Access to the test image paths: `/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/datasets/val_astera_50.json`
-4. Run the cells in the `kaggle22_clustering.ipynb` notebook, the notebook will output a JSON file containing the Plotly plot. 
-5. In `index.html` in the `<script>` section, replace the JSON filepath that is being fetched with the one that was just generated. 
+4. Run the cells in the `kaggle22_clustering.ipynb` notebook, the notebook will output a JSON file containing the Plotly plot.
+5. Generate thumbnails for faster hover previews (recommended):
+```bash
+python generate_thumbnails.py asteraceae_tsne_plot_astera_50_checkpoint-1300.json
+```
+This creates a `thumbnails/` directory with optimized 200px thumbnails for all images in the visualization.
+6. In `index.html` in the `<script>` section, replace the JSON filepath that is being fetched with the one that was just generated. 
 
-## Viewing the Visualization 
+## Generating Thumbnails (Optional but Recommended)
+
+The `generate_thumbnails.py` script pre-generates optimized thumbnails for faster hover preview loading:
+
+```bash
+# Basic usage
+python generate_thumbnails.py <json_file>
+
+# With custom options
+python generate_thumbnails.py asteraceae_tsne_plot_astera_50_checkpoint-1300.json \
+    --thumbnail-dir thumbnails \
+    --max-size 200 \
+    --workers 8
+```
+
+**Options:**
+- `--base-image-dir`: Base directory with full resolution images (default: `/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images`)
+- `--thumbnail-dir`: Output directory for thumbnails (default: `./thumbnails`)
+- `--max-size`: Maximum dimension in pixels (default: 200)
+- `--workers`: Number of parallel workers (default: 8)
+
+The script:
+- Extracts image paths from the Plotly JSON file
+- Generates JPEG thumbnails with 200px max dimension
+- Maintains the original directory structure
+- Skips existing thumbnails for incremental updates
+- Uses parallel processing for speed
+
+**Performance:** Thumbnails load ~10-20x faster than full resolution images during hover.
+
+## Viewing the Visualization
 You will first need to be added to the `herbdl` project on the SCC. 
 
 If you are logged in at SCC OnDemand you can view the t-SNE visualization here:

@@ -10,6 +10,7 @@ models--*
 finetuning/venv
 finetuning/output
 venv
+.venv
 *.e*
 *.o*
 *.bin
