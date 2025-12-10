@@ -39,7 +39,11 @@
 <body>
     <div id="parent-container" style="display: flex; flex-direction: row; align-items: flex-start; gap: 20px; width: 100%">
         <div id="images" style="display: flex; flex-direction: column; justify-content: center; align-items: center;">
-            <button id="clearButton" style="margin-top: 20px;">Clear All Images</button>
+            <div class="toggle-button" style="margin-top: 20px;">
+                <input type="checkbox" id="lock-axes-toggle" checked>
+                <label for="lock-axes-toggle">Lock axes range (-35 to 35)</label>
+            </div>
+            <button id="clearButton" style="margin-top: 10px;">Clear All Images</button>
             <div id="image-grid-container" class="image-grid">
                 <div class="column" class="column">
                     <img id="image-display-0" class="responsive-image" src="" alt="Last Clicked Image 1">
@@ -85,14 +89,41 @@
                 return response.json(); // parse the JSON data
             })
             .then(data => {
-                const plotData = data; 
+                const plotData = data;
 
                 // render the plot using plotly
                 Plotly.newPlot('plot-div', plotData.data, plotData.layout);
 
                 var tsnePlot = document.getElementById('plot-div');
 
-                // set the directory path for the images 
+                // set initial axes range to locked by default
+                Plotly.relayout('plot-div', {
+                    'xaxis.range': [-35, 35],
+                    'yaxis.range': [-35, 35],
+                    'xaxis.autorange': false,
+                    'yaxis.autorange': false
+                });
+
+                // handle lock axes checkbox toggle
+                document.getElementById('lock-axes-toggle').addEventListener('change', function(e) {
+                    if (e.target.checked) {
+                        // lock axes to -35, 35
+                        Plotly.relayout('plot-div', {
+                            'xaxis.range': [-35, 35],
+                            'yaxis.range': [-35, 35],
+                            'xaxis.autorange': false,
+                            'yaxis.autorange': false
+                        });
+                    } else {
+                        // enable autorange
+                        Plotly.relayout('plot-div', {
+                            'xaxis.autorange': true,
+                            'yaxis.autorange': true
+                        });
+                    }
+                });
+
+                // set the directory path for the images
                 const dirPath = '/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images';
                 const sccLink = 'https://scc-ondemand1.bu.edu/pun/sys/dashboard/files/fs/';
 
