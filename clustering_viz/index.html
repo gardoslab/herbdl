@@ -32,6 +32,36 @@
             align-items: center;
             gap: 5px;
         }
+        .filter-controls {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            margin-bottom: 10px;
+            padding: 10px;
+            background-color: #f5f5f5;
+            border-radius: 5px;
+        }
+        .filter-buttons {
+            display: flex;
+            gap: 10px;
+        }
+        #legend-search {
+            padding: 8px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        .filter-buttons button {
+            padding: 8px 16px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            background-color: white;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        .filter-buttons button:hover {
+            background-color: #e0e0e0;
+        }
     </style>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/3.1.0/plotly.min.js" integrity="sha512-iXeIWNSxrG0kro2hgWe7onPrTS2g9AeLbojfGJM89zhrunfCSEkHUux9ACjjpem5ob1J2uJ5cNxAn7gJOwygrQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 </head>
@@ -39,7 +69,11 @@
 <body>
     <div id="parent-container" style="display: flex; flex-direction: row; align-items: flex-start; gap: 20px; width: 100%">
         <div id="images" style="display: flex; flex-direction: column; justify-content: center; align-items: center;">
-            <button id="clearButton" style="margin-top: 20px;">Clear All Images</button>
+            <div class="toggle-button" style="margin-top: 20px;">
+                <input type="checkbox" id="lock-axes-toggle" checked>
+                <label for="lock-axes-toggle">Lock axes range (-35 to 35)</label>
+            </div>
+            <button id="clearButton" style="margin-top: 10px;">Clear All Images</button>
             <div id="image-grid-container" class="image-grid">
                 <div class="column" class="column">
                     <img id="image-display-0" class="responsive-image" src="" alt="Last Clicked Image 1">
@@ -66,10 +100,20 @@
                     </div>
             </div>
             <div></div>
-        </div> 
         </div>
-        <div id="plot-div" style="flex: 2; width: 90%; height: 800px">
-            <!-- Plotly chart will be drawn inside this DIV -->
+        </div>
+        <div style="flex: 2; display: flex; flex-direction: column;">
+            <div class="filter-controls">
+                <input type="text" id="legend-search" placeholder="Search species (e.g., 'Aster', 'Erigeron')...">
+                <div class="filter-buttons">
+                    <button id="select-all-btn">Select All</button>
+                    <button id="clear-all-btn">Clear All</button>
+                    <button id="reset-filter-btn">Reset Filter</button>
+                </div>
+            </div>
+            <div id="plot-div" style="width: 100%; height: 800px">
+                <!-- Plotly chart will be drawn inside this DIV -->
+            </div>
         </div>
     </div>
 
@@ -85,14 +129,136 @@
                 return response.json(); // parse the JSON data
             })
             .then(data => {
-                const plotData = data; 
+                const plotData = data;
 
                 // render the plot using plotly
                 Plotly.newPlot('plot-div', plotData.data, plotData.layout);
 
                 var tsnePlot = document.getElementById('plot-div');
 
-                // set the directory path for the images 
+                // set initial axes range to locked by default
+                Plotly.relayout('plot-div', {
+                    'xaxis.range': [-35, 35],
+                    'yaxis.range': [-35, 35],
+                    'xaxis.autorange': false,
+                    'yaxis.autorange': false
+                });
+
+                // handle lock axes checkbox toggle
+                document.getElementById('lock-axes-toggle').addEventListener('change', function(e) {
+                    if (e.target.checked) {
+                        // lock axes to -35, 35
+                        Plotly.relayout('plot-div', {
+                            'xaxis.range': [-35, 35],
+                            'yaxis.range': [-35, 35],
+                            'xaxis.autorange': false,
+                            'yaxis.autorange': false
+                        });
+                    } else {
+                        // enable autorange
+                        Plotly.relayout('plot-div', {
+                            'xaxis.autorange': true,
+                            'yaxis.autorange': true
+                        });
+                    }
+                });
+
+                // legend filtering functionality
+                const searchInput = document.getElementById('legend-search');
+                const selectAllBtn = document.getElementById('select-all-btn');
+                const clearAllBtn = document.getElementById('clear-all-btn');
+                const resetFilterBtn = document.getElementById('reset-filter-btn');
+
+                // get all trace names/labels
+                const allTraceNames = plotData.data.map((trace, idx) => ({
+                    name: trace.legendgroup || trace.name || '',
+                    index: idx
+                }));
+
+                // function to filter traces based on search text
+                function filterTraces(searchText) {
+                    const searchLower = searchText.toLowerCase();
+                    return allTraceNames.filter(trace =>
+                        trace.name.toLowerCase().includes(searchLower)
+                    );
+                }
+
+                // function to update trace visibility
+                function updateTraceVisibility(traceIndices, visible) {
+                    const visibility = plotData.data.map((trace, idx) => {
+                        if (traceIndices.includes(idx)) {
+                            return visible;
+                        }
+                        return trace.visible;
+                    });
+                    Plotly.restyle('plot-div', {'visible': visibility});
+                }
+
+                // search input handler
+                searchInput.addEventListener('input', function(e) {
+                    const searchText = e.target.value;
+                    if (searchText === '') {
+                        return; // do nothing if search is empty
+                    }
+
+                    const matchingTraces = filterTraces(searchText);
+                    const matchingIndices = matchingTraces.map(t => t.index);
+
+                    // hide all traces first, then show matching ones
+                    const visibility = plotData.data.map((trace, idx) =>
+                        matchingIndices.includes(idx) ? true : 'legendonly'
+                    );
+                    Plotly.restyle('plot-div', {'visible': visibility});
+                });
+
+                // select all button - selects all traces matching current search
+                selectAllBtn.addEventListener('click', function() {
+                    const searchText = searchInput.value;
+                    let tracesToShow;
+
+                    if (searchText === '') {
+                        // select all traces
+                        tracesToShow = allTraceNames.map(t => t.index);
+                    } else {
+                        // select only filtered traces
+                        const matchingTraces = filterTraces(searchText);
+                        tracesToShow = matchingTraces.map(t => t.index);
+                    }
+
+                    const visibility = plotData.data.map((trace, idx) =>
+                        tracesToShow.includes(idx) ? true : trace.visible
+                    );
+                    Plotly.restyle('plot-div', {'visible': visibility});
+                });
+
+                // clear all button - hides all traces matching current search
+                clearAllBtn.addEventListener('click', function() {
+                    const searchText = searchInput.value;
+                    let tracesToHide;
+
+                    if (searchText === '') {
+                        // hide all traces
+                        tracesToHide = allTraceNames.map(t => t.index);
+                    } else {
+                        // hide only filtered traces
+                        const matchingTraces = filterTraces(searchText);
+                        tracesToHide = matchingTraces.map(t => t.index);
+                    }
+
+                    const visibility = plotData.data.map((trace, idx) =>
+                        tracesToHide.includes(idx) ? 'legendonly' : trace.visible
+                    );
+                    Plotly.restyle('plot-div', {'visible': visibility});
+                });
+
+                // reset filter button - clears search and shows all traces
+                resetFilterBtn.addEventListener('click', function() {
+                    searchInput.value = '';
+                    const visibility = plotData.data.map(() => true);
+                    Plotly.restyle('plot-div', {'visible': visibility});
+                });
+
+                // set the directory path for the images
                 const dirPath = '/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images';
                 const sccLink = 'https://scc-ondemand1.bu.edu/pun/sys/dashboard/files/fs/';
 
