@@ -1,9 +1,9 @@
 #!/bin/bash -l
 
 module load miniconda
-module load academic-ml/spring-2024
+module load academic-ml/spring-2026
 
-conda activate farid-2024
+conda activate spring-2026-pyt # was: farid-2024
 
 python image_install_parallel.py
 
