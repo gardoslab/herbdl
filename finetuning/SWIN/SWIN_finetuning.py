@@ -43,7 +43,6 @@ from transformers import (
     AutoConfig,
     AutoImageProcessor,
     AutoModelForImageClassification,
-    HfArgumentParser,
     Trainer,
     TrainingArguments,
     set_seed,
