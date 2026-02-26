@@ -356,6 +356,9 @@ def main():
     transformers.utils.logging.enable_default_handler()
     transformers.utils.logging.enable_explicit_format()
 
+    # Suppress the verbose model config logging from transformers
+    logging.getLogger("transformers.configuration_utils").setLevel(logging.WARNING)
+
     # Log on each process the small summary:
     logger.warning(
         f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}, "
@@ -451,6 +454,33 @@ def main():
     num_labels = len(labels)
     id2label = {i: str(i) for i in range(num_labels)}
     label2id = {str(i): i for i in range(num_labels)}
+
+    # Create mapping from encoded labels to species names (for prediction decoding)
+    # This is essential for correctly interpreting model predictions
+    if 'scientificName' in dataset["train"].column_names:
+        logger.info("Creating scientificNameEncoded -> scientificName mapping")
+        encoded_to_species = {}
+        for item in dataset["train"]:
+            encoded_val = item[data_args.label_column_name]
+            species_name = item['scientificName']
+            if encoded_val not in encoded_to_species:
+                encoded_to_species[encoded_val] = species_name
+            elif encoded_to_species[encoded_val] != species_name:
+                logger.warning(
+                    f"Inconsistent mapping in training data: encoded {encoded_val} maps to both "
+                    f"'{encoded_to_species[encoded_val]}' and '{species_name}'"
+                )
+        logger.info(f"Created mapping for {len(encoded_to_species)} encoded species labels")
+
+        # Save the mapping for use during prediction
+        label_mapping_path = os.path.join(training_args.output_dir, "label_mapping.json")
+        os.makedirs(training_args.output_dir, exist_ok=True)
+        with open(label_mapping_path, 'w') as f:
+            # Convert keys to strings for JSON serialization
+            json_encoded_to_species = {str(k): v for k, v in encoded_to_species.items()}
+            import json
+            json.dump(json_encoded_to_species, f, indent=2)
+        logger.info(f"Saved label mapping to {label_mapping_path}")
 
     # Load the accuracy metric
     accuracy_metric = evaluate.load("accuracy", cache_dir=model_args.cache_dir)

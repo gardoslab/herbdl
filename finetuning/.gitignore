@@ -1,1 +1,9 @@
 dataset_explore.ipynb
+
+*.arrow
+
+*.e*
+*.o*
+
+PLOTS/
+*.cache*
