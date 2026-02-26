@@ -16,29 +16,29 @@ data:
   dataset_config_name: null
   data_file: null
   data_dir: null
-  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train.json"
-  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val.json"
-  image_column_name: "filepath"
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
   label_column_name: "scientificNameEncoded"
   max_seq_length: 15
   max_train_samples: null
-  max_eval_samples: 50000
+  max_eval_samples: null
   overwrite_cache: false
   preprocessing_num_workers: null
   train_val_split: 0.2
 
 # Training configuration
 training:
-  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWINV2_LARGE_FROZEN"
-  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWINV2_LARGE_FROZEN"
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWINV2_LARGE_UNFROZEN"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWINV2_LARGE_UNFROZEN"
   do_train: true
   do_eval: true
-  per_device_train_batch_size: 128
+  per_device_train_batch_size: 32
   per_device_eval_batch_size: 32
-  learning_rate: 0.005
-  num_train_epochs: 100
-  warmup_steps: 500
-  weight_decay: 0.0
+  learning_rate: 0.00003
+  num_train_epochs: 35
+  warmup_steps: 1000
+  weight_decay: 0.01
   gradient_accumulation_steps: 1
   lr_scheduler_type: "cosine"
   lr_scheduler_kwargs:
@@ -58,11 +58,11 @@ training:
 # Custom configuration
 custom:
   lr_type: "cosine"
-  frozen: true
-  frozen_type: "v3"  # Freeze all except last 2 encoder layers and linear layer
+  frozen: false
+  frozen_type: "none"
   run_group: "SWINV2_Large"
-  run_name: "SWINV2_Large_Frozen_v3"
-  run_id: "swinv2_large_frozen_v3_120125"
+  run_name: "SWINV2_Large_Unfrozen_15K"
+  run_id: "swinv2_large_021926"
 
 # WandB configuration
 wandb:

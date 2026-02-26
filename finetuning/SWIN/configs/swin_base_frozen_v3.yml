@@ -61,8 +61,8 @@ custom:
   frozen: true
   frozen_type: "v3"  # Freeze all except last 2 transformer blocks and linear layer
   run_group: "SWIN_Base"
-  run_name: "SWIN_Base_Frozen_v3"
-  run_id: "swin_base_frozen_v3_112425"
+  run_name: "SWIN_Base_Frozen"
+  run_id: "swin_fr_v3_101125"
 
 # WandB configuration
 wandb:
