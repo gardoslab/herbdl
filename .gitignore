@@ -29,3 +29,5 @@ venv
 **/output/**
 **/node_modules/**
 *.pkl
+
+.venv/
