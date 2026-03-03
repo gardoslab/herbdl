@@ -40,7 +40,7 @@ MODEL_CONFIGS = {
     },
     "SWIN_LARGE": {
         "name": "SWIN Large",
-        "15k": "SWIN_LARGE_UNFROZEN_15K_checkpoint-215209",
+        "15k": "SWIN_LARGE_UNFROZEN_15K_checkpoint-262450",
         "21k": "SWIN_LARGE_UNFROZEN_21K_checkpoint-210876",
         "50k": "SWIN_LARGE_UNFROZEN_50K_checkpoint-298741"
     },
