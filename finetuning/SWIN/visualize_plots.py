@@ -21,7 +21,8 @@ st.set_page_config(
 )
 
 # Constants
-PLOTS_DIR = Path("./PLOTS")
+THIS_DIR = os.path.dirname(os.path.realpath(__file__))
+PLOTS_DIR = Path(THIS_DIR, "PLOTS")
 PLOT_TYPES = [
     "accuracy_distribution.png",
     "accuracy_vs_class_size.png",
