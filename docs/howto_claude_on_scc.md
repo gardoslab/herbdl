@@ -14,6 +14,8 @@ npm install @anthropic-ai/claude-code
 alias claude='npx --prefix ~/claude-code claude'
 ```
 
-When you start the terminal, you have to change the terminal encoding to UTF8: terminal/Set Encoding/Unicode/UTF-8.
+When you start the terminal from a desktop interactive session on SCC, you may have to change the terminal encoding to UTF8: terminal/Set Encoding/Unicode/UTF-8.
+
+The terminal encoding seems to work fine if you `ssh` from MacOS terminal to the SCC.
 
 Then you can just type claude from any directory.
