@@ -34,8 +34,11 @@ def analyze_single_task(results, mappings=None, output_file=None):
     plot_dir = os.path.join("./PLOTS", os.path.splitext(output_file)[0])
     os.makedirs(plot_dir, exist_ok=True)
 
+    # Create full path for the text report (save in same directory as plots)
+    report_path = os.path.join(plot_dir, output_file)
+
     # Open output file for writing
-    with open(output_file, 'w') as f:
+    with open(report_path, 'w') as f:
         def print_and_write(text=""):
             """Helper to print to console and write to file"""
             print(text)
@@ -130,18 +133,30 @@ def analyze_single_task(results, mappings=None, output_file=None):
         df.to_csv(os.path.join(plot_dir, "per_class_metrics.csv"), index=False)
         print(f'Saved per-class metrics to: {os.path.join(plot_dir, "per_class_metrics.csv")}')
 
-        # Sort by label
-        class_metrics.sort(key=lambda x: x['label'])
+        # Filter out classes with total=0 (not in test set) for statistics and plotting
+        classes_with_samples = [m for m in class_metrics if m['total'] > 0]
+        num_filtered = len(class_metrics) - len(classes_with_samples)
 
-        # Extract accuracy and F1 arrays for statistics
-        accuracies = np.array([m['accuracy'] for m in class_metrics])
-        f1_scores = np.array([m['f1'] for m in class_metrics])
-        sizes = np.array([m['total'] for m in class_metrics])
+        if num_filtered > 0:
+            print(f"Note: Filtered out {num_filtered} classes with 0 samples (not in test set)")
+            print(f"Using {len(classes_with_samples)} classes with actual test samples for statistics and plots")
+
+        # Sort by label
+        classes_with_samples.sort(key=lambda x: x['label'])
+
+        # Extract accuracy and F1 arrays for statistics (only from classes with samples)
+        accuracies = np.array([m['accuracy'] for m in classes_with_samples])
+        f1_scores = np.array([m['f1'] for m in classes_with_samples])
+        sizes = np.array([m['total'] for m in classes_with_samples])
 
         # Calculate distribution statistics
         print_and_write("\n" + "="*80)
         print_and_write("PER-CLASS ACCURACY DISTRIBUTION STATISTICS")
         print_and_write("="*80)
+
+        if num_filtered > 0:
+            print_and_write(f"\nNote: Statistics computed on {len(classes_with_samples)} classes with test samples.")
+            print_and_write(f"      Excluded {num_filtered} classes not present in test set (total=0).")
 
         print_and_write(f"\nAccuracy Statistics:")
         print_and_write(f"  Mean:       {np.mean(accuracies):.4f}")
@@ -373,7 +388,7 @@ def analyze_single_task(results, mappings=None, output_file=None):
     print(f"Saved accuracy vs class size plot to: {correlation_plot_path}")
 
     print(f"\nAnalysis complete!")
-    print(f"Report saved to: {output_file}")
+    print(f"Report saved to: {report_path}")
     print(f"Plots saved to: {plot_dir}/")
 
 
