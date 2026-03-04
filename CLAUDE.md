@@ -88,11 +88,14 @@ CLIP zero-shot experiments on herbarium specimens:
 - `kaggle22_clustering.ipynb`: Main workflow for feature extraction and t-SNE/PCA visualization
 - `asteraceae_outliers.ipynb`: Outlier detection using Euclidean distance from cluster centroids
 - `outlier_detection/asteraceae_outliers.ipynb`: Advanced outlier detection using Mahalanobis distance on PCA-reduced features
+- `generate_thumbnails.py`: Pre-generates optimized thumbnails for faster hover preview loading in the web interface
 
 **Interactive Visualization** (`index.html`):
 - Click points to view herbarium specimens (stacks up to 3 images)
 - "Keep sample" toggle prevents images from being replaced
-- Hover preview shows thumbnail on mouse-over
+- Hover preview shows thumbnail on mouse-over (uses pre-generated thumbnails for fast loading)
+- Search/filter controls to show/hide specific species clusters
+- Axis locking option to maintain consistent zoom level
 - Update the JSON filepath in the `<script>` section to switch between different plots
 - Requires SCC access to image paths in `/projectnb/herbdl/data/`
 
@@ -160,12 +163,18 @@ jupyter notebook kaggle22_clustering.ipynb
    - `asteraceae_pca_*.csv`: PCA-reduced features for outlier detection
    - `asteraceae_tsne_*.csv`: t-SNE coordinates with labels
 
-5. Update `index.html` line 80 with the generated JSON filepath:
+5. Generate thumbnails for faster hover preview (recommended):
+```bash
+python generate_thumbnails.py asteraceae_tsne_plot_astera_50_checkpoint-1300.json
+```
+   This creates optimized 200px thumbnails in the `thumbnails/` directory, improving hover performance by 10-20x.
+
+6. Update `index.html` line 80 with the generated JSON filepath:
 ```javascript
 fetch("your_generated_file.json")
 ```
 
-6. View visualization via SCC OnDemand:
+7. View visualization via SCC OnDemand:
    - Navigate to `/projectnb/herbdl/workspaces/<username>/herbdl/clustering_viz/index.html`
    - Or access directly: `https://scc-ondemand1.bu.edu/pun/sys/dashboard/files/fs//projectnb/herbdl/workspaces/<username>/herbdl/clustering_viz/index.html`
 
