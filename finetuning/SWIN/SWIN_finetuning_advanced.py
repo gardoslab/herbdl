@@ -214,6 +214,9 @@ class MultiTaskSwinModel(nn.Module):
     """
     def __init__(self, base_model, num_families, num_genera, num_species):
         super().__init__()
+        # Store config from base model - required by Trainer
+        self.config = base_model.config
+
         # Extract the base SWIN encoder (works for both swin and swinv2)
         if hasattr(base_model, 'swinv2'):
             self.swin = base_model.swinv2
@@ -917,7 +920,14 @@ def main():
 
     # Define compute_metrics based on whether multi-task learning is enabled
     if use_multi_task:
-        
+
+        def preprocess_logits_for_metrics(logits, labels):
+            """
+            For multi-task learning, logits is a tuple of (species_logits, genus_logits, family_logits)
+            We return the tuple as-is for the compute_metrics function to process
+            """
+            return logits
+
         def compute_metrics(p):
             """Computes accuracy for all taxonomy levels in multi-task learning"""
             # For multi-task, predictions will be tuples of (species, genus, family) logits

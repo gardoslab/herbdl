@@ -18,9 +18,9 @@ data:
   dataset_config_name: null
   data_file: null
   data_dir: null
-  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train.json"
-  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val.json"
-  image_column_name: "filepath"
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
   label_column_name: "scientificNameEncoded"
   max_seq_length: 15
   max_train_samples: null
@@ -64,7 +64,7 @@ custom:
   frozen_type: "none"
   run_group: "SWIN_Base_MultiTask"
   run_name: "SWIN_Base_224_MultiTask"
-  run_id: "swin_base_224_mt_120125"
+  run_id: "swin_base_224_mt_051826"
 
 # Advanced augmentation settings
 augmentation:
