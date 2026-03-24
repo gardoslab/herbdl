@@ -589,6 +589,57 @@ def load_config_from_yaml(config_path):
     return config
 
 
+def build_multi_crop_transforms(crop_sizes, target_size, image_mean, image_std):
+    """Returns one Compose transform per crop size for multi-crop TTA."""
+    return [
+        Compose([
+            Resize(crop_size),
+            CenterCrop(target_size),
+            ToTensor(),
+            Normalize(mean=image_mean, std=image_std),
+        ])
+        for crop_size in crop_sizes
+    ]
+
+
+def multi_crop_evaluate(model, filepaths, labels, crop_transforms, device, compute_metrics_fn):
+    """Runs multi-crop (TTA) inference on the validation set and prints accuracy/F1."""
+    from transformers.trainer_utils import EvalPrediction
+    model.eval()
+    batch_size = 32
+    all_predictions = []
+
+    for i in range(0, len(filepaths), batch_size):
+        batch_fps = filepaths[i:i + batch_size]
+        images = [Image.open(fp).convert("RGB") for fp in batch_fps]
+
+        summed_logits = None
+        with torch.no_grad():
+            for transform in crop_transforms:
+                pixel_values = torch.stack([transform(img) for img in images]).to(device)
+                outputs = model(pixel_values=pixel_values)
+                logits = outputs.get("logits")
+                if logits is None:
+                    logits = outputs.get("species_logits")
+                summed_logits = logits if summed_logits is None else summed_logits + logits
+
+        avg_logits = summed_logits / len(crop_transforms)
+        preds = torch.argmax(avg_logits, dim=-1).cpu().numpy()
+        all_predictions.extend(preds.tolist())
+
+    all_predictions = np.array(all_predictions)
+    all_labels = np.array(labels)
+
+    eval_pred = EvalPrediction(predictions=all_predictions, label_ids=all_labels)
+    metrics = compute_metrics_fn(eval_pred)
+
+    print("__CUSTOM__: Multi-crop eval results:")
+    for k, v in metrics.items():
+        print(f"__CUSTOM__: Multi-crop eval {k}: {v}")
+
+    return metrics
+
+
 def main():
     # Parse command line arguments for config file
     arg_parser = argparse.ArgumentParser(description="SWIN Fine-tuning with advanced augmentations")
@@ -609,6 +660,12 @@ def main():
     # Extract augmentation parameters
     aug_config = config.get('augmentation', {})
     use_advanced_aug = aug_config.get('use_advanced', False)
+
+    # Extract multi-crop testing parameters
+    multi_crop_config = config.get('multi_crop', {})
+    multi_crop_enabled = multi_crop_config.get('enabled', False)
+    multi_crop_sizes = multi_crop_config.get('crop_sizes', [256, 288, 320, 384, 448])
+    multi_crop_target_size = multi_crop_config.get('target_size', 224)
 
     # Extract multi-task learning parameters
     multi_task_config = config.get('multi_task', {})
@@ -1198,6 +1255,10 @@ def main():
                 dataset["validation"].shuffle(seed=training_args.seed).select(range(data_args.max_eval_samples))
             )
         logger.info(f"Number of unique labels in the validation dataset: {len(dataset['validation'].unique(data_args.label_column_name))}")
+        # Save raw filepaths/labels before set_transform for multi-crop eval
+        if multi_crop_enabled:
+            eval_filepaths = list(dataset["validation"][data_args.image_column_name])
+            eval_labels = list(dataset["validation"][data_args.label_column_name])
         dataset["validation"].set_transform(val_transforms)
 
     # Decide whether to use mixup/cutmix
@@ -1273,6 +1334,24 @@ def main():
         metrics = trainer.evaluate()
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
+
+    # Multi-crop evaluation (test-time augmentation)
+    if multi_crop_enabled and training_args.do_eval:
+        print("__CUSTOM__: Running multi-crop (TTA) evaluation")
+        crop_transforms = build_multi_crop_transforms(
+            crop_sizes=multi_crop_sizes,
+            target_size=multi_crop_target_size,
+            image_mean=image_processor.image_mean,
+            image_std=image_processor.image_std,
+        )
+        multi_crop_evaluate(
+            model=model,
+            filepaths=eval_filepaths,
+            labels=eval_labels,
+            crop_transforms=crop_transforms,
+            device=training_args.device,
+            compute_metrics_fn=compute_metrics,
+        )
 
     # Write model card and (optionally) push to hub
     kwargs = {
