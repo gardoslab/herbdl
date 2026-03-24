@@ -1,5 +1,6 @@
-# SWIN Base 224 with Multi-Task Learning Configuration
+# SWIN Base 224 with Multi-Task Learning + ArcFace Configuration
 # Enables hierarchical classification for family, genus, and species
+# using SubCenter ArcFace loss via pytorch-metric-learning
 
 # Model configuration
 model:
@@ -31,8 +32,8 @@ data:
 
 # Training configuration
 training:
-  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_224_MULTITASK"
-  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_224_MULTITASK"
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_224_ARCFACE"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_224_ARCFACE"
   do_train: true
   do_eval: true
   per_device_train_batch_size: 128
@@ -62,9 +63,9 @@ custom:
   lr_type: "cosine"
   frozen: false
   frozen_type: "none"
-  run_group: "SWIN_Base_MultiTask"
-  run_name: "SWIN_Base_224_MultiTask"
-  run_id: "swin_base_224_mt_051826"
+  run_group: "SWIN_Base_ArcFace"
+  run_name: "SWIN_Base_224_ArcFace"
+  run_id: "swin_base_224_af_051826"
 
 # Advanced augmentation settings
 augmentation:
@@ -99,6 +100,15 @@ multi_task:
   family_weight: 0.2  # Weight for family classification loss
   genus_weight: 0.3   # Weight for genus classification loss
   species_weight: 1.0 # Weight for species classification loss (primary task)
+
+# ArcFace configuration
+arcface:
+  enabled: true
+  embedding_size: 512   # Dimension of the embedding space
+  scale: 30.0           # Scale factor (s) — controls logit magnitude
+  margin: 0.50          # Angular margin (m) in radians
+  num_subcenters: 3     # Sub-centers per class (k) for SubCenterArcFace;
+                        # helps with intra-class variation and noisy labels
 
 # Multi-crop testing configuration (for inference only)
 multi_crop:
