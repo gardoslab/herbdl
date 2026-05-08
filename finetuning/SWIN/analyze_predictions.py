@@ -222,6 +222,34 @@ def analyze_single_task(results, mappings=None, output_file=None):
             percentage = (count / len(f1_scores)) * 100
             print_and_write(f"  F1 >= {threshold:.2f}: {count}/{len(f1_scores)} ({percentage:.2f}%)")
 
+        # Micro vs Macro F1
+        print_and_write("\n" + "="*80)
+        print_and_write("MICRO VS MACRO F1 SCORE")
+        print_and_write("="*80)
+
+        total_tp = sum(label_stats[m['label']]['tp'] for m in classes_with_samples)
+        total_fp = sum(label_stats[m['label']]['fp'] for m in classes_with_samples)
+        total_fn = sum(label_stats[m['label']]['fn'] for m in classes_with_samples)
+
+        micro_precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0
+        micro_recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0
+        micro_f1 = 2 * (micro_precision * micro_recall) / (micro_precision + micro_recall) if (micro_precision + micro_recall) > 0 else 0
+
+        macro_f1 = float(np.mean(f1_scores))
+        f1_gap = macro_f1 - micro_f1
+
+        print_and_write(f"\n  Micro F1  (globally pooled TP/FP/FN): {micro_f1:.4f}")
+        print_and_write(f"    Micro Precision: {micro_precision:.4f}")
+        print_and_write(f"    Micro Recall:    {micro_recall:.4f}")
+        print_and_write(f"\n  Macro F1  (unweighted mean of per-class F1): {macro_f1:.4f}")
+        print_and_write(f"\n  Gap (Macro - Micro): {f1_gap:+.4f}")
+        if f1_gap > 0:
+            print_and_write(f"  Interpretation: Macro > Micro — smaller/rarer classes tend to have higher F1")
+        elif f1_gap < 0:
+            print_and_write(f"  Interpretation: Micro > Macro — larger/frequent classes drive performance up, smaller classes drag macro down")
+        else:
+            print_and_write(f"  Interpretation: Micro == Macro — balanced performance across class sizes")
+
         # Per-Class Details (show all classes)
         # print_and_write("\n" + "="*80)
         # print_and_write("PER-CLASS DETAILED METRICS")
@@ -284,7 +312,6 @@ def analyze_single_task(results, mappings=None, output_file=None):
     axes[0].axvline(np.median(accuracies), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(accuracies):.3f}')
     axes[0].set_xlabel('Per-Class Accuracy', fontsize=12)
     axes[0].set_ylabel('Number of Classes', fontsize=12)
-    axes[0].set_title('Distribution of Per-Class Accuracy', fontsize=14, fontweight='bold')
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
 
@@ -297,7 +324,6 @@ def analyze_single_task(results, mappings=None, output_file=None):
     axes[1].axvline(np.mean(accuracies), color='red', linestyle='--', linewidth=2, alpha=0.7)
     axes[1].set_xlabel('Per-Class Accuracy', fontsize=12)
     axes[1].set_ylabel('Density', fontsize=12)
-    axes[1].set_title('Density Plot of Per-Class Accuracy', fontsize=14, fontweight='bold')
     axes[1].legend()
     axes[1].grid(True, alpha=0.3)
 
@@ -316,7 +342,6 @@ def analyze_single_task(results, mappings=None, output_file=None):
     axes[0].axvline(np.median(f1_scores), color='green', linestyle='--', linewidth=2, label=f'Median: {np.median(f1_scores):.3f}')
     axes[0].set_xlabel('Per-Class F1 Score', fontsize=12)
     axes[0].set_ylabel('Number of Classes', fontsize=12)
-    axes[0].set_title('Distribution of Per-Class F1 Score', fontsize=14, fontweight='bold')
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
 
@@ -327,7 +352,6 @@ def analyze_single_task(results, mappings=None, output_file=None):
     axes[1].axvline(np.mean(f1_scores), color='red', linestyle='--', linewidth=2, alpha=0.7)
     axes[1].set_xlabel('Per-Class F1 Score', fontsize=12)
     axes[1].set_ylabel('Density', fontsize=12)
-    axes[1].set_title('Density Plot of Per-Class F1 Score', fontsize=14, fontweight='bold')
     axes[1].legend()
     axes[1].grid(True, alpha=0.3)
 
@@ -344,7 +368,6 @@ def analyze_single_task(results, mappings=None, output_file=None):
     ax.hist(f1_scores, bins=40, alpha=0.5, label='F1 Score', edgecolor='black', color='orange')
     ax.set_xlabel('Score', fontsize=12)
     ax.set_ylabel('Number of Classes', fontsize=12)
-    ax.set_title('Comparison of Per-Class Accuracy vs F1 Score', fontsize=14, fontweight='bold')
     ax.legend()
     ax.grid(True, alpha=0.3)
 
@@ -366,7 +389,6 @@ def analyze_single_task(results, mappings=None, output_file=None):
         patch.set_facecolor(color)
 
     ax.set_ylabel('Score', fontsize=12)
-    ax.set_title('Box Plot Comparison: Accuracy vs F1 Score', fontsize=14, fontweight='bold')
     ax.grid(True, alpha=0.3, axis='y')
 
     plt.tight_layout()
@@ -380,12 +402,54 @@ def analyze_single_task(results, mappings=None, output_file=None):
     ax.scatter(sizes, accuracies, alpha=0.7, edgecolor='black')
     ax.set_xlabel('Number of Samples in Class', fontsize=12)
     ax.set_ylabel('Per-Class Accuracy', fontsize=12)
-    ax.set_title('Correlation between Class Size and Accuracy', fontsize=14, fontweight='bold')
     ax.grid(True, alpha=0.3)
     correlation_plot_path = os.path.join(plot_dir, 'accuracy_vs_class_size.png')
     plt.tight_layout()
     plt.savefig(correlation_plot_path, dpi=300, bbox_inches='tight')
     print(f"Saved accuracy vs class size plot to: {correlation_plot_path}")
+    plt.close()
+
+    # Plot 6: F1 Score vs Class Size (scatter)
+    fig, ax = plt.subplots(1, 1, figsize=(12, 6))
+    ax.scatter(sizes, f1_scores, alpha=0.7, edgecolor='black', color='orange')
+    ax.set_xlabel('Number of Samples in Class', fontsize=12)
+    ax.set_ylabel('Per-Class F1 Score', fontsize=12)
+    ax.grid(True, alpha=0.3)
+    f1_vs_size_path = os.path.join(plot_dir, 'f1_vs_class_size.png')
+    plt.tight_layout()
+    plt.savefig(f1_vs_size_path, dpi=300, bbox_inches='tight')
+    print(f"Saved F1 vs class size plot to: {f1_vs_size_path}")
+    plt.close()
+
+    # Plot 7: Mean F1 by binned class size with error bars
+    bins = [(1, 1), (2, 3), (4, 5), (6, 10), (11, 20), (21, 50)]
+    bin_labels = ['1', '2–3', '4–5', '6–10', '11–20', '21–50']
+    bin_means = []
+    bin_stds = []
+    bin_counts = []
+
+    for lo, hi in bins:
+        mask = (sizes >= lo) & (sizes <= hi)
+        vals = f1_scores[mask]
+        bin_means.append(np.mean(vals) if len(vals) > 0 else 0)
+        bin_stds.append(np.std(vals) if len(vals) > 0 else 0)
+        bin_counts.append(len(vals))
+
+    fig, ax = plt.subplots(1, 1, figsize=(10, 6))
+    x_pos = np.arange(len(bin_labels))
+    bars = ax.bar(x_pos, bin_means, yerr=bin_stds, capsize=6, color='steelblue',
+                  edgecolor='black', alpha=0.8, error_kw={'linewidth': 1.5})
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels([f"{lbl}\n(n={cnt})" for lbl, cnt in zip(bin_labels, bin_counts)], fontsize=11)
+    ax.set_xlabel('Class Size (# samples)', fontsize=12)
+    ax.set_ylabel('Mean Per-Class F1 Score', fontsize=12)
+    ax.set_ylim(0, min(1.05, max(bin_means) + max(bin_stds) + 0.05) if bin_means else 1.05)
+    ax.grid(True, alpha=0.3, axis='y')
+    plt.tight_layout()
+    binned_f1_path = os.path.join(plot_dir, 'f1_by_class_size_bin.png')
+    plt.savefig(binned_f1_path, dpi=300, bbox_inches='tight')
+    print(f"Saved binned F1 by class size plot to: {binned_f1_path}")
+    plt.close()
 
     print(f"\nAnalysis complete!")
     print(f"Report saved to: {report_path}")

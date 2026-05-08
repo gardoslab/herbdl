@@ -15,6 +15,7 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
 from datasets import load_dataset
 from PIL import Image
 from torchvision.transforms import (
@@ -89,8 +90,10 @@ def main():
     parser.add_argument('--output', type=str, default=None, help='Output file path (default: predictions.json)')
     parser.add_argument('--batch_size', type=int, default=32, help='Batch size for prediction')
     parser.add_argument('--use_validation', action='store_true', help='Use validation file from config')
+    parser.add_argument('--use_training', action='store_true', help='Use training file from config')
     parser.add_argument('--data_file', type=str, default=None, help='Override data file to run predictions on')
     parser.add_argument('--save_logits', action='store_true', help='Save raw logits in addition to predictions')
+    parser.add_argument('--num_workers', type=int, default=8, help='Number of DataLoader worker processes for image loading')
     args = parser.parse_args()
 
     # Setup logging
@@ -121,6 +124,9 @@ def main():
     if args.data_file:
         data_file = args.data_file
         logger.info(f"Using provided data file: {data_file}")
+    elif args.use_training:
+        data_file = data_config['train_file']
+        logger.info(f"Using training file from config: {data_file}")
     elif args.use_validation:
         data_file = data_config['validation_file']
         logger.info(f"Using validation file from config: {data_file}")
@@ -297,8 +303,59 @@ def main():
         normalize,
     ])
 
+    # Build a PyTorch Dataset so DataLoader can prefetch with multiple workers
+    class ImageDataset(Dataset):
+        def __init__(self, hf_dataset, image_col, label_col, transform, multi_task=False,
+                     family2id=None, genus2id=None, species2id=None):
+            self.data = hf_dataset
+            self.image_col = image_col
+            self.label_col = label_col
+            self.transform = transform
+            self.multi_task = multi_task
+            self.family2id = family2id
+            self.genus2id = genus2id
+            self.species2id = species2id
+
+        def __len__(self):
+            return len(self.data)
+
+        def __getitem__(self, idx):
+            row = self.data[idx]
+            img = Image.open(row[self.image_col]).convert("RGB")
+            pixel_values = self.transform(img)
+            if self.multi_task:
+                return {
+                    'pixel_values': pixel_values,
+                    'image_path': row[self.image_col],
+                    'family_label': self.family2id[row['family']],
+                    'genus_label': self.genus2id[row['genus']],
+                    'species_label': self.species2id[row['species']],
+                }
+            else:
+                return {
+                    'pixel_values': pixel_values,
+                    'image_path': row[self.image_col],
+                    'true_label': row[self.label_col],
+                }
+
+    if use_multi_task:
+        torch_dataset = ImageDataset(
+            eval_dataset, image_column_name, label_column_name, transforms,
+            multi_task=True, family2id=family2id, genus2id=genus2id, species2id=species2id,
+        )
+    else:
+        torch_dataset = ImageDataset(eval_dataset, image_column_name, label_column_name, transforms)
+
+    dataloader = DataLoader(
+        torch_dataset,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        pin_memory=True,
+        prefetch_factor=2,
+    )
+
     # Run predictions
-    logger.info("Running predictions...")
+    logger.info(f"Running predictions with batch_size={args.batch_size}, num_workers={args.num_workers}...")
     all_predictions = []
     all_labels = []
     all_logits = [] if args.save_logits else None
@@ -318,28 +375,17 @@ def main():
             all_species_logits = []
 
     with torch.no_grad():
-        for i in tqdm(range(0, len(eval_dataset), args.batch_size), desc="Predicting"):
-            batch = eval_dataset[i:i + args.batch_size]
-
-            # Load and transform images
-            images = []
-            for img_path in batch[image_column_name]:
-                img = Image.open(img_path).convert("RGB")
-                img_tensor = transforms(img)
-                images.append(img_tensor)
-
-            pixel_values = torch.stack(images).to(device)
+        for batch in tqdm(dataloader, desc="Predicting"):
+            pixel_values = batch['pixel_values'].to(device)
 
             # Run inference
             outputs = model(pixel_values=pixel_values)
 
             if use_multi_task:
-                # Get all logits
                 species_logits = outputs['species_logits']
                 genus_logits = outputs['genus_logits']
                 family_logits = outputs['family_logits']
 
-                # Get predictions
                 species_preds = torch.argmax(species_logits, dim=-1).cpu().numpy()
                 genus_preds = torch.argmax(genus_logits, dim=-1).cpu().numpy()
                 family_preds = torch.argmax(family_logits, dim=-1).cpu().numpy()
@@ -348,10 +394,9 @@ def main():
                 all_genus_predictions.extend(genus_preds.tolist())
                 all_family_predictions.extend(family_preds.tolist())
 
-                # Get labels
-                family_labels = [family2id[f] for f in batch['family']]
-                genus_labels = [genus2id[g] for g in batch['genus']]
-                species_labels = [species2id[s] for s in batch['species']]
+                family_labels = batch['family_label'].tolist()
+                genus_labels = batch['genus_label'].tolist()
+                species_labels = batch['species_label'].tolist()
 
                 all_family_labels.extend(family_labels)
                 all_genus_labels.extend(genus_labels)
@@ -362,40 +407,33 @@ def main():
                     all_genus_logits.extend(genus_logits.cpu().numpy().tolist())
                     all_family_logits.extend(family_logits.cpu().numpy().tolist())
 
-                # Store metadata with encoded labels only
-                for j in range(len(batch[image_column_name])):
-                    metadata = {
-                        'image_path': batch[image_column_name][j],
+                for j in range(len(batch['image_path'])):
+                    all_metadata.append({
+                        'image_path': batch['image_path'][j],
                         'family_true': family_labels[j],
                         'genus_true': genus_labels[j],
                         'species_true': species_labels[j],
                         'family_pred': int(family_preds[j]),
                         'genus_pred': int(genus_preds[j]),
                         'species_pred': int(species_preds[j]),
-                    }
-                    all_metadata.append(metadata)
+                    })
             else:
-                # Single-task model
                 logits = outputs['logits']
                 predictions = torch.argmax(logits, dim=-1).cpu().numpy()
 
+                true_labels = batch['true_label'].tolist()
                 all_predictions.extend(predictions.tolist())
-                all_labels.extend(batch[label_column_name])
+                all_labels.extend(true_labels)
 
                 if args.save_logits:
                     all_logits.extend(logits.cpu().numpy().tolist())
 
-                # Store metadata with encoded labels only
-                for j in range(len(batch[image_column_name])):
-                    true_encoded = batch[label_column_name][j]
-                    pred_encoded = int(predictions[j])
-
-                    metadata = {
-                        'image_path': batch[image_column_name][j],
-                        'true_label': true_encoded,
-                        'predicted_label': pred_encoded,
-                    }
-                    all_metadata.append(metadata)
+                for j in range(len(batch['image_path'])):
+                    all_metadata.append({
+                        'image_path': batch['image_path'][j],
+                        'true_label': true_labels[j],
+                        'predicted_label': int(predictions[j]),
+                    })
 
     # Calculate accuracy
     if use_multi_task:
