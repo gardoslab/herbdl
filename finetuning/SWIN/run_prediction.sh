@@ -5,7 +5,7 @@
 
 # Configuration
 BATCH_SIZE=64
-OUTPUT_DIR="prediction_results"
+OUTPUT_DIR="prediction_results_training"
 
 # Create output and log directories if they don't exist
 mkdir -p $OUTPUT_DIR
@@ -14,9 +14,7 @@ mkdir -p logs
 # Define list of (config, checkpoint) pairs
 # Format: "config_file|checkpoint_directory"
 CHECKPOINT_CONFIGS=(
-    #"configs/swin_base_unfrozen_15k.yml|/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_UNFROZEN_15K"
-    "configs/swin_large_unfrozen_21k.yml|/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_LARGE_UNFROZEN_21K/checkpoint-210876"
-    "configs/swin_large_unfrozen_50k.yml|/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_LARGE_UNFROZEN_50K/checkpoint-298741"
+    "configs/swin_base_unfrozen_15k.yml|/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_UNFROZEN_15K"
 )
 
 # Function to ensure label_mapping.json exists in checkpoint directory
@@ -94,7 +92,7 @@ python prediction.py \
     --checkpoint $CHECKPOINT_DIR \
     --output $OUTPUT_FILE \
     --batch_size $BATCH_SIZE \
-    --use_validation
+    --use_training
 
 echo "Predictions saved to: $OUTPUT_FILE"
 EOF
