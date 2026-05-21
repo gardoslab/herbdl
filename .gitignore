@@ -31,3 +31,11 @@ utils/failed_ids.txt
 utils/summary.txt
 utils/node_modules
 utils/node_modules/*
+
+# Local development scratch files (not for upstream)
+utils/*_backup.py
+utils/*_backup.txt
+utils/dry_run_*.py
+utils/test_import.py
+utils/processed_ids_*.txt
+utils/failed_ids_*.txt
