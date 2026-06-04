@@ -22,10 +22,13 @@ from dataclasses import dataclass, field
 from typing import Optional
 import random
 
+import math
+
 import evaluate
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from datasets import load_dataset
 from PIL import Image
 from torchvision.transforms import (
@@ -58,7 +61,7 @@ from transformers.utils.versions import require_version
 
 import wandb
 
-os.environ['WANDB_DISABLED'] = 'false'
+os.environ['WANDB_DISABLED'] = 'false'  # may be overridden by config
 
 """ Fine-tuning a 🤗 Transformers model for image classification with advanced augmentations"""
 
@@ -260,17 +263,132 @@ class MultiTaskSwinModel(nn.Module):
         }
 
 
+class SubCenterArcMarginProduct(nn.Module):
+    """SubCenter ArcFace margin head (k sub-centers per class for robustness to label noise)."""
+    def __init__(self, in_features, out_features, k=3, s=30.0, m=0.50, easy_margin=False):
+        super().__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.s = s
+        self.m = m
+        self.k = k
+        self.weight = nn.Parameter(torch.FloatTensor(out_features * k, in_features))
+        nn.init.xavier_uniform_(self.weight)
+        self.easy_margin = easy_margin
+        self.cos_m = math.cos(m)
+        self.sin_m = math.sin(m)
+        self.th = math.cos(math.pi - m)
+        self.mm = math.sin(math.pi - m) * m
+
+    def forward(self, embeddings, labels=None):
+        embeddings = F.normalize(embeddings, p=2, dim=1)
+        weight = F.normalize(self.weight, p=2, dim=1)
+        cosine = F.linear(embeddings, weight).view(-1, self.out_features, self.k)
+        cosine, _ = torch.max(cosine, dim=2)  # [B, num_classes]
+
+        if labels is None:
+            return cosine * self.s
+
+        sine = torch.sqrt((1.0 - cosine.pow(2)).clamp(0, 1))
+        phi = cosine * self.cos_m - sine * self.sin_m
+        phi = torch.where(cosine > self.th, phi, cosine - self.mm) if not self.easy_margin else torch.where(cosine > 0, phi, cosine)
+        one_hot = torch.zeros_like(cosine).scatter_(1, labels.view(-1, 1).long(), 1)
+        return (one_hot * phi + (1.0 - one_hot) * cosine) * self.s
+
+
+class SwinWithArcFace(nn.Module):
+    """
+    SWIN backbone + SubCenter ArcFace species head.
+    Optionally adds CE auxiliary heads for family/genus (multi-task).
+    Optionally blends a CE species head with ArcFace (hybrid loss).
+    """
+    def __init__(self, base_model, num_species, embedding_size=512, scale=30.0, margin=0.50,
+                 num_subcenters=3, num_families=None, num_genera=None,
+                 family_weight=0.2, genus_weight=0.3, hybrid_ce_weight=0.0):
+        super().__init__()
+        self.config = base_model.config
+        if hasattr(base_model, 'swinv2'):
+            self.swin = base_model.swinv2
+        elif hasattr(base_model, 'swin'):
+            self.swin = base_model.swin
+        else:
+            raise ValueError("Base model must have 'swin' or 'swinv2' attribute")
+
+        hidden_size = base_model.config.hidden_size
+        self.num_species = num_species
+        self.family_weight = family_weight
+        self.genus_weight = genus_weight
+        self.hybrid_ce_weight = hybrid_ce_weight
+
+        self.embedding = nn.Linear(hidden_size, embedding_size)
+        self.bn = nn.BatchNorm1d(embedding_size)
+        self.arcface = SubCenterArcMarginProduct(embedding_size, num_species, k=num_subcenters, s=scale, m=margin)
+
+        if hybrid_ce_weight > 0:
+            self.ce_classifier = nn.Linear(hidden_size, num_species)
+
+        self.use_multi_task = num_families is not None and num_genera is not None
+        if self.use_multi_task:
+            self.family_classifier = nn.Linear(hidden_size, num_families)
+            self.genus_classifier = nn.Linear(hidden_size, num_genera)
+
+    def forward(self, pixel_values, labels=None, family_labels=None, genus_labels=None, species_labels=None, **kwargs):
+        pooled = self.swin(pixel_values).pooler_output
+        embeddings = self.bn(self.embedding(pooled))
+        arc_labels = species_labels if species_labels is not None else labels
+
+        if arc_labels is not None:
+            arc_logits = self.arcface(embeddings, arc_labels)
+            arc_loss = F.cross_entropy(arc_logits, arc_labels)
+
+            if self.hybrid_ce_weight > 0:
+                ce_logits = self.ce_classifier(pooled)
+                ce_loss = F.cross_entropy(ce_logits, arc_labels)
+                w = self.hybrid_ce_weight
+                loss = (1 - w) * arc_loss + w * ce_loss
+                logits = torch.log((1 - w) * F.softmax(arc_logits, dim=1) + w * F.softmax(ce_logits, dim=1) + 1e-8)
+            else:
+                loss = arc_loss
+                logits = arc_logits
+
+            if self.use_multi_task and family_labels is not None and genus_labels is not None:
+                loss = loss + self.family_weight * F.cross_entropy(self.family_classifier(pooled), family_labels)
+                loss = loss + self.genus_weight * F.cross_entropy(self.genus_classifier(pooled), genus_labels)
+        else:
+            # Inference: cosine similarity, no margin
+            weight = F.normalize(self.arcface.weight, p=2, dim=1)
+            emb = F.normalize(embeddings, p=2, dim=1)
+            cosine = F.linear(emb, weight).view(-1, self.num_species, self.arcface.k)
+            cosine, _ = torch.max(cosine, dim=2)
+            arc_logits = cosine * self.arcface.s
+
+            if self.hybrid_ce_weight > 0:
+                ce_logits = self.ce_classifier(pooled)
+                w = self.hybrid_ce_weight
+                logits = torch.log((1 - w) * F.softmax(arc_logits, dim=1) + w * F.softmax(ce_logits, dim=1) + 1e-8)
+            else:
+                logits = arc_logits
+            loss = None
+
+        result = {'loss': loss, 'logits': logits}
+        if self.use_multi_task:
+            result['family_logits'] = self.family_classifier(pooled)
+            result['genus_logits'] = self.genus_classifier(pooled)
+        return result
+
+
 class MixupCutmixCollator:
     """
     Collator that applies Mixup and/or Cutmix augmentation.
     """
-    def __init__(self, mixup_alpha=0.8, cutmix_alpha=1.0, prob=0.5, label_smoothing=0.1, num_classes=1000, multi_task=False):
+    def __init__(self, mixup_alpha=0.8, cutmix_alpha=1.0, prob=0.5, label_smoothing=0.1, num_classes=1000, multi_task=False, label_column_name="label"):
         self.mixup_alpha = mixup_alpha
         self.cutmix_alpha = cutmix_alpha
         self.prob = prob
         self.label_smoothing = label_smoothing
         self.num_classes = num_classes
         self.multi_task = multi_task
+        self.label_column_name = label_column_name
 
     def __call__(self, examples):
         pixel_values = torch.stack([example["pixel_values"] for example in examples])
@@ -280,9 +398,11 @@ class MixupCutmixCollator:
         if "label" in examples[0]:
             labels = torch.tensor([example["label"] for example in examples])
         else:
-            # This is for validation/evaluation - no mixup/cutmix should be applied
-            # Just return the basic batch
-            result = {"pixel_values": pixel_values}
+            # Validation/evaluation — no mixup/cutmix, just collate cleanly
+            result = {
+                "pixel_values": pixel_values,
+                "labels": torch.tensor([example[self.label_column_name] for example in examples]),
+            }
 
             if self.multi_task and "family_label" in examples[0]:
                 result.update({
@@ -375,14 +495,34 @@ class MixupTrainer(Trainer):
     """
     Custom Trainer that handles Mixup/Cutmix loss computation and batch-wise evaluation.
     """
-    def __init__(self, *args, multi_task=False, **kwargs):
+    def __init__(self, *args, multi_task=False, arcface=False, **kwargs):
         super().__init__(*args, **kwargs)
         self.multi_task = multi_task
+        self.arcface = arcface
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         labels_a = inputs.pop("labels")
         labels_b = inputs.pop("labels_b", None)
         lam = inputs.pop("lam", 1.0)
+
+        smoothing = getattr(self.data_collator, 'label_smoothing', 0.0)
+
+        # ArcFace: model computes its own loss internally (no mixup/cutmix with ArcFace)
+        if self.arcface:
+            if self.multi_task:
+                family_labels = inputs.pop("family_labels", None)
+                genus_labels = inputs.pop("genus_labels", None)
+                species_labels = inputs.pop("species_labels", None)
+                outputs = model(
+                    pixel_values=inputs["pixel_values"],
+                    species_labels=species_labels,
+                    family_labels=family_labels,
+                    genus_labels=genus_labels,
+                )
+            else:
+                outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a)
+            loss = outputs.get("loss")
+            return (loss, outputs) if return_outputs else loss
 
         # Handle multi-task learning
         if self.multi_task:
@@ -402,7 +542,7 @@ class MixupTrainer(Trainer):
 
             # If we have mixup/cutmix, we need to manually compute the mixed loss
             if family_labels_b is not None:
-                loss_fct = nn.CrossEntropyLoss()
+                loss_fct = nn.CrossEntropyLoss(label_smoothing=smoothing)
 
                 # Get logits for each taxonomy level
                 family_logits = outputs.get("family_logits")
@@ -423,17 +563,14 @@ class MixupTrainer(Trainer):
             return (loss, outputs) if return_outputs else loss
         else:
             # Standard single-task training
-            # For standard models, only pass pixel_values (labels handled separately)
             outputs = model(pixel_values=inputs["pixel_values"])
             logits = outputs.get("logits")
+            loss_fct = nn.CrossEntropyLoss(label_smoothing=smoothing)
 
             if labels_b is not None:
                 # Mixup/Cutmix loss
-                loss_fct = nn.CrossEntropyLoss()
                 loss = lam * loss_fct(logits, labels_a) + (1 - lam) * loss_fct(logits, labels_b)
             else:
-                # Standard loss
-                loss_fct = nn.CrossEntropyLoss()
                 loss = loss_fct(logits, labels_a)
 
             return (loss, outputs) if return_outputs else loss
@@ -508,7 +645,10 @@ class MixupTrainer(Trainer):
                 labels = labels_a
 
             with torch.no_grad():
-                if self.multi_task:
+                if self.arcface:
+                    # ArcFace inference: no labels → cosine similarity logits (no margin)
+                    outputs = model(pixel_values=inputs["pixel_values"])
+                elif self.multi_task:
                     # For multi-task, pass all labels to model
                     outputs = model(
                         pixel_values=inputs["pixel_values"],
@@ -640,14 +780,44 @@ def multi_crop_evaluate(model, filepaths, labels, crop_transforms, device, compu
     return metrics
 
 
+def _resolve_num_workers(n):
+    """Return n, or all scheduler-allocated CPUs when n == -1."""
+    if n == -1:
+        try:
+            return len(os.sched_getaffinity(0))
+        except AttributeError:
+            return os.cpu_count() or 8
+    return n
+
+
 def main():
     # Parse command line arguments for config file
     arg_parser = argparse.ArgumentParser(description="SWIN Fine-tuning with advanced augmentations")
     arg_parser.add_argument('--config', type=str, required=True, help='Path to YAML config file')
+    arg_parser.add_argument('--set', metavar='KEY=VALUE', action='append', default=[],
+                            help='Override a config value using dotted key notation, e.g. training.seed=42')
     args = arg_parser.parse_args()
 
     # Load YAML config
     config = load_config_from_yaml(args.config)
+
+    # Apply --set overrides
+    def _coerce(v):
+        for cast in (int, float):
+            try: return cast(v)
+            except ValueError: pass
+        if v.lower() in ('true', 'false'):
+            return v.lower() == 'true'
+        return v
+
+    for override in args.set:
+        key, _, value = override.partition('=')
+        parts = key.split('.')
+        d = config
+        for part in parts[:-1]:
+            d = d[part]
+        d[parts[-1]] = _coerce(value)
+        print(f"Config override: {key} = {d[parts[-1]]!r}")
 
     # Extract custom parameters
     learning_rate_type = config['custom']['lr_type']
@@ -675,14 +845,26 @@ def main():
     genus_weight = multi_task_config.get('genus_weight', 0.3)
     species_weight = multi_task_config.get('species_weight', 1.0)
 
+    # Extract ArcFace parameters
+    arcface_config = config.get('arcface', {})
+    use_arcface = arcface_config.get('enabled', False)
+    arcface_embedding_size = arcface_config.get('embedding_size', 512)
+    arcface_scale = arcface_config.get('scale', 30.0)
+    arcface_margin = arcface_config.get('margin', 0.50)
+    arcface_num_subcenters = arcface_config.get('num_subcenters', 3)
+    arcface_hybrid_ce_weight = arcface_config.get('hybrid_ce_weight', 0.0)
+
     print(f"__CUSTOM__: Learning rate type: {learning_rate_type}")
     print(f"__CUSTOM__: Frozen: {frozen}")
     print(f"__CUSTOM__: Frozen type: {frozen_type}")
     print(f"__CUSTOM__: Advanced augmentation: {use_advanced_aug}")
     print(f"__CUSTOM__: Multi-task learning: {use_multi_task}")
+    print(f"__CUSTOM__: ArcFace: {use_arcface}")
     if use_multi_task:
         print(f"__CUSTOM__: Min species samples: {min_species_samples}")
         print(f"__CUSTOM__: Loss weights - Family: {family_weight}, Genus: {genus_weight}, Species: {species_weight}")
+    if use_arcface:
+        print(f"__CUSTOM__: ArcFace embedding_size={arcface_embedding_size}, scale={arcface_scale}, margin={arcface_margin}, k={arcface_num_subcenters}, hybrid_ce_weight={arcface_hybrid_ce_weight}")
 
     # Create ModelArguments from config
     model_args = ModelArguments(
@@ -722,9 +904,9 @@ def main():
         do_eval=config['training']['do_eval'],
         per_device_train_batch_size=config['training']['per_device_train_batch_size'],
         per_device_eval_batch_size=config['training']['per_device_eval_batch_size'],
-        learning_rate=config['training']['learning_rate'],
+        learning_rate=float(config['training']['learning_rate']),
         num_train_epochs=config['training']['num_train_epochs'],
-        warmup_steps=config['training']['warmup_steps'],
+        warmup_steps=config['training'].get('warmup_steps', 0),
         weight_decay=config['training']['weight_decay'],
         gradient_accumulation_steps=config['training']['gradient_accumulation_steps'],
         lr_scheduler_type=config['training']['lr_scheduler_type'],
@@ -733,13 +915,15 @@ def main():
         save_total_limit=config['training']['save_total_limit'],
         eval_strategy=config['training']['eval_strategy'],
         eval_steps=config['training']['eval_steps'],
-        report_to=config['training']['report_to'],
+        report_to=config['training']['report_to'] if config['wandb'].get('enabled', True) else 'none',
         bf16=config['training']['bf16'],
-        dataloader_num_workers=config['training']['dataloader_num_workers'],
+        dataloader_num_workers=_resolve_num_workers(config['training']['dataloader_num_workers']),
+        dataloader_pin_memory=config['training'].get('dataloader_pin_memory', True),
         remove_unused_columns=config['training']['remove_unused_columns'],
-        overwrite_output_dir=config['training']['overwrite_output_dir'],
         seed=config['training']['seed'],
         label_smoothing_factor=aug_config.get('label_smoothing', 0.0) if use_advanced_aug else 0.0,
+        eval_on_start=config['training'].get('eval_on_start', False),
+        torch_compile=config['training'].get('torch_compile', False),
     )
 
     # Setup logging
@@ -750,52 +934,56 @@ def main():
     )
 
     # Initialize wandb with complete config
-    wandb_config = {
-        # Model config
-        "model_name": model_args.model_name_or_path,
-        "model_revision": model_args.model_revision,
-        "ignore_mismatched_sizes": model_args.ignore_mismatched_sizes,
-        # Data config
-        "train_file": data_args.train_file,
-        "validation_file": data_args.validation_file,
-        "image_column_name": data_args.image_column_name,
-        "label_column_name": data_args.label_column_name,
-        "max_train_samples": data_args.max_train_samples,
-        "max_eval_samples": data_args.max_eval_samples,
-        "train_val_split": data_args.train_val_split,
-        # Training config
-        "learning_rate": training_args.learning_rate,
-        "per_device_train_batch_size": training_args.per_device_train_batch_size,
-        "per_device_eval_batch_size": training_args.per_device_eval_batch_size,
-        "num_train_epochs": training_args.num_train_epochs,
-        "warmup_steps": training_args.warmup_steps,
-        "weight_decay": training_args.weight_decay,
-        "gradient_accumulation_steps": training_args.gradient_accumulation_steps,
-        "lr_scheduler_type": training_args.lr_scheduler_type,
-        "bf16": training_args.bf16,
-        "seed": training_args.seed,
-        # Custom config
-        "frozen": frozen,
-        "frozen_type": frozen_type,
-        "learning_rate_type": learning_rate_type,
-        # Augmentation config
-        "use_advanced_augmentation": use_advanced_aug,
-        "augmentation_config": aug_config if use_advanced_aug else None,
-    }
+    if config['wandb'].get('enabled', True):
+        wandb_config = {
+            # Model config
+            "model_name": model_args.model_name_or_path,
+            "model_revision": model_args.model_revision,
+            "ignore_mismatched_sizes": model_args.ignore_mismatched_sizes,
+            # Data config
+            "train_file": data_args.train_file,
+            "validation_file": data_args.validation_file,
+            "image_column_name": data_args.image_column_name,
+            "label_column_name": data_args.label_column_name,
+            "max_train_samples": data_args.max_train_samples,
+            "max_eval_samples": data_args.max_eval_samples,
+            "train_val_split": data_args.train_val_split,
+            # Training config
+            "learning_rate": training_args.learning_rate,
+            "per_device_train_batch_size": training_args.per_device_train_batch_size,
+            "per_device_eval_batch_size": training_args.per_device_eval_batch_size,
+            "num_train_epochs": training_args.num_train_epochs,
+            "warmup_steps": training_args.warmup_steps,
+            "weight_decay": training_args.weight_decay,
+            "gradient_accumulation_steps": training_args.gradient_accumulation_steps,
+            "lr_scheduler_type": training_args.lr_scheduler_type,
+            "bf16": training_args.bf16,
+            "seed": training_args.seed,
+            # Custom config
+            "frozen": frozen,
+            "frozen_type": frozen_type,
+            "learning_rate_type": learning_rate_type,
+            # Augmentation config
+            "use_advanced_augmentation": use_advanced_aug,
+            "augmentation_config": aug_config if use_advanced_aug else None,
+        }
 
-    wandb.init(
-        entity=config['wandb']['entity'],
-        project=config['wandb']['project'],
-        resume=config['wandb']['resume'],
-        name=run_name,
-        group=run_group,
-        id=run_id,
-        config=wandb_config
-    )
+        wandb.init(
+            entity=config['wandb']['entity'],
+            project=config['wandb']['project'],
+            resume=config['wandb']['resume'],
+            name=run_name,
+            group=run_group,
+            id=run_id,
+            config=wandb_config,
+            notes=config['custom']['run_notes']
+        )
+    else:
+        os.environ['WANDB_DISABLED'] = 'true'
 
     # Set the learning rate scheduler parameters from config
     if 'lr_scheduler_kwargs' in config['training'] and config['training']['lr_scheduler_kwargs']:
-        training_args.learning_rate_kwargs = config['training']['lr_scheduler_kwargs']
+        training_args.lr_scheduler_kwargs = config['training']['lr_scheduler_kwargs']
 
     if training_args.should_log:
         transformers.utils.logging.set_verbosity_info()
@@ -815,18 +1003,19 @@ def main():
     logger.info(f"Training/evaluation parameters {training_args}")
 
     # Detecting last checkpoint
+    overwrite_output_dir = config['training'].get('overwrite_output_dir', False)
     last_checkpoint = None
-    if os.path.isdir(training_args.output_dir) and training_args.do_train and not training_args.overwrite_output_dir:
+    if os.path.isdir(training_args.output_dir) and training_args.do_train and not overwrite_output_dir:
         last_checkpoint = get_last_checkpoint(training_args.output_dir)
         if last_checkpoint is None and len(os.listdir(training_args.output_dir)) > 0:
             raise ValueError(
                 f"Output directory ({training_args.output_dir}) already exists and is not empty. "
-                "Use --overwrite_output_dir to overcome."
+                "Set overwrite_output_dir: true in your config to overcome."
             )
         elif last_checkpoint is not None and training_args.resume_from_checkpoint is None:
             logger.info(
                 f"Checkpoint detected, resuming training at {last_checkpoint}. To avoid this behavior, change "
-                "the `--output_dir` or add `--overwrite_output_dir` to train from scratch."
+                "the `output_dir` or set `overwrite_output_dir: true` in your config to train from scratch."
             )
 
     # Set seed before initializing model
@@ -996,15 +1185,27 @@ def main():
                 species_logits = p.predictions
 
             species_predictions = np.argmax(species_logits, axis=1) if len(species_logits.shape) > 1 else species_logits
+            family_predictions = np.argmax(family_logits, axis=1) if 'family_logits' in locals() and len(family_logits.shape) > 1 else None
+            genus_predictions = np.argmax(genus_logits, axis=1) if 'genus_logits' in locals() and len(genus_logits.shape) > 1 else None
 
             # Compute species accuracy (primary metric)
             species_accuracy = accuracy_metric.compute(predictions=species_predictions, references=p.label_ids)["accuracy"]
-            species_f1 = f1_metric.compute(predictions=species_predictions, references=p.label_ids, average="weighted")["f1"]
+            species_f1 = f1_metric.compute(predictions=species_predictions, references=p.label_ids, average="macro")["f1"]
+
+            family_accuracy = accuracy_metric.compute(predictions=family_predictions, references=p.label_ids)["accuracy"] if family_predictions is not None else None
+            genus_accuracy = accuracy_metric.compute(predictions=genus_predictions, references=p.label_ids)["accuracy"] if genus_predictions is not None else None
+
+            family_f1 = f1_metric.compute(predictions=family_predictions, references=p.label_ids, average="macro")["f1"] if family_predictions is not None else None
+            genus_f1 = f1_metric.compute(predictions=genus_predictions, references=p.label_ids, average="macro")["f1"] if genus_predictions is not None else None
 
             metrics = {
                 "accuracy": species_accuracy,  # Primary accuracy is species
                 "species_accuracy": species_accuracy,
                 "species_f1": species_f1,
+                "family_accuracy": family_accuracy,
+                "genus_accuracy": genus_accuracy,
+                "family_f1": family_f1,
+                "genus_f1": genus_f1
             }
 
             # If we have genus and family logits, compute their accuracies too
@@ -1034,15 +1235,75 @@ def main():
             else: # Predictions contain label indices
                 predictions = p.predictions
             accuracy = accuracy_metric.compute(predictions=predictions, references=p.label_ids)["accuracy"]
-            f1_score = f1_metric.compute(predictions=predictions, references=p.label_ids, average="weighted")["f1"]
+            f1_score = f1_metric.compute(predictions=predictions, references=p.label_ids, average="macro")["f1"]
 
             return {
                 "accuracy": accuracy,
                 "f1": f1_score
             }
 
-    # Create model based on whether multi-task learning is enabled
-    if use_multi_task:
+    # Create model based on which objectives are enabled
+    if use_arcface:
+        print("__CUSTOM__: Creating SwinWithArcFace model")
+        arc_num_species = hierarchical_mappings['num_species'] if use_multi_task else num_labels
+        config_obj = AutoConfig.from_pretrained(
+            model_args.config_name or model_args.model_name_or_path,
+            num_labels=arc_num_species,
+            finetuning_task="image-classification",
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            token=model_args.token,
+            trust_remote_code=model_args.trust_remote_code,
+        )
+        base_model = AutoModelForImageClassification.from_pretrained(
+            model_args.model_name_or_path,
+            from_tf=bool(".ckpt" in model_args.model_name_or_path),
+            config=config_obj,
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            token=model_args.token,
+            trust_remote_code=model_args.trust_remote_code,
+            ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
+        )
+        model = SwinWithArcFace(
+            base_model,
+            num_species=arc_num_species,
+            embedding_size=arcface_embedding_size,
+            scale=arcface_scale,
+            margin=arcface_margin,
+            num_subcenters=arcface_num_subcenters,
+            num_families=hierarchical_mappings['num_families'] if use_multi_task else None,
+            num_genera=hierarchical_mappings['num_genera'] if use_multi_task else None,
+            family_weight=family_weight,
+            genus_weight=genus_weight,
+            hybrid_ce_weight=arcface_hybrid_ce_weight,
+        )
+        print(f"__CUSTOM__: SwinWithArcFace created — num_species={arc_num_species}, "
+              f"multi_task={use_multi_task}, hybrid_ce_weight={arcface_hybrid_ce_weight}")
+        # Overlay non-backbone weights from checkpoint (preserves embedding/arcface/CE heads
+        # when chaining ArcFace→Hybrid or ArcFace→384, since AutoModelForImageClassification
+        # only maps swin.* keys and discards the custom heads).
+        _ckpt_dir = model_args.model_name_or_path
+        if os.path.isdir(_ckpt_dir):
+            _st_path = os.path.join(_ckpt_dir, 'model.safetensors')
+            _bin_path = os.path.join(_ckpt_dir, 'pytorch_model.bin')
+            if os.path.exists(_st_path) or os.path.exists(_bin_path):
+                try:
+                    if os.path.exists(_st_path):
+                        from safetensors.torch import load_file as _load_st
+                        _ckpt_sd = _load_st(_st_path)
+                    else:
+                        _ckpt_sd = torch.load(_bin_path, map_location='cpu')
+                    # Only load keys that are NOT backbone (swin.*) — backbone already loaded
+                    # and handles window-size mismatches (e.g. 224→384) via ignore_mismatched_sizes.
+                    _non_backbone = {k: v for k, v in _ckpt_sd.items() if not k.startswith('swin.')}
+                    _res = model.load_state_dict(_non_backbone, strict=False)
+                    _loaded = len(_non_backbone) - len(_res.missing_keys)
+                    print(f"__CUSTOM__: Overlaid {_loaded}/{len(_non_backbone)} non-backbone weights from checkpoint")
+                except Exception as _e:
+                    print(f"__CUSTOM__: Could not overlay non-backbone weights: {_e}")
+
+    elif use_multi_task:
         print("__CUSTOM__: Creating multi-task SWIN model")
 
         # First load a base model
@@ -1221,9 +1482,6 @@ def main():
             _val_transforms(Image.open(pil_img).convert("RGB")) for pil_img in example_batch[data_args.image_column_name]
         ]
 
-        # Keep the label for the collator/trainer
-        example_batch["label"] = example_batch[data_args.label_column_name]
-
         # Add hierarchical labels for multi-task learning
         if use_multi_task:
             example_batch["family_label"] = [
@@ -1274,10 +1532,12 @@ def main():
     else:
         collator_num_classes = num_labels
 
-    if use_mixup_cutmix or use_multi_task:
-        # Use mixup collator (can handle both mixup/cutmix and multi-task)
+    if use_mixup_cutmix or use_multi_task or use_arcface:
+        # Use mixup collator (can handle mixup/cutmix, multi-task, and arcface)
         if use_mixup_cutmix:
             print("__CUSTOM__: Using Mixup/CutMix data collator" + (" with multi-task support" if use_multi_task else ""))
+        elif use_arcface:
+            print("__CUSTOM__: Using ArcFace data collator" + (" with multi-task support" if use_multi_task else ""))
         else:
             print("__CUSTOM__: Using multi-task data collator")
 
@@ -1287,19 +1547,21 @@ def main():
             prob=aug_config.get('mixup_cutmix_prob', 0.5) if use_mixup_cutmix else 0,
             label_smoothing=aug_config.get('label_smoothing', 0.1),
             num_classes=collator_num_classes,
-            multi_task=use_multi_task
+            multi_task=use_multi_task,
+            label_column_name=data_args.label_column_name,
         )
 
-        # Use custom trainer for mixup/cutmix loss or multi-task learning
+        # Use custom trainer for mixup/cutmix loss, multi-task learning, or arcface
         trainer = MixupTrainer(
             model=model,
             args=training_args,
             train_dataset=dataset["train"] if training_args.do_train else None,
             eval_dataset=dataset["validation"] if training_args.do_eval else None,
             compute_metrics=compute_metrics,
-            tokenizer=image_processor,
+            processing_class=image_processor,
             data_collator=data_collator,
             multi_task=use_multi_task,
+            arcface=use_arcface,
             preprocess_logits_for_metrics=preprocess_logits_for_metrics
         )
     else:
@@ -1310,7 +1572,7 @@ def main():
             train_dataset=dataset["train"] if training_args.do_train else None,
             eval_dataset=dataset["validation"] if training_args.do_eval else None,
             compute_metrics=compute_metrics,
-            tokenizer=image_processor,
+            processing_class=image_processor,
             data_collator=collate_fn,
             preprocess_logits_for_metrics=preprocess_logits_for_metrics
         )
@@ -1325,6 +1587,10 @@ def main():
 
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
         trainer.save_model()
+        # Ensure config.json is always present for custom (non-PreTrainedModel) wrappers
+        # so that downstream stages can call AutoConfig.from_pretrained on this directory.
+        if hasattr(model, 'config') and not isinstance(model, transformers.PreTrainedModel):
+            model.config.save_pretrained(training_args.output_dir)
         trainer.log_metrics("train", train_result.metrics)
         trainer.save_metrics("train", train_result.metrics)
         trainer.save_state()

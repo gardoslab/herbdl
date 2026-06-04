@@ -102,6 +102,7 @@ multi_crop:
 
 # WandB configuration
 wandb:
+  enabled: true
   entity: "gardoslab"
   project: "herbdl"
   resume: "allow"

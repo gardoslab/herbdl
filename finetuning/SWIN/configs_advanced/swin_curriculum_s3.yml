@@ -1,7 +1,8 @@
-# SWIN Base Unfrozen (Full Fine-tuning) Configuration
-# Model configuration
+# Curriculum Stage 3 — Heavy augmentation from S2
+# mag=9, prob=0.5, erasing=0.25 | 50 epochs | lr=2e-5
+
 model:
-  model_name_or_path: "microsoft/swin-base-patch4-window7-224-in22k"
+  model_name_or_path: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_CURRICULUM_S2"
   config_name: null
   cache_dir: null
   model_revision: "main"
@@ -10,7 +11,6 @@ model:
   trust_remote_code: false
   ignore_mismatched_sizes: true
 
-# Data configuration
 data:
   dataset_name: null
   dataset_config_name: null
@@ -27,45 +27,68 @@ data:
   preprocessing_num_workers: null
   train_val_split: 0.2
 
-# Training configuration
 training:
-  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_UNFROZEN_MACRO"
-  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_UNFROZEN_MACRO"
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_CURRICULUM_S3"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_CURRICULUM_S3"
   do_train: true
   do_eval: true
   per_device_train_batch_size: 128
-  per_device_eval_batch_size: 32
-  learning_rate: 0.0001  # Lower learning rate for full fine-tuning
+  per_device_eval_batch_size: 64
+  learning_rate: 0.00002
   num_train_epochs: 50
   warmup_steps: 500
-  weight_decay: 0.01  # Add weight decay for regularization
+  weight_decay: 0.05
   gradient_accumulation_steps: 1
   lr_scheduler_type: "cosine"
-  lr_scheduler_kwargs:
-    eta_min: 0.000001
   logging_strategy: "epoch"
   save_strategy: "epoch"
   save_total_limit: 5
   eval_strategy: "steps"
   eval_steps: 8964
+  eval_on_start: true
   report_to: "wandb"
   bf16: true
-  dataloader_num_workers: 8
+  dataloader_num_workers: 16
   remove_unused_columns: false
   overwrite_output_dir: false
   seed: 42
 
-# Custom configuration
 custom:
   lr_type: "cosine"
-  frozen: false  # No freezing - full fine-tuning
+  frozen: false
   frozen_type: "none"
-  run_group: "SWIN_Base"
-  run_name: "SWIN_Base_Baseline"
-  run_id: "swin_base_unfrozen_15k_040326"
+  run_group: "SWIN_Curriculum"
+  run_name: "Curriculum_S3"
+  run_id: "swin_curriculum_s3"
+  run_notes: "Stage 3 of 3. Heavy augmentation from S2 checkpoint. Maximum regularization push toward 0.78 F1."
 
-# WandB configuration
+augmentation:
+  use_advanced: true
+  randaugment:
+    num_ops: 2
+    magnitude: 9
+  mixup:
+    enabled: true
+    alpha: 0.8
+  cutmix:
+    enabled: true
+    alpha: 1.0
+  mixup_cutmix_prob: 0.5
+  label_smoothing: 0.1
+  random_erasing:
+    enabled: true
+    probability: 0.25
+    min_area: 0.02
+    max_area: 0.33
+
+multi_task:
+  enabled: false
+
+multi_crop:
+  enabled: false
+
 wandb:
+  enabled: true
   entity: "gardoslab"
   project: "herbdl"
   resume: "allow"
