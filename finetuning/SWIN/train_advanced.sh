@@ -5,14 +5,18 @@ module load academic-ml/spring-2026
 
 conda activate spring-2026-pyt
 
-# Path to config file - can be set via environment variable or use default
-# Options:
-#   - configs_advanced/swin_base_224_enhanced.yml
-#   - configs_advanced/swin_base_384_enhanced.yml
-#   - configs_advanced/swinv2_base_192_enhanced.yml
-# If CONFIG_FILE is not set (e.g., via qsub -v), use default
+# CONFIG_FILE must be provided (e.g. via `qsub -v CONFIG_FILE=...`, as submit_concrete.sh
+# does). Fail fast rather than silently running an arbitrary default config.
 if [ -z "$CONFIG_FILE" ]; then
-    CONFIG_FILE="hyperparameter_configs/swin_base_cosine_lr1e4_warmup.yml"
+    echo "ERROR: CONFIG_FILE is not set. Pass it explicitly, e.g.:" >&2
+    echo "  qsub -v CONFIG_FILE=configs_advanced/swin_large_384_concrete.yml ... train_advanced.sh" >&2
+    echo "  (or use submit_concrete.sh, which sets it for you)" >&2
+    exit 1
+fi
+
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "ERROR: CONFIG_FILE '$CONFIG_FILE' not found (cwd: $(pwd))." >&2
+    exit 1
 fi
 
 echo "Using config file: $CONFIG_FILE"
