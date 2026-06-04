@@ -16,6 +16,7 @@
 import argparse
 import logging
 import os
+import re
 import sys
 import yaml
 from dataclasses import dataclass, field
@@ -881,6 +882,34 @@ def _resolve_num_workers(n):
     return n
 
 
+def _relocate_output_dir(path):
+    """
+    Re-root an output/logging path to the workspace this script is actually
+    running from, instead of whoever authored the config.
+
+    Configs in this repo hardcode paths like
+    /projectnb/herbdl/workspaces/<author>/herbdl/finetuning/output/SWIN/<NAME>.
+    When a different user runs the same config, rewrite the
+    `.../workspaces/<author>/herbdl` prefix to this checkout's repo root so the
+    run is written under the runner's own workspace rather than the author's.
+    The trailing run name (.../output/SWIN/<NAME>) is preserved. No-op if the
+    path doesn't match that layout or is already under this repo. Set
+    HERBDL_NO_RELOCATE=1 to disable (e.g. to write elsewhere on purpose).
+    """
+    if not isinstance(path, str) or not path or os.environ.get('HERBDL_NO_RELOCATE'):
+        return path
+    # repo root = three levels up from this file: .../herbdl/finetuning/SWIN/<file>
+    repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    m = re.match(r'^(.*/workspaces/[^/]+/herbdl)(/.*)?$', path)
+    if not m:
+        return path
+    relocated = repo_root + (m.group(2) or '')
+    if relocated != path:
+        print(f"__CUSTOM__: Relocated output path to current workspace:\n"
+              f"             from {path}\n               to {relocated}")
+    return relocated
+
+
 def main():
     # Parse command line arguments for config file
     arg_parser = argparse.ArgumentParser(description="SWIN Fine-tuning with advanced augmentations")
@@ -1002,8 +1031,8 @@ def main():
 
     # Create TrainingArguments from config
     training_args = TrainingArguments(
-        output_dir=config['training']['output_dir'],
-        logging_dir=config['training']['logging_dir'],
+        output_dir=_relocate_output_dir(config['training']['output_dir']),
+        logging_dir=_relocate_output_dir(config['training']['logging_dir']),
         do_train=config['training']['do_train'],
         do_eval=config['training']['do_eval'],
         per_device_train_batch_size=config['training']['per_device_train_batch_size'],
@@ -1028,6 +1057,9 @@ def main():
         label_smoothing_factor=aug_config.get('label_smoothing', 0.0) if use_advanced_aug else 0.0,
         eval_on_start=config['training'].get('eval_on_start', False),
         torch_compile=config['training'].get('torch_compile', False),
+        gradient_checkpointing=config['training'].get('gradient_checkpointing', False),
+        gradient_checkpointing_kwargs=config['training'].get('gradient_checkpointing_kwargs', None),
+        load_best_model_at_end=config['training'].get('load_best_model_at_end', False),
     )
 
     # Setup logging

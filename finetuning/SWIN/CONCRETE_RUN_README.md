@@ -152,6 +152,16 @@ SET_ARGS="--set data.max_train_samples=2000 --set data.max_eval_samples=2000 --s
      train_advanced.sh
 ```
 
+## Output paths auto-relocate to your workspace
+
+Most configs in this repo (inherited from faridkar's) hardcode `output_dir`/`logging_dir`
+under `/projectnb/herbdl/workspaces/faridkar/herbdl/...`. The trainer rewrites any
+`.../workspaces/<author>/herbdl` prefix to the repo you actually run from, preserving the
+trailing run name — so a `tgardos` checkout writes to
+`/projectnb/herbdl/workspaces/tgardos/herbdl/finetuning/output/SWIN/<NAME>` automatically,
+with no YAML edits. It logs the rewrite (`__CUSTOM__: Relocated output path ...`). Set
+`HERBDL_NO_RELOCATE=1` to disable (e.g. to write somewhere else via an explicit path).
+
 ## Warm-start (Tier 2.5 — recommended once a 384 checkpoint exists)
 
 Cold-from-in22k is the dependency-free default. The curriculum finding is that chaining a
