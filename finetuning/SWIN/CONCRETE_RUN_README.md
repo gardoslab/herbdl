@@ -91,6 +91,39 @@ Sanity check the env:
 python -c "import torch, transformers, datasets, evaluate, wandb; print('env OK')"
 ```
 
+### Weights & Biases (logs to gardoslab / herbdl)
+
+The trainer calls `wandb.init(entity="gardoslab", project="herbdl", name=run_name,
+group=run_group, id=run_id, ...)` straight from the config (see
+`SWIN_finetuning_advanced.py`), so no code change is needed — you only need team membership
++ a valid API key.
+
+1. **Be a member of the `gardoslab` team.** Open <https://wandb.ai/gardoslab> while signed in.
+   If you can't see it, ask the team owner to invite your W&B username. `entity="gardoslab"`
+   fails with a permission error until you're a member — being logged in is not enough.
+
+2. **Authenticate on SCC** (login node; `~/.netrc` is shared, so compute-node jobs reuse it —
+   no per-job login). Grab your key from <https://wandb.ai/authorize>:
+   ```bash
+   module load miniconda && conda activate spring-2026-pyt
+   wandb login --relogin        # paste key; --relogin replaces a stale key
+   ```
+
+3. **Verify** (the stored key can be stale even though `~/.netrc` exists):
+   ```bash
+   wandb login --verify
+   python -c "import wandb; v=wandb.Api().viewer; print(v.username, '| teams:', v.teams)"
+   ```
+   `gardoslab` should appear in `teams`.
+
+Notes:
+- Alternative to `~/.netrc`: `export WANDB_API_KEY=<key>` in your shell profile (keeps the
+  key out of any committed script).
+- The seed loop in `submit_concrete.sh` sets a distinct `run_id`/`run_name` per seed, so seeds
+  appear as separate runs grouped under `SWIN_L_384_Concrete`.
+- To skip W&B for a run: `--set training.report_to=none` (or `wandb.enabled: false`).
+- If a compute node can't reach W&B: `export WANDB_MODE=offline`, then `wandb sync <run_dir>` later.
+
 ## How to launch (you run this — nothing is auto-submitted)
 
 Single run (seed 0):
