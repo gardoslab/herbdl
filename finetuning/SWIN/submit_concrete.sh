@@ -1,7 +1,7 @@
 #!/bin/bash
 # Submit the "concrete next run" (SWIN-L 384) as a seed ensemble, or a single seed.
 # Each job: 1 A100-80G GPU, up to 48h, herbdl project. Uses train_advanced.sh
-# (module load miniconda + academic-ml/fall-2025, conda activate herb_env).
+# (module load miniconda + academic-ml/spring-2026, conda activate spring-2026-pyt).
 #
 # Usage:
 #   bash submit_concrete.sh                  # submit seeds 0 1 2

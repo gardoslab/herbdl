@@ -54,6 +54,43 @@ All are config-gated and default **off**, so existing configs behave exactly as 
    `training.gradient_checkpointing: true` works for the wrapped models (needed to fit
    SWIN-L @384 on one GPU).
 
+## Environment setup (one-time)
+
+Jobs run via `train_advanced.sh`, which loads:
+
+```bash
+module load miniconda
+module load academic-ml/spring-2026
+conda activate spring-2026-pyt
+```
+
+`spring-2026-pyt` already provides torch 2.9.1, transformers 4.57.3 (≥4.52, required),
+datasets, accelerate, safetensors, torchvision, scikit-learn, pillow, pyyaml, numpy. Two
+packages it does **not** include are needed by the trainer — install them once into your
+user-site:
+
+```bash
+module load miniconda && conda activate spring-2026-pyt
+pip install --user evaluate wandb
+```
+
+Notes:
+- `evaluate` is required (accuracy / macro-F1); `wandb` is needed because the configs use
+  `report_to: wandb`. Set `--set training.report_to=none` (or `wandb.enabled: false`) to skip W&B.
+- If `import wandb` fails with `cannot import name 'validate_core_schema' from 'pydantic_core'`,
+  the `--user` install shadowed the env's `pydantic_core`. Remove the duplicate so the env's
+  copy is used again:
+  `rm -rf ~/.local/lib/python3.12/site-packages/pydantic_core ~/.local/lib/python3.12/site-packages/pydantic_core-*.dist-info`
+- `evaluate.load(...)` downloads its metric script from the HF hub on first use and caches it
+  under `~/.cache/huggingface`. Run the smoke test (below) once from a login node to warm the
+  cache if your compute nodes can't reach the hub.
+- The PyTorch env requires `gpu_c >= 7.0`; the submit scripts request `gpu_c=8.0` (A100), so OK.
+
+Sanity check the env:
+```bash
+python -c "import torch, transformers, datasets, evaluate, wandb; print('env OK')"
+```
+
 ## How to launch (you run this — nothing is auto-submitted)
 
 Single run (seed 0):

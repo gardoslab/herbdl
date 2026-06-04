@@ -1,9 +1,9 @@
 #!/bin/bash -l
 
 module load miniconda
-module load academic-ml/fall-2025
+module load academic-ml/spring-2026
 
-conda activate herb_env
+conda activate spring-2026-pyt
 
 # Path to config file - can be set via environment variable or use default
 # Options:
