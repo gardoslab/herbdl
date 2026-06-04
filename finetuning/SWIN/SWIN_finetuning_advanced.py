@@ -53,6 +53,7 @@ from transformers import (
     AutoModelForImageClassification,
     HfArgumentParser,
     Trainer,
+    TrainerCallback,
     TrainingArguments,
     set_seed,
 )
@@ -236,6 +237,13 @@ class MultiTaskSwinModel(nn.Module):
         self.genus_classifier = nn.Linear(hidden_size, num_genera)
         self.species_classifier = nn.Linear(hidden_size, num_species)
 
+    def gradient_checkpointing_enable(self, **kwargs):
+        # Passthrough so HF Trainer's gradient_checkpointing flag reaches the backbone.
+        self.swin.gradient_checkpointing_enable(**kwargs)
+
+    def gradient_checkpointing_disable(self):
+        self.swin.gradient_checkpointing_disable()
+
     def forward(self, pixel_values, family_labels=None, genus_labels=None, species_labels=None, **kwargs):
         outputs = self.swin(pixel_values)
         pooled_output = outputs.pooler_output  # [batch_size, hidden_size]
@@ -331,6 +339,13 @@ class SwinWithArcFace(nn.Module):
         if self.use_multi_task:
             self.family_classifier = nn.Linear(hidden_size, num_families)
             self.genus_classifier = nn.Linear(hidden_size, num_genera)
+
+    def gradient_checkpointing_enable(self, **kwargs):
+        # Passthrough so HF Trainer's gradient_checkpointing flag reaches the backbone.
+        self.swin.gradient_checkpointing_enable(**kwargs)
+
+    def gradient_checkpointing_disable(self):
+        self.swin.gradient_checkpointing_disable()
 
     def forward(self, pixel_values, labels=None, family_labels=None, genus_labels=None, species_labels=None, **kwargs):
         pooled = self.swin(pixel_values).pooler_output
@@ -495,10 +510,24 @@ class MixupTrainer(Trainer):
     """
     Custom Trainer that handles Mixup/Cutmix loss computation and batch-wise evaluation.
     """
-    def __init__(self, *args, multi_task=False, arcface=False, **kwargs):
+    def __init__(self, *args, multi_task=False, arcface=False,
+                 logit_adjustment=False, log_prior=None, logit_adjustment_tau=1.0, **kwargs):
         super().__init__(*args, **kwargs)
         self.multi_task = multi_task
         self.arcface = arcface
+        # Balanced-softmax / logit adjustment (Tier 1.3-A). log_prior is a
+        # [num_species] tensor of log class frequencies; added to the species
+        # logits during TRAINING only (never at inference) to down-weight head
+        # classes and lift macro-F1 on the long tail.
+        self.logit_adjustment = logit_adjustment
+        self.log_prior = log_prior
+        self.logit_adjustment_tau = logit_adjustment_tau
+
+    def _adjust_logits(self, logits):
+        """Add tau * log_prior to species logits (balanced softmax). No-op if disabled."""
+        if self.log_prior is None:
+            return logits
+        return logits + self.logit_adjustment_tau * self.log_prior.to(logits.device, logits.dtype)
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         labels_a = inputs.pop("labels")
@@ -547,7 +576,8 @@ class MixupTrainer(Trainer):
                 # Get logits for each taxonomy level
                 family_logits = outputs.get("family_logits")
                 genus_logits = outputs.get("genus_logits")
-                species_logits = outputs.get("species_logits")
+                # Balanced softmax: adjust species logits only (the long-tailed target)
+                species_logits = self._adjust_logits(outputs.get("species_logits"))
 
                 # Compute mixed losses
                 family_loss = lam * loss_fct(family_logits, family_labels) + (1 - lam) * loss_fct(family_logits, family_labels_b)
@@ -555,6 +585,16 @@ class MixupTrainer(Trainer):
                 species_loss = lam * loss_fct(species_logits, species_labels) + (1 - lam) * loss_fct(species_logits, species_labels_b)
 
                 # Combined loss with same weighting as the model
+                loss = species_loss + 0.3 * genus_loss + 0.2 * family_loss
+            elif self.logit_adjustment:
+                # No mixup this batch, but balanced softmax is on: recompute the
+                # combined loss in-trainer so the species logits get the log-prior
+                # (the model's internal loss does not apply it).
+                loss_fct = nn.CrossEntropyLoss(label_smoothing=smoothing)
+                species_logits = self._adjust_logits(outputs.get("species_logits"))
+                species_loss = loss_fct(species_logits, species_labels)
+                genus_loss = loss_fct(outputs.get("genus_logits"), genus_labels)
+                family_loss = loss_fct(outputs.get("family_logits"), family_labels)
                 loss = species_loss + 0.3 * genus_loss + 0.2 * family_loss
             else:
                 # Model already computed the loss
@@ -564,7 +604,7 @@ class MixupTrainer(Trainer):
         else:
             # Standard single-task training
             outputs = model(pixel_values=inputs["pixel_values"])
-            logits = outputs.get("logits")
+            logits = self._adjust_logits(outputs.get("logits"))  # balanced softmax (no-op if disabled)
             loss_fct = nn.CrossEntropyLoss(label_smoothing=smoothing)
 
             if labels_b is not None:
@@ -722,6 +762,53 @@ class MixupTrainer(Trainer):
         )
 
 
+class EMACallback(TrainerCallback):
+    """
+    Exponential Moving Average of model weights (Tier 2.6).
+
+    Keeps a shadow copy of the trainable parameters, updated every optimizer
+    step as shadow = decay*shadow + (1-decay)*param. At the end of training the
+    EMA weights are copied into the model, so the final `trainer.evaluate()` and
+    `trainer.save_model()` both reflect the averaged weights (typically a steady
+    +0.2-0.5% for ~free). Only parameters are averaged; buffers (e.g. BN running
+    stats) are left as-is.
+
+    Note: do not combine with `load_best_model_at_end: true` — the best-checkpoint
+    reload happens before this callback and would be overwritten by the EMA copy.
+    """
+    def __init__(self, decay=0.9998):
+        self.decay = decay
+        self.shadow = None
+
+    def on_train_begin(self, args, state, control, model=None, **kwargs):
+        self.shadow = {
+            n: p.detach().clone().float()
+            for n, p in model.named_parameters() if p.requires_grad
+        }
+        print(f"__CUSTOM__: EMA enabled (decay={self.decay}); tracking {len(self.shadow)} parameter tensors")
+
+    def on_step_end(self, args, state, control, model=None, **kwargs):
+        if self.shadow is None:
+            return
+        d = self.decay
+        with torch.no_grad():
+            for n, p in model.named_parameters():
+                if n in self.shadow:
+                    self.shadow[n].mul_(d).add_(p.detach().float(), alpha=1.0 - d)
+
+    def copy_to_model(self, model):
+        if self.shadow is None:
+            return
+        with torch.no_grad():
+            for n, p in model.named_parameters():
+                if n in self.shadow:
+                    p.data.copy_(self.shadow[n].to(p.dtype))
+
+    def on_train_end(self, args, state, control, model=None, **kwargs):
+        print("__CUSTOM__: Copying EMA weights into model for final eval/save")
+        self.copy_to_model(model)
+
+
 def load_config_from_yaml(config_path):
     """Load configuration from YAML file."""
     with open(config_path, 'r') as f:
@@ -729,17 +816,21 @@ def load_config_from_yaml(config_path):
     return config
 
 
-def build_multi_crop_transforms(crop_sizes, target_size, image_mean, image_std):
-    """Returns one Compose transform per crop size for multi-crop TTA."""
-    return [
-        Compose([
-            Resize(crop_size),
-            CenterCrop(target_size),
-            ToTensor(),
-            Normalize(mean=image_mean, std=image_std),
-        ])
-        for crop_size in crop_sizes
-    ]
+def build_multi_crop_transforms(crop_sizes, target_size, image_mean, image_std, flip=False):
+    """
+    Returns Compose transforms for multi-crop TTA (Tier 2.7).
+
+    One transform per crop size; if `flip` is True, also emit a horizontally
+    flipped variant of each crop, so logits are averaged over crops x {orig, flip}.
+    """
+    norm = Normalize(mean=image_mean, std=image_std)
+    transforms = []
+    for crop_size in crop_sizes:
+        base = [Resize(crop_size), CenterCrop(target_size)]
+        transforms.append(Compose(base + [ToTensor(), norm]))
+        if flip:
+            transforms.append(Compose(base + [RandomHorizontalFlip(p=1.0), ToTensor(), norm]))
+    return transforms
 
 
 def multi_crop_evaluate(model, filepaths, labels, crop_transforms, device, compute_metrics_fn):
@@ -836,6 +927,17 @@ def main():
     multi_crop_enabled = multi_crop_config.get('enabled', False)
     multi_crop_sizes = multi_crop_config.get('crop_sizes', [256, 288, 320, 384, 448])
     multi_crop_target_size = multi_crop_config.get('target_size', 224)
+    multi_crop_flip = multi_crop_config.get('flip', False)
+
+    # Extract long-tail (balanced softmax / logit adjustment) parameters — Tier 1.3-A
+    long_tail_config = config.get('long_tail', {})
+    use_logit_adjustment = long_tail_config.get('logit_adjustment', False)
+    logit_adjustment_tau = long_tail_config.get('tau', 1.0)
+
+    # Extract EMA parameters — Tier 2.6
+    ema_config = config.get('ema', {})
+    use_ema = ema_config.get('enabled', False)
+    ema_decay = ema_config.get('decay', 0.9998)
 
     # Extract multi-task learning parameters
     multi_task_config = config.get('multi_task', {})
@@ -860,6 +962,8 @@ def main():
     print(f"__CUSTOM__: Advanced augmentation: {use_advanced_aug}")
     print(f"__CUSTOM__: Multi-task learning: {use_multi_task}")
     print(f"__CUSTOM__: ArcFace: {use_arcface}")
+    print(f"__CUSTOM__: Logit adjustment (balanced softmax): {use_logit_adjustment} (tau={logit_adjustment_tau})")
+    print(f"__CUSTOM__: Weight EMA: {use_ema} (decay={ema_decay})")
     if use_multi_task:
         print(f"__CUSTOM__: Min species samples: {min_species_samples}")
         print(f"__CUSTOM__: Loss weights - Family: {family_weight}, Genus: {genus_weight}, Species: {species_weight}")
@@ -1242,6 +1346,26 @@ def main():
                 "f1": f1_score
             }
 
+    # Long-tail: per-class log-prior for balanced softmax (Tier 1.3-A).
+    # Computed once over the (already filtered/split) training set, in the SAME
+    # class-index space the species/CE head outputs, so it lines up with the logits.
+    log_prior = None
+    if use_logit_adjustment:
+        from collections import Counter
+        if use_multi_task:
+            sp2id = hierarchical_mappings['species2id']
+            cnt = Counter(sp2id[s] for s in dataset["train"]["species"])
+            n_cls = hierarchical_mappings['num_species']
+        else:
+            cnt = Counter(dataset["train"][data_args.label_column_name])
+            n_cls = num_labels
+        freq = np.array([cnt.get(i, 0) for i in range(n_cls)], dtype=np.float64)
+        freq = freq / max(freq.sum(), 1.0)
+        freq = np.clip(freq, 1e-12, None)  # floor empty classes so log() is finite
+        log_prior = torch.tensor(np.log(freq), dtype=torch.float32)
+        print(f"__CUSTOM__: Balanced softmax log-prior built over {n_cls} classes "
+              f"(min/max log-prior = {log_prior.min().item():.3f}/{log_prior.max().item():.3f})")
+
     # Create model based on which objectives are enabled
     if use_arcface:
         print("__CUSTOM__: Creating SwinWithArcFace model")
@@ -1532,14 +1656,18 @@ def main():
     else:
         collator_num_classes = num_labels
 
-    if use_mixup_cutmix or use_multi_task or use_arcface:
-        # Use mixup collator (can handle mixup/cutmix, multi-task, and arcface)
+    if use_mixup_cutmix or use_multi_task or use_arcface or use_logit_adjustment:
+        # Use mixup collator (can handle mixup/cutmix, multi-task, and arcface).
+        # Also used for plain single-task + balanced softmax (mixup disabled), since
+        # the logit adjustment lives in MixupTrainer.compute_loss.
         if use_mixup_cutmix:
             print("__CUSTOM__: Using Mixup/CutMix data collator" + (" with multi-task support" if use_multi_task else ""))
         elif use_arcface:
             print("__CUSTOM__: Using ArcFace data collator" + (" with multi-task support" if use_multi_task else ""))
-        else:
+        elif use_multi_task:
             print("__CUSTOM__: Using multi-task data collator")
+        else:
+            print("__CUSTOM__: Using data collator (balanced softmax, no mixup)")
 
         data_collator = MixupCutmixCollator(
             mixup_alpha=aug_config.get('mixup', {}).get('alpha', 0.8) if use_mixup_cutmix else 0,
@@ -1562,6 +1690,9 @@ def main():
             data_collator=data_collator,
             multi_task=use_multi_task,
             arcface=use_arcface,
+            logit_adjustment=use_logit_adjustment,
+            log_prior=log_prior,
+            logit_adjustment_tau=logit_adjustment_tau,
             preprocess_logits_for_metrics=preprocess_logits_for_metrics
         )
     else:
@@ -1576,6 +1707,11 @@ def main():
             data_collator=collate_fn,
             preprocess_logits_for_metrics=preprocess_logits_for_metrics
         )
+
+    # Weight EMA (Tier 2.6): copies averaged weights into the model at train end,
+    # so the final evaluate()/save_model() below reflect the EMA weights.
+    if use_ema:
+        trainer.add_callback(EMACallback(decay=ema_decay))
 
     # Training
     if training_args.do_train:
@@ -1609,6 +1745,7 @@ def main():
             target_size=multi_crop_target_size,
             image_mean=image_processor.image_mean,
             image_std=image_processor.image_std,
+            flip=multi_crop_flip,
         )
         multi_crop_evaluate(
             model=model,
