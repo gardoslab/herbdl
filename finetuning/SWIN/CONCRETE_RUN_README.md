@@ -202,6 +202,56 @@ Both top-1 accuracy and macro-F1 are reported every epoch (`eval_accuracy` /
 `eval_species_f1` for multi-task). Macro-F1 over the long tail is the number to watch
 (Tier 0).
 
+## Remote monitoring from phone / MacBook (Claude Code Remote Control)
+
+To babysit a run (check `qstat`, read logs, tweak configs) from an iPhone or MacBook, use
+Claude Code **Remote Control** — the `claude` process keeps running on the SCC login node
+(full `/projectnb` + `qsub` access), and your phone/browser are just remote windows into it.
+This is different from *Claude Code on the web*, whose cloud sandbox has **no** SCC access.
+
+### Updating Claude Code on SCC (needed: ≥ 2.1.51 for Remote Control)
+
+Claude Code here is installed as an npm **prefix** install and run via a shell alias:
+```bash
+alias claude='npx --prefix ~/claude-code claude'
+```
+Because of that, `claude update` does **not** work — it targets npm's global prefix, which
+is the read-only shared module dir (`/share/pkg.8/.../spring-2026-pyt`). Update the copy the
+alias actually uses instead:
+```bash
+module load miniconda && conda activate spring-2026-pyt   # for a consistent node/npm
+npm install --prefix ~/claude-code @anthropic-ai/claude-code@latest
+npx --prefix ~/claude-code claude --version               # confirm >= 2.1.51
+```
+Re-run that `npm install --prefix` line whenever you want to upgrade (don't use `claude update`).
+
+### Starting a Remote Control session
+
+Remote Control requires a **claude.ai subscription login (Pro/Max/Team/Enterprise) — API keys
+are not supported**. On the SCC login node:
+```bash
+unset ANTHROPIC_API_KEY          # if set, it blocks Remote Control
+claude /login                    # choose the claude.ai option (not a Console API key)
+
+tmux new -s claude-hpc           # persistent: survives SSH disconnects
+# inside tmux:
+cd /projectnb/herbdl/workspaces/tgardos/herbdl
+claude remote-control --name "HerbDL SWIN-L 384"
+```
+It prints a session URL and offers a QR code (press space). Detach with `Ctrl-b d`; Claude
+keeps running.
+
+- **iPhone:** Claude app → **Code** tab → pick "HerbDL SWIN-L 384" (or scan the QR).
+- **MacBook:** open the session URL, or go to **claude.ai/code** and pick the session. For a
+  local terminal instead: `ssh -t scc1.bu.edu "tmux attach -t claude-hpc"`.
+
+Notes:
+- Keep Claude on the **login node** (lightweight coordinator); GPU training stays in `qsub`
+  jobs on compute nodes. Don't run training directly under Claude.
+- Remote Control can **push a phone notification** when a long task finishes (enable via `/config`).
+- Text commands (`/context`, `/usage`) work from mobile; interactive pickers (`/resume`, `/mcp`)
+  only from the local terminal.
+
 ## Deferred (next ensemble members)
 
 Per the chosen scope, these are intentionally **not** in this run and remain available to
