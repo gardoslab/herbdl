@@ -147,8 +147,8 @@ Verify the pipeline end-to-end cheaply before committing 48h jobs:
 ```bash
 qsub -l h_rt=2:00:00 -pe omp 8 -P herbdl -l gpus=1 -l gpu_c=8.0 -l gpu_memory=80G \
      -N SWINL384_SMOKE \
-     -v CONFIG_FILE=configs_advanced/swin_large_384_concrete.yml,\
-SET_ARGS="--set data.max_train_samples=2000 --set data.max_eval_samples=2000 --set training.num_train_epochs=1 --set training.output_dir=/projectnb/herbdl/workspaces/tgardos/herbdl/finetuning/output/SWIN/SMOKE --set training.overwrite_output_dir=true --set wandb.enabled=false" \
+     -v CONFIG_FILE=configs_advanced/swin_large_384_concrete.yml \
+-v SET_ARGS="--set data.max_train_samples=2000 --set data.max_eval_samples=2000 --set training.num_train_epochs=1 --set training.output_dir=/projectnb/herbdl/workspaces/tgardos/herbdl/finetuning/output/SWIN/SMOKE --set training.overwrite_output_dir=true --set wandb.enabled=false" \
      train_advanced.sh
 ```
 
