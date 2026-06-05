@@ -1047,7 +1047,7 @@ def main():
         save_strategy=config['training']['save_strategy'],
         save_total_limit=config['training']['save_total_limit'],
         eval_strategy=config['training']['eval_strategy'],
-        eval_steps=config['training']['eval_steps'],
+        eval_steps=config['training'].get('eval_steps', None),  # only used when eval_strategy == "steps"
         report_to=config['training']['report_to'] if config['wandb'].get('enabled', True) else 'none',
         bf16=config['training']['bf16'],
         dataloader_num_workers=_resolve_num_workers(config['training']['dataloader_num_workers']),
