@@ -22,7 +22,17 @@ fi
 echo "Using config file: $CONFIG_FILE"
 [ -n "$SET_ARGS" ] && echo "Overrides: $SET_ARGS"
 
-python SWIN_finetuning_advanced.py --config $CONFIG_FILE ${SET_ARGS}
+# Multi-GPU: set NPROC_PER_NODE=<n> in the qsub -v args to launch with torchrun (DDP).
+# Single GPU (default): plain python.
+NPROC=${NPROC_PER_NODE:-1}
+if [ "$NPROC" -gt 1 ]; then
+    echo "Launching with torchrun --nproc_per_node=$NPROC"
+    torchrun --nproc_per_node=$NPROC --standalone \
+        SWIN_finetuning_advanced.py --config $CONFIG_FILE ${SET_ARGS}
+else
+    python SWIN_finetuning_advanced.py --config $CONFIG_FILE ${SET_ARGS}
+fi
 
 # Example qsub command for multi-GPU training:
-# qsub -l h_rt=48:00:00 -pe omp 16 -P herbdl -l gpus=4 -l gpu_c=8.0 -m beas -M faridkar@bu.edu -N SWIN_BASELINE train_advanced.sh
+# qsub -l h_rt=48:00:00 -pe omp 16 -P herbdl -l gpus=2 -l gpu_c=8.0 -l gpu_memory=80G \
+#      -v NPROC_PER_NODE=2 -m beas -M faridkar@bu.edu -N SWIN_MULTIGPU train_advanced.sh
