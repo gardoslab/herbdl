@@ -10,6 +10,7 @@ models--*
 finetuning/venv
 finetuning/output
 venv
+.venv
 *.e*
 *.o*
 *.bin
@@ -31,3 +32,8 @@ venv
 *.pkl
 
 .venv/
+utils/processed_ids.txt
+utils/failed_ids.txt
+utils/summary.txt
+utils/node_modules
+utils/node_modules/*
