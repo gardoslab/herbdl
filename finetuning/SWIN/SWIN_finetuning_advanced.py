@@ -1062,7 +1062,6 @@ def main():
         num_train_epochs=config['training']['num_train_epochs'],
         warmup_steps=_warmup_steps,
         warmup_ratio=_warmup_ratio,
-        warmup_ratio=config['training'].get('warmup_ratio', 0.0),
         weight_decay=config['training']['weight_decay'],
         gradient_accumulation_steps=config['training']['gradient_accumulation_steps'],
         lr_scheduler_type=config['training']['lr_scheduler_type'],
