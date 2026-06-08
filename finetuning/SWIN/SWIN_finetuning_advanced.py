@@ -62,8 +62,20 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils.versions import require_version
 
 import wandb
+from transformers.integrations import WandbCallback
 
 os.environ['WANDB_DISABLED'] = 'false'  # may be overridden by config
+
+_WANDB_CONFIG_BLOCKLIST = {"label2id", "id2label"}
+
+class FilteredWandbCallback(WandbCallback):
+    """WandbCallback that skips large, uninformative model config keys."""
+    def on_train_begin(self, args, state, control, model=None, **kwargs):
+        super().on_train_begin(args, state, control, model=model, **kwargs)
+        wandb.config.update(
+            {k: None for k in _WANDB_CONFIG_BLOCKLIST if k in wandb.config},
+            allow_val_change=True,
+        )
 
 """ Fine-tuning a 🤗 Transformers model for image classification with advanced augmentations"""
 
@@ -1050,6 +1062,7 @@ def main():
         num_train_epochs=config['training']['num_train_epochs'],
         warmup_steps=_warmup_steps,
         warmup_ratio=_warmup_ratio,
+        warmup_ratio=config['training'].get('warmup_ratio', 0.0),
         weight_decay=config['training']['weight_decay'],
         gradient_accumulation_steps=config['training']['gradient_accumulation_steps'],
         lr_scheduler_type=config['training']['lr_scheduler_type'],
@@ -1749,6 +1762,10 @@ def main():
             data_collator=collate_fn,
             preprocess_logits_for_metrics=preprocess_logits_for_metrics
         )
+
+    # Swap in filtered W&B callback to suppress label2id/id2label from config uploads.
+    trainer.remove_callback(WandbCallback)
+    trainer.add_callback(FilteredWandbCallback)
 
     # Weight EMA (Tier 2.6): copies averaged weights into the model at train end,
     # so the final evaluate()/save_model() below reflect the EMA weights.
