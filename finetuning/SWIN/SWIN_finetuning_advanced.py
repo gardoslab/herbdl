@@ -1392,7 +1392,10 @@ def main():
                 metrics["genus_predictions_available"] = True
                 metrics["family_predictions_available"] = True
 
-            return metrics
+            # Drop metrics that weren't computed (None). The custom eval loop only
+            # reconstructs species predictions, so family/genus metrics are None here —
+            # and HF's log_metrics/save_metrics numeric-format every value and crash on None.
+            return {k: v for k, v in metrics.items() if v is not None}
     else:
         def preprocess_logits_for_metrics(logits, labels):
             """
