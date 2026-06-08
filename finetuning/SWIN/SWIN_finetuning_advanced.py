@@ -62,20 +62,10 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils.versions import require_version
 
 import wandb
-from transformers.integrations import WandbCallback
 
 os.environ['WANDB_DISABLED'] = 'false'  # may be overridden by config
 
 _WANDB_CONFIG_BLOCKLIST = {"label2id", "id2label"}
-
-class FilteredWandbCallback(WandbCallback):
-    """WandbCallback that skips large, uninformative model config keys."""
-    def on_train_begin(self, args, state, control, model=None, **kwargs):
-        super().on_train_begin(args, state, control, model=model, **kwargs)
-        wandb.config.update(
-            {k: None for k in _WANDB_CONFIG_BLOCKLIST if k in wandb.config},
-            allow_val_change=True,
-        )
 
 """ Fine-tuning a 🤗 Transformers model for image classification with advanced augmentations"""
 
@@ -242,8 +232,10 @@ class MultiTaskSwinModel(nn.Module):
         else:
             raise ValueError("Base model must have 'swin' or 'swinv2' attribute")
 
-        # Get hidden size from config
-        hidden_size = base_model.config.hidden_size
+        # Derive hidden size from the actual pooler output, not config.hidden_size.
+        # config.hidden_size is wrong for SwinV2-Large (reports 768, pooler outputs 1536).
+        hidden_size = base_model.config.hidden_sizes[-1] if hasattr(base_model.config, 'hidden_sizes') \
+            else base_model.config.embed_dim * (2 ** (len(base_model.config.depths) - 1))
 
         # Three separate classification heads
         self.family_classifier = nn.Linear(hidden_size, num_families)
@@ -1091,8 +1083,10 @@ def main():
         handlers=[logging.StreamHandler(sys.stdout)],
     )
 
-    # Initialize wandb with complete config
-    if config['wandb'].get('enabled', True):
+    # Initialize wandb with complete config — rank 0 only.
+    # In DDP (torchrun), every process runs main(); non-zero ranks must not call
+    # wandb.init() or they race on the same run_id and corrupt the run.
+    if config['wandb'].get('enabled', True) and training_args.local_rank <= 0:
         wandb_config = {
             # Model config
             "model_name": model_args.model_name_or_path,
@@ -1136,7 +1130,21 @@ def main():
             config=wandb_config,
             notes=config['custom']['run_notes']
         )
+
+        # Import WandbCallback only after wandb.init() so the module is fully
+        # initialised before transformers.integrations touches it.
+        from transformers.integrations import WandbCallback as _WandbCallback
+
+        class FilteredWandbCallback(_WandbCallback):
+            """WandbCallback that strips large uninformative model config keys."""
+            def on_train_begin(self, args, state, control, model=None, **kwargs):
+                super().on_train_begin(args, state, control, model=model, **kwargs)
+                wandb.config.update(
+                    {k: None for k in _WANDB_CONFIG_BLOCKLIST if k in wandb.config},
+                    allow_val_change=True,
+                )
     else:
+        # wandb disabled by config, or this is a non-zero DDP rank — silence it entirely.
         os.environ['WANDB_DISABLED'] = 'true'
 
     # Set the learning rate scheduler parameters from config.
@@ -1779,8 +1787,10 @@ def main():
         )
 
     # Swap in filtered W&B callback to suppress label2id/id2label from config uploads.
-    trainer.remove_callback(WandbCallback)
-    trainer.add_callback(FilteredWandbCallback)
+    if config['wandb'].get('enabled', True):
+        from transformers.integrations import WandbCallback as _WandbCallback
+        trainer.remove_callback(_WandbCallback)
+        trainer.add_callback(FilteredWandbCallback)
 
     # Weight EMA (Tier 2.6): copies averaged weights into the model at train end,
     # so the final evaluate()/save_model() below reflect the EMA weights.
