@@ -1,0 +1,7 @@
+# List of config files to run
+# One config file path per line
+# Lines starting with # are treated as comments and will be skipped
+
+configs/swin_large_unfrozen_21k.yml
+configs/swin_large_unfrozen_50k.yml
+

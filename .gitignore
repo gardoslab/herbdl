@@ -23,9 +23,15 @@ venv
 *.pyc
 *.sh.*
 .ipynb_checkpoints
+
+**/node_modules
+*.png
+*.jpg
 **/output/**
 **/node_modules/**
 *.pkl
+
+.venv/
 utils/processed_ids.txt
 utils/failed_ids.txt
 utils/summary.txt

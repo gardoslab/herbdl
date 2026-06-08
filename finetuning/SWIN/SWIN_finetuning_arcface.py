@@ -20,10 +20,13 @@ import sys
 import yaml
 from dataclasses import dataclass, field
 from typing import Optional
+from collections import Counter
 
 import evaluate
 import numpy as np
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from datasets import load_dataset
 from PIL import Image
 from torchvision.transforms import (
@@ -51,28 +54,17 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils.versions import require_version
 
 import wandb
-from transformers.integrations import WandbCallback
+
+# Import pytorch-metric-learning for ArcFace loss
+from pytorch_metric_learning import losses
+from pytorch_metric_learning.distances import CosineSimilarity
 
 os.environ['WANDB_DISABLED'] = 'false'
 
-_WANDB_CONFIG_BLOCKLIST = {"label2id", "id2label"}
 
-class FilteredWandbCallback(WandbCallback):
-    """WandbCallback that skips large, uninformative model config keys."""
-    def on_train_begin(self, args, state, control, model=None, **kwargs):
-        super().on_train_begin(args, state, control, model=model, **kwargs)
-        wandb.config.update(
-            {k: None for k in _WANDB_CONFIG_BLOCKLIST if k in wandb.config},
-            allow_val_change=True,
-        )
-
-
-""" Fine-tuning a 🤗 Transformers model for image classification"""
+""" Fine-tuning a 🤗 Transformers model for image classification with ArcFace loss"""
 
 logger = logging.getLogger(__name__)
-
-# Will error if the minimal version of Transformers is not installed. Remove at your own risks.
-# check_min_version("4.45.0.dev0")
 
 require_version("datasets>=2.14.0", "To fix: pip install -r examples/pytorch/image-classification/requirements.txt")
 
@@ -84,6 +76,109 @@ def pil_loader(path: str):
     with open(path, "rb") as f:
         im = Image.open(f)
         return im.convert("RGB")
+
+
+class MultiTaskArcFaceModel(nn.Module):
+    """
+    Multi-task model with ArcFace loss for family, genus, and species classification.
+    Uses pytorch-metric-learning for ArcFace implementation.
+    """
+    def __init__(self, base_model, num_families, num_genera, num_species,
+                 embedding_size=512, arcface_s=30.0, arcface_m=0.50, arcface_k=3):
+        super().__init__()
+        # Store config from base model - required by Trainer
+        self.config = base_model.config
+
+        # Extract the base encoder (works for both swin and swinv2)
+        if hasattr(base_model, 'swinv2'):
+            self.encoder = base_model.swinv2
+        elif hasattr(base_model, 'swin'):
+            self.encoder = base_model.swin
+        else:
+            raise ValueError("Base model must have 'swin' or 'swinv2' attribute")
+
+        # Get hidden size from config
+        hidden_size = base_model.config.hidden_size
+
+        # Embedding layers for each taxonomy level
+        self.family_embedding = nn.Linear(hidden_size, embedding_size)
+        self.family_bn = nn.BatchNorm1d(embedding_size)
+
+        self.genus_embedding = nn.Linear(hidden_size, embedding_size)
+        self.genus_bn = nn.BatchNorm1d(embedding_size)
+
+        self.species_embedding = nn.Linear(hidden_size, embedding_size)
+        self.species_bn = nn.BatchNorm1d(embedding_size)
+
+        # Classifier heads for each taxonomy level (for inference)
+        self.family_classifier = nn.Linear(embedding_size, num_families)
+        self.genus_classifier = nn.Linear(embedding_size, num_genera)
+        self.species_classifier = nn.Linear(embedding_size, num_species)
+
+        # ArcFace loss functions from pytorch-metric-learning
+        # Using SubCenterArcFace for robustness to noisy labels
+        self.family_arcface_loss = losses.SubCenterArcFaceLoss(
+            num_classes=num_families,
+            embedding_size=embedding_size,
+            margin=arcface_m,
+            scale=arcface_s,
+            sub_centers=arcface_k
+        )
+
+        self.genus_arcface_loss = losses.SubCenterArcFaceLoss(
+            num_classes=num_genera,
+            embedding_size=embedding_size,
+            margin=arcface_m,
+            scale=arcface_s,
+            sub_centers=arcface_k
+        )
+
+        self.species_arcface_loss = losses.SubCenterArcFaceLoss(
+            num_classes=num_species,
+            embedding_size=embedding_size,
+            margin=arcface_m,
+            scale=arcface_s,
+            sub_centers=arcface_k
+        )
+
+        # Loss weights
+        self.species_weight = 1.0
+        self.genus_weight = 0.3
+        self.family_weight = 0.2
+
+    def forward(self, pixel_values, family_labels=None, genus_labels=None, species_labels=None, **kwargs):
+        outputs = self.encoder(pixel_values)
+        pooled_output = outputs.pooler_output  # [batch_size, hidden_size]
+
+        # Get embeddings for each taxonomy level
+        family_emb = self.family_bn(self.family_embedding(pooled_output))
+        genus_emb = self.genus_bn(self.genus_embedding(pooled_output))
+        species_emb = self.species_bn(self.species_embedding(pooled_output))
+
+        # Get logits from classifier heads (for inference)
+        family_logits = self.family_classifier(family_emb)
+        genus_logits = self.genus_classifier(genus_emb)
+        species_logits = self.species_classifier(species_emb)
+
+        loss = None
+        if family_labels is not None and genus_labels is not None and species_labels is not None:
+            # Compute ArcFace losses for each taxonomy level
+            family_loss = self.family_arcface_loss(family_emb, family_labels)
+            genus_loss = self.genus_arcface_loss(genus_emb, genus_labels)
+            species_loss = self.species_arcface_loss(species_emb, species_labels)
+
+            # Weighted combination (species is most important, then genus, then family)
+            loss = (self.species_weight * species_loss +
+                   self.genus_weight * genus_loss +
+                   self.family_weight * family_loss)
+
+        return {
+            'loss': loss,
+            'logits': species_logits,  # Primary output is species
+            'species_logits': species_logits,
+            'genus_logits': genus_logits,
+            'family_logits': family_logits
+        }
 
 
 @dataclass
@@ -155,6 +250,10 @@ class DataTrainingArguments:
             "help": "The proportion of the train set used as validation set in case there's no validation split"
         },
     )
+    min_species_samples: Optional[int] = field(
+        default=2,
+        metadata={"help": "Minimum number of samples per species for multi-task learning"}
+    )
 
     def __post_init__(self):
         if self.dataset_name is None and self.train_file is None and self.validation_file is None:
@@ -216,6 +315,24 @@ class ModelArguments:
         default=False,
         metadata={"help": "Will enable to load a pretrained model whose head dimensions are different."},
     )
+    # ArcFace specific parameters
+    embedding_size: int = field(
+        default=512,
+        metadata={"help": "Embedding size for ArcFace"}
+    )
+    arcface_s: float = field(
+        default=30.0,
+        metadata={"help": "ArcFace scale parameter"}
+    )
+    arcface_m: float = field(
+        default=0.50,
+        metadata={"help": "ArcFace margin parameter"}
+    )
+    arcface_k: int = field(
+        default=3,
+        metadata={"help": "Number of sub-centers for SubCenter ArcFace"}
+    )
+
 
 def load_config_from_yaml(config_path):
     """Load configuration from YAML file."""
@@ -223,13 +340,10 @@ def load_config_from_yaml(config_path):
         config = yaml.safe_load(f)
     return config
 
-def main():
-    # See all possible arguments in src/transformers/training_args.py
-    # or by passing the --help flag to this script.
-    # We now keep distinct sets of args, for a cleaner separation of concerns.
 
+def main():
     # Parse command line arguments for config file
-    arg_parser = argparse.ArgumentParser(description="SWIN Fine-tuning with YAML config")
+    arg_parser = argparse.ArgumentParser(description="SWIN Fine-tuning with ArcFace and Multi-task Learning")
     arg_parser.add_argument('--config', type=str, required=True, help='Path to YAML config file')
     args = arg_parser.parse_args()
 
@@ -244,9 +358,25 @@ def main():
     run_name = config['custom']['run_name']
     run_id = config['custom']['run_id']
 
+    # Extract ArcFace parameters
+    arcface_config = config.get('arcface', {})
+    use_arcface = arcface_config.get('enabled', True)
+    embedding_size = arcface_config.get('embedding_size', 512)
+    arcface_s = arcface_config.get('scale', 30.0)
+    arcface_m = arcface_config.get('margin', 0.50)
+    arcface_k = arcface_config.get('num_subcenters', 3)
+
+    # Multi-task is required for this script
+    min_species_samples = config.get('multi_task', {}).get('min_species_samples', 2)
+
     print(f"__CUSTOM__: Learning rate type: {learning_rate_type}")
     print(f"__CUSTOM__: Frozen: {frozen}")
     print(f"__CUSTOM__: Frozen type: {frozen_type}")
+    print(f"__CUSTOM__: ArcFace enabled: {use_arcface}")
+    print(f"__CUSTOM__: ArcFace embedding size: {embedding_size}")
+    print(f"__CUSTOM__: ArcFace scale: {arcface_s}, margin: {arcface_m}, k: {arcface_k}")
+    print(f"__CUSTOM__: Multi-task learning: ENABLED (required for ArcFace multi-task)")
+    print(f"__CUSTOM__: Min species samples: {min_species_samples}")
 
     # Create ModelArguments from config
     model_args = ModelArguments(
@@ -258,6 +388,10 @@ def main():
         token=config['model']['token'],
         trust_remote_code=config['model']['trust_remote_code'],
         ignore_mismatched_sizes=config['model']['ignore_mismatched_sizes'],
+        embedding_size=embedding_size,
+        arcface_s=arcface_s,
+        arcface_m=arcface_m,
+        arcface_k=arcface_k,
     )
 
     # Create DataTrainingArguments from config
@@ -276,6 +410,7 @@ def main():
         overwrite_cache=config['data']['overwrite_cache'],
         preprocessing_num_workers=config['data']['preprocessing_num_workers'],
         train_val_split=config['data']['train_val_split'],
+        min_species_samples=min_species_samples,
     )
 
     # Create TrainingArguments from config
@@ -341,6 +476,14 @@ def main():
         "frozen": frozen,
         "frozen_type": frozen_type,
         "learning_rate_type": learning_rate_type,
+        # ArcFace config
+        "use_arcface": use_arcface,
+        "embedding_size": embedding_size,
+        "arcface_s": arcface_s,
+        "arcface_m": arcface_m,
+        "arcface_k": arcface_k,
+        "multi_task": True,
+        "min_species_samples": min_species_samples,
     }
 
     wandb.init(
@@ -358,7 +501,6 @@ def main():
         training_args.learning_rate_kwargs = config['training']['lr_scheduler_kwargs']
 
     if training_args.should_log:
-        # The default of training_args.log_level is passive, so we set log level at info here to have that default.
         transformers.utils.logging.set_verbosity_info()
 
     log_level = training_args.get_process_log_level()
@@ -367,17 +509,15 @@ def main():
     transformers.utils.logging.enable_default_handler()
     transformers.utils.logging.enable_explicit_format()
 
-    # Suppress the verbose model config logging from transformers
     logging.getLogger("transformers.configuration_utils").setLevel(logging.WARNING)
 
-    # Log on each process the small summary:
     logger.warning(
         f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}, "
         + f"distributed training: {training_args.parallel_mode.value == 'distributed'}, 16-bits training: {training_args.fp16}"
     )
     logger.info(f"Training/evaluation parameters {training_args}")
 
-    # Detecting last checkpoint.
+    # Detecting last checkpoint
     last_checkpoint = None
     if os.path.isdir(training_args.output_dir) and training_args.do_train and not training_args.overwrite_output_dir:
         last_checkpoint = get_last_checkpoint(training_args.output_dir)
@@ -392,10 +532,10 @@ def main():
                 "the `--output_dir` or add `--overwrite_output_dir` to train from scratch."
             )
 
-    # Set seed before initializing model.
+    # Set seed before initializing model
     set_seed(training_args.seed)
 
-    # Initialize our dataset and prepare it for the 'image-classification' task.
+    # Initialize our dataset and prepare it for the 'image-classification' task
     if data_args.dataset_name is not None:
         dataset = load_dataset(
             data_args.dataset_name,
@@ -419,7 +559,6 @@ def main():
             extension,
             data_files=data_files,
             cache_dir=model_args.cache_dir,
-            # use_auth_token=True if model_args.use_auth_token else None,
         )
         print(dataset)
         print(dataset["train"].features)
@@ -438,18 +577,48 @@ def main():
             f"{', '.join(dataset_column_names)}."
         )
 
+    # Check for required multi-task columns
+    required_columns = ['family', 'genus', 'species']
+    missing_columns = [col for col in required_columns if col not in dataset_column_names]
+    if missing_columns:
+        raise ValueError(
+            f"Multi-task ArcFace requires the following columns: {missing_columns}. "
+            f"Available columns: {dataset_column_names}"
+        )
+
+    # Filter species with insufficient samples
+    print(f"__CUSTOM__: Filtering species with <={min_species_samples} samples")
+    species_counts = Counter(dataset["train"]["species"])
+    valid_species = {s for s, c in species_counts.items() if c > min_species_samples}
+
+    original_size = len(dataset["train"])
+    dataset["train"] = dataset["train"].filter(lambda x: x["species"] in valid_species)
+    filtered_size = len(dataset["train"])
+    print(f"__CUSTOM__: Filtered {original_size - filtered_size} samples, kept {filtered_size} samples")
+
+    # Also filter validation set if it exists
+    if "validation" in dataset:
+        dataset["validation"] = dataset["validation"].filter(lambda x: x["species"] in valid_species)
+        print(f"__CUSTOM__: Validation set filtered to {len(dataset['validation'])} samples")
+
     def collate_fn(examples):
         pixel_values = torch.stack([example["pixel_values"] for example in examples])
-        labels = torch.tensor([example[data_args.label_column_name] for example in examples])
-        return {"pixel_values": pixel_values, "labels": labels}
+        family_labels = torch.tensor([example["family_label"] for example in examples])
+        genus_labels = torch.tensor([example["genus_label"] for example in examples])
+        species_labels = torch.tensor([example["species_label"] for example in examples])
+        return {
+            "pixel_values": pixel_values,
+            "family_labels": family_labels,
+            "genus_labels": genus_labels,
+            "species_labels": species_labels,
+            "labels": species_labels  # For compatibility with Trainer
+        }
 
-    # If we don't have a validation split, split off a percentage of train as validation.
+    # If we don't have a validation split, split off a percentage of train as validation
     data_args.train_val_split = None if "validation" in dataset.keys() else data_args.train_val_split
     if isinstance(data_args.train_val_split, float) and data_args.train_val_split > 0.0:
-        from collections import Counter
-
         counts = Counter(dataset["train"][data_args.label_column_name])
-        valid_labels = {l for l, c in counts.items() if c > 1}  # noqa: E741
+        valid_labels = {l for l, c in counts.items() if c > 1}
         filtered = dataset["train"].filter(lambda x: x[data_args.label_column_name] in valid_labels)
 
         dataset['train'] = filtered
@@ -459,39 +628,60 @@ def main():
         print(f"Split the dataset into train and validation with proportions {1 - data_args.train_val_split} and {data_args.train_val_split}.")
         print(f"Training split has {len(dataset['train'])} examples and validation split has {len(dataset['validation'])} examples.")
 
-    # Prepare label mappings.
-    # We'll include these in the model's config to get human readable labels in the Inference API.
+    # Create hierarchical label mappings
+    print("__CUSTOM__: Creating hierarchical label mappings for multi-task ArcFace")
+
+    # Get unique values for each taxonomy level
+    unique_families = sorted(dataset["train"].unique("family"))
+    unique_genera = sorted(dataset["train"].unique("genus"))
+    unique_species = sorted(dataset["train"].unique("species"))
+
+    # Create label-to-id mappings
+    family2id = {f: i for i, f in enumerate(unique_families)}
+    genus2id = {g: i for i, g in enumerate(unique_genera)}
+    species2id = {s: i for i, s in enumerate(unique_species)}
+
+    # Create id-to-label mappings
+    id2family = {i: f for f, i in family2id.items()}
+    id2genus = {i: g for g, i in genus2id.items()}
+    id2species = {i: s for s, i in species2id.items()}
+
+    num_families = len(unique_families)
+    num_genera = len(unique_genera)
+    num_species = len(unique_species)
+
+    print(f"__CUSTOM__: Found {num_families} families, {num_genera} genera, {num_species} species")
+
+    # Store mappings
+    hierarchical_mappings = {
+        'family2id': family2id,
+        'genus2id': genus2id,
+        'species2id': species2id,
+        'id2family': id2family,
+        'id2genus': id2genus,
+        'id2species': id2species,
+        'num_families': num_families,
+        'num_genera': num_genera,
+        'num_species': num_species
+    }
+
+    # Save id-to-label mappings to output directory
+    import json as _json
+    os.makedirs(training_args.output_dir, exist_ok=True)
+    label_mappings_path = os.path.join(training_args.output_dir, "label_mappings_multitask.json")
+    with open(label_mappings_path, "w") as f:
+        _json.dump({
+            "id2family": {str(k): v for k, v in id2family.items()},
+            "id2genus":  {str(k): v for k, v in id2genus.items()},
+            "id2species": {str(k): v for k, v in id2species.items()},
+        }, f, indent=2)
+    print(f"__CUSTOM__: Saved label mappings to {label_mappings_path}")
+
+    # Prepare label mappings for compatibility
     labels = dataset["train"].unique(data_args.label_column_name)
     num_labels = len(labels)
     id2label = {i: str(i) for i in range(num_labels)}
     label2id = {str(i): i for i in range(num_labels)}
-
-    # Create mapping from encoded labels to species names (for prediction decoding)
-    # This is essential for correctly interpreting model predictions
-    if 'scientificName' in dataset["train"].column_names:
-        logger.info("Creating scientificNameEncoded -> scientificName mapping")
-        encoded_to_species = {}
-        for item in dataset["train"]:
-            encoded_val = item[data_args.label_column_name]
-            species_name = item['scientificName']
-            if encoded_val not in encoded_to_species:
-                encoded_to_species[encoded_val] = species_name
-            elif encoded_to_species[encoded_val] != species_name:
-                logger.warning(
-                    f"Inconsistent mapping in training data: encoded {encoded_val} maps to both "
-                    f"'{encoded_to_species[encoded_val]}' and '{species_name}'"
-                )
-        logger.info(f"Created mapping for {len(encoded_to_species)} encoded species labels")
-
-        # Save the mapping for use during prediction
-        label_mapping_path = os.path.join(training_args.output_dir, "label_mapping.json")
-        os.makedirs(training_args.output_dir, exist_ok=True)
-        with open(label_mapping_path, 'w') as f:
-            # Convert keys to strings for JSON serialization
-            json_encoded_to_species = {str(k): v for k, v in encoded_to_species.items()}
-            import json
-            json.dump(json_encoded_to_species, f, indent=2)
-        logger.info(f"Saved label mapping to {label_mapping_path}")
 
     # Load the accuracy metric
     accuracy_metric = evaluate.load("accuracy", cache_dir=model_args.cache_dir)
@@ -499,43 +689,63 @@ def main():
     # Load f1 score metric
     f1_metric = evaluate.load("f1", cache_dir=model_args.cache_dir)
 
-    # Define our compute_metrics function. It takes an `EvalPrediction` object (a namedtuple with a
-    # predictions and label_ids field) and has to return a dictionary string to float.
     def compute_metrics(p):
-        """Computes accuracy on a batch of predictions"""
-        predictions = np.argmax(p.predictions, axis=1)
-        # Compute the accuracy
+        """Computes accuracy for species classification"""
+        if len(p.predictions.shape) > 1:
+            predictions = np.argmax(p.predictions, axis=1)
+        else:
+            predictions = p.predictions
         accuracy = accuracy_metric.compute(predictions=predictions, references=p.label_ids)["accuracy"]
-        # Compute the F1 score
         f1_score = f1_metric.compute(predictions=predictions, references=p.label_ids, average="weighted")["f1"]
-        
-        # Return both metrics in a dictionary
+
         return {
             "accuracy": accuracy,
             "f1": f1_score
         }
 
-    config = AutoConfig.from_pretrained(
+    # Create ArcFace multi-task model
+    print("__CUSTOM__: Creating multi-task ArcFace SWIN model")
+
+    # First load a base model
+    config_obj = AutoConfig.from_pretrained(
         model_args.config_name or model_args.model_name_or_path,
-        num_labels=len(labels),
-        label2id=label2id,
-        id2label=id2label,
+        num_labels=num_species,  # Use species count for base config
         finetuning_task="image-classification",
         cache_dir=model_args.cache_dir,
         revision=model_args.model_revision,
         token=model_args.token,
         trust_remote_code=model_args.trust_remote_code,
     )
-    model = AutoModelForImageClassification.from_pretrained(
+    base_model = AutoModelForImageClassification.from_pretrained(
         model_args.model_name_or_path,
         from_tf=bool(".ckpt" in model_args.model_name_or_path),
-        config=config,
+        config=config_obj,
         cache_dir=model_args.cache_dir,
         revision=model_args.model_revision,
         token=model_args.token,
         trust_remote_code=model_args.trust_remote_code,
         ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
     )
+
+    # Wrap it in multi-task ArcFace model
+    model = MultiTaskArcFaceModel(
+        base_model,
+        num_families=hierarchical_mappings['num_families'],
+        num_genera=hierarchical_mappings['num_genera'],
+        num_species=hierarchical_mappings['num_species'],
+        embedding_size=model_args.embedding_size,
+        arcface_s=model_args.arcface_s,
+        arcface_m=model_args.arcface_m,
+        arcface_k=model_args.arcface_k
+    )
+
+    print(f"__CUSTOM__: Multi-task ArcFace model created with:")
+    print(f"  - {hierarchical_mappings['num_families']} families")
+    print(f"  - {hierarchical_mappings['num_genera']} genera")
+    print(f"  - {hierarchical_mappings['num_species']} species")
+    print(f"  - Embedding size: {model_args.embedding_size}")
+    print(f"  - ArcFace s={model_args.arcface_s}, m={model_args.arcface_m}, k={model_args.arcface_k}")
+
     image_processor = AutoImageProcessor.from_pretrained(
         model_args.image_processor_name or model_args.model_name_or_path,
         cache_dir=model_args.cache_dir,
@@ -547,22 +757,31 @@ def main():
     if frozen:
         print("__CUSTOM__: Freezing model according to the frozen type: ", frozen_type)
         for name, param in model.named_parameters():
+            # Updated freezing logic to work with both swin and swinv2
+            encoder_name = "swinv2" if hasattr(base_model, 'swinv2') else "swin"
+
             if frozen_type == "v1":
-                if 'classifier' not in name and "swinv2.layernorm" not in name:
+                # Only train classifier heads and final layernorm
+                if not any(kw in name for kw in ['family_', 'genus_', 'species_', f'{encoder_name}.layernorm']):
                     param.requires_grad = False
             elif frozen_type == "v4":
-                if 'classifier' not in name and "swinv2.layernorm" not in name and not name.startswith("swinv2.encoder.layers.3") and not name.startswith("swinv2.encoder.layers.2") and not name.startswith("swinv2.encoder.layers.1"):
+                # Train last 3 layers + heads
+                if not any(kw in name for kw in ['family_', 'genus_', 'species_', f'{encoder_name}.layernorm',
+                                                   f'{encoder_name}.encoder.layers.3', f'{encoder_name}.encoder.layers.2',
+                                                   f'{encoder_name}.encoder.layers.1']):
                     param.requires_grad = False
             elif frozen_type == "v3":
-                if 'classifier' not in name and "swinv2.layernorm" not in name and not name.startswith("swinv2.encoder.layers.3") and not name.startswith("swinv2.encoder.layers.2"):
+                # Train last 2 layers + heads
+                if not any(kw in name for kw in ['family_', 'genus_', 'species_', f'{encoder_name}.layernorm',
+                                                   f'{encoder_name}.encoder.layers.3', f'{encoder_name}.encoder.layers.2']):
                     param.requires_grad = False
             else:
-                if 'classifier' not in name and "swinv2.layernorm" not in name and not name.startswith("swinv2.encoder.layers.3"):
+                # Default: train last layer + heads
+                if not any(kw in name for kw in ['family_', 'genus_', 'species_', f'{encoder_name}.layernorm',
+                                                   f'{encoder_name}.encoder.layers.3']):
                     param.requires_grad = False
-        #wandb.run.name = "SWIN_finetuning_frozen"
-        #wandb.run.save()
 
-    # Define torchvision transforms to be applied to each image.
+    # Define torchvision transforms to be applied to each image
     if "shortest_edge" in image_processor.size:
         size = image_processor.size["shortest_edge"]
     else:
@@ -588,11 +807,21 @@ def main():
             normalize,
         ]
     )
-    from PIL import Image
+
     def train_transforms(example_batch):
         """Apply _train_transforms across a batch."""
         example_batch["pixel_values"] = [
             _train_transforms(Image.open(pil_img).convert("RGB")) for pil_img in example_batch[data_args.image_column_name]
+        ]
+        # Add hierarchical labels
+        example_batch["family_label"] = [
+            hierarchical_mappings['family2id'][f] for f in example_batch["family"]
+        ]
+        example_batch["genus_label"] = [
+            hierarchical_mappings['genus2id'][g] for g in example_batch["genus"]
+        ]
+        example_batch["species_label"] = [
+            hierarchical_mappings['species2id'][s] for s in example_batch["species"]
         ]
         return example_batch
 
@@ -600,6 +829,16 @@ def main():
         """Apply _val_transforms across a batch."""
         example_batch["pixel_values"] = [
             _val_transforms(Image.open(pil_img).convert("RGB")) for pil_img in example_batch[data_args.image_column_name]
+        ]
+        # Add hierarchical labels
+        example_batch["family_label"] = [
+            hierarchical_mappings['family2id'][f] for f in example_batch["family"]
+        ]
+        example_batch["genus_label"] = [
+            hierarchical_mappings['genus2id'][g] for g in example_batch["genus"]
+        ]
+        example_batch["species_label"] = [
+            hierarchical_mappings['species2id'][s] for s in example_batch["species"]
         ]
         return example_batch
 
@@ -610,7 +849,6 @@ def main():
             dataset["train"] = (
                 dataset["train"].shuffle(seed=training_args.seed).select(range(data_args.max_train_samples))
             )
-        # Set the training transforms
         dataset["train"].set_transform(train_transforms)
 
     if training_args.do_eval:
@@ -621,7 +859,6 @@ def main():
                 dataset["validation"].shuffle(seed=training_args.seed).select(range(data_args.max_eval_samples))
             )
         logger.info(f"Number of unique labels in the validation dataset: {len(dataset['validation'].unique(data_args.label_column_name))}")
-        # Set the validation transforms
         dataset["validation"].set_transform(val_transforms)
 
     # Initialize our trainer
@@ -634,8 +871,6 @@ def main():
         tokenizer=image_processor,
         data_collator=collate_fn,
     )
-    trainer.remove_callback(WandbCallback)
-    trainer.add_callback(FilteredWandbCallback)
 
     # Training
     if training_args.do_train:
@@ -644,11 +879,7 @@ def main():
             checkpoint = training_args.resume_from_checkpoint
         elif last_checkpoint is not None:
             checkpoint = last_checkpoint
-            
-        #checkpoint_number = checkpoint.split("-")[-1] if checkpoint is not None else None
-        #wandb.run.name = f"SWIN_finetuning_{checkpoint_number}"
-        #wandb.run.save()
-        
+
         train_result = trainer.train(resume_from_checkpoint=checkpoint)
         trainer.save_model()
         trainer.log_metrics("train", train_result.metrics)
@@ -666,7 +897,7 @@ def main():
         "finetuned_from": model_args.model_name_or_path,
         "tasks": "image-classification",
         "dataset": data_args.dataset_name,
-        "tags": ["image-classification", "vision"],
+        "tags": ["image-classification", "vision", "arcface", "multi-task"],
     }
     if training_args.push_to_hub:
         trainer.push_to_hub(**kwargs)

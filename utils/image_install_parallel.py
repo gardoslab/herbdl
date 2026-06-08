@@ -340,6 +340,13 @@ def process_id(gbif_id, candidate_urls):
                 logger.error(f"Failed removing duplicate file for {gbif_id}: {e}")
         return
 
+    if is_duplicate(gbif_id):
+        logger.warning(f"Image {gbif_id} is a duplicate, skipping download.")
+        if os.path.exists(local_path):
+            os.remove(local_path)
+            logger.warning(f"Removed existing file for duplicate {gbif_id} at {local_path}.")
+        return
+
     if os.path.exists(local_path):
         logger.info(f"Image {gbif_id} already exists at {local_path}, verifying size...")
         try:

@@ -1,0 +1,107 @@
+# SWIN Base 384 Enhanced Configuration
+# Phase 1 + Higher Resolution
+# Expected improvements: ~4-5% over baseline
+
+# Model configuration
+model:
+  model_name_or_path: "microsoft/swin-base-patch4-window12-384-in22k"
+  config_name: null
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+# Data configuration
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val.json"
+  image_column_name: "filepath"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: 50000
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+
+# Training configuration
+training:
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_384_ENHANCED"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_384_ENHANCED"
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 64  # Reduced for 384 resolution
+  per_device_eval_batch_size: 16
+  learning_rate: 0.0005  # 5e-4 (increased from 2e-4)
+  num_train_epochs: 30
+  warmup_steps: 500
+  weight_decay: 0.01
+  gradient_accumulation_steps: 2  # Compensate for smaller batch size
+  lr_scheduler_type: "cosine"
+  lr_scheduler_kwargs:
+    eta_min: 0.000001
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 5
+  eval_strategy: "steps"
+  eval_steps: 8964
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 8
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 42
+
+# Custom configuration
+custom:
+  lr_type: "cosine"
+  frozen: true
+  frozen_type: "v3"
+  run_group: "SWIN_Base_Enhanced"
+  run_name: "SWIN_Base_384_Enhanced_v3"
+  run_id: "swin_base_384_v3_enh_120125"
+
+# Advanced augmentation settings
+augmentation:
+  use_advanced: true
+  randaugment:
+    num_ops: 2
+    magnitude: 9
+  mixup:
+    enabled: true
+    alpha: 0.8
+  cutmix:
+    enabled: true
+    alpha: 1.0
+  mixup_cutmix_prob: 0.5
+  label_smoothing: 0.1
+  random_erasing:
+    enabled: true
+    probability: 0.25
+    min_area: 0.02
+    max_area: 0.33
+  color_jitter:
+    enabled: true
+    brightness: 0.4
+    contrast: 0.4
+    saturation: 0.4
+    hue: 0.1
+
+# Multi-crop testing configuration (for inference only)
+multi_crop:
+  enabled: false
+  crop_sizes: [400, 416, 448, 480, 512]  # For 384 resolution
+  target_size: 384
+
+# WandB configuration
+wandb:
+  enabled: true
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"

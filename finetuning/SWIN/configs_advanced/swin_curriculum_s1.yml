@@ -1,0 +1,94 @@
+# Curriculum Stage 1 — Mild augmentation from baseline
+# mag=4, prob=0.3, erasing=0.1 | 25 epochs | lr=5e-5
+
+model:
+  model_name_or_path: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_BASELINE/checkpoint-131250"
+  config_name: null
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: null
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+
+training:
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_CURRICULUM_S1"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_CURRICULUM_S1"
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 128
+  per_device_eval_batch_size: 64
+  learning_rate: 0.00005
+  num_train_epochs: 25
+  warmup_steps: 1000
+  weight_decay: 0.01
+  gradient_accumulation_steps: 1
+  lr_scheduler_type: "cosine"
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 3
+  eval_strategy: "steps"
+  eval_steps: 8964
+  eval_on_start: true
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 16
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 42
+
+custom:
+  lr_type: "cosine"
+  frozen: false
+  frozen_type: "none"
+  run_group: "SWIN_Curriculum"
+  run_name: "Curriculum_S1"
+  run_id: "swin_curriculum_s1"
+  run_notes: "Stage 1 of 3. Mild augmentation from baseline. Soft-label warm-up before increasing difficulty."
+
+augmentation:
+  use_advanced: true
+  randaugment:
+    num_ops: 2
+    magnitude: 4
+  mixup:
+    enabled: true
+    alpha: 0.8
+  cutmix:
+    enabled: true
+    alpha: 1.0
+  mixup_cutmix_prob: 0.3
+  label_smoothing: 0.05
+  random_erasing:
+    enabled: true
+    probability: 0.1
+    min_area: 0.02
+    max_area: 0.33
+
+multi_task:
+  enabled: false
+
+multi_crop:
+  enabled: false
+
+wandb:
+  enabled: true
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"

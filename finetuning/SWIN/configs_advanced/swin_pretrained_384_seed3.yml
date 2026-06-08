@@ -1,0 +1,115 @@
+# Pretrained Full Pipeline (SwinL-224) — seed 3, LINEAR LR
+# SwinL-224 (in22k pretrained), all techniques (heavy aug + MultiTask CE), linear LR + 5-epoch warmup.
+# Linear LR seed ensemble run 4/5.
+
+model:
+  model_name_or_path: "microsoft/swin-large-patch4-window7-224-in22k"
+  config_name: null
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: null
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+
+training:
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_PRETRAINED_SWINL224_LINEAR_SEED3"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_PRETRAINED_SWINL224_LINEAR_SEED3"
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 64
+  per_device_eval_batch_size: 16
+  learning_rate: 0.0001
+  num_train_epochs: 100
+  warmup_steps: 0.05
+  weight_decay: 0.05
+  gradient_accumulation_steps: 2
+  lr_scheduler_type: "linear"
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 5
+  eval_strategy: "steps"
+  eval_steps: 8964
+  eval_on_start: true
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 16
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 3
+
+custom:
+  lr_type: "linear"
+  frozen: false
+  frozen_type: "none"
+  run_group: "SWIN_Pretrained_SwinL224_Linear_Seeds"
+  run_name: "Pretrained_SwinL224_Linear_Seed3"
+  run_id: "swin_pretrained_swinl224_linear_seed3"
+  run_notes: "Linear LR seed ensemble. SwinL-224 in22k pretrained, heavy aug + MultiTask CE, 5-epoch warmup. Seed 3."
+
+augmentation:
+  use_advanced: true
+  randaugment:
+    num_ops: 2
+    magnitude: 9
+  mixup:
+    enabled: true
+    alpha: 0.8
+  cutmix:
+    enabled: true
+    alpha: 1.0
+  mixup_cutmix_prob: 0.5
+  label_smoothing: 0.1
+  random_erasing:
+    enabled: true
+    probability: 0.25
+    min_area: 0.02
+    max_area: 0.33
+  color_jitter:
+    enabled: true
+    brightness: 0.4
+    contrast: 0.4
+    saturation: 0.4
+    hue: 0.1
+
+multi_task:
+  enabled: true
+  min_species_samples: 2
+  family_weight: 0.2
+  genus_weight: 0.3
+  species_weight: 1.0
+
+arcface:
+  enabled: false
+  embedding_size: 512
+  scale: 30.0
+  margin: 0.50
+  num_subcenters: 3
+  hybrid_ce_weight: 0.0
+
+multi_crop:
+  enabled: false
+  crop_sizes: [400, 416, 448, 480, 512]
+  target_size: 224
+
+wandb:
+  enabled: true
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"

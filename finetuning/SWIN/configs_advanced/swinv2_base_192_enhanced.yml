@@ -1,7 +1,10 @@
-# SWIN V2 Large Frozen v3 Configuration
+# SWIN V2 Base 192 Enhanced Configuration
+# SWIN V2 architecture + Phase 1 enhancements
+# Expected improvements: ~3-4% over baseline
+
 # Model configuration
 model:
-  model_name_or_path: "microsoft/swinv2-large-patch4-window12-192-22k"
+  model_name_or_path: "microsoft/swinv2-base-patch4-window12-192-22k"
   config_name: null
   cache_dir: null
   model_revision: "main"
@@ -29,16 +32,16 @@ data:
 
 # Training configuration
 training:
-  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWINV2_LARGE_FROZEN"
-  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWINV2_LARGE_FROZEN"
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWINV2_BASE_192_ENHANCED"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWINV2_BASE_192_ENHANCED"
   do_train: true
   do_eval: true
   per_device_train_batch_size: 128
   per_device_eval_batch_size: 32
-  learning_rate: 0.005
+  learning_rate: 0.0005  # 5e-4
   num_train_epochs: 100
   warmup_steps: 500
-  weight_decay: 0.0
+  weight_decay: 0.01
   gradient_accumulation_steps: 1
   lr_scheduler_type: "cosine"
   lr_scheduler_kwargs:
@@ -58,14 +61,47 @@ training:
 # Custom configuration
 custom:
   lr_type: "cosine"
-  frozen: true
-  frozen_type: "v3"  # Freeze all except last 2 encoder layers and linear layer
-  run_group: "SWINV2_Large"
-  run_name: "SWINV2_Large_Frozen_v3"
-  run_id: "swinv2_large_frozen_v3_120125"
+  frozen: false
+  frozen_type: "none"
+  run_group: "SWINV2_Base_Enhanced"
+  run_name: "SWINV2_Base_192_Enhanced"
+  run_id: "swinv2_base_192_enh_112425"
+
+# Advanced augmentation settings
+augmentation:
+  use_advanced: true
+  randaugment:
+    num_ops: 2
+    magnitude: 9
+  mixup:
+    enabled: true
+    alpha: 0.8
+  cutmix:
+    enabled: true
+    alpha: 1.0
+  mixup_cutmix_prob: 0.5
+  label_smoothing: 0.1
+  random_erasing:
+    enabled: true
+    probability: 0.25
+    min_area: 0.02
+    max_area: 0.33
+  color_jitter:
+    enabled: true
+    brightness: 0.4
+    contrast: 0.4
+    saturation: 0.4
+    hue: 0.1
+
+# Multi-crop testing configuration
+multi_crop:
+  enabled: false
+  crop_sizes: [224, 256, 288, 320, 352]
+  target_size: 192
 
 # WandB configuration
 wandb:
+  enabled: true
   entity: "gardoslab"
   project: "herbdl"
   resume: "allow"
