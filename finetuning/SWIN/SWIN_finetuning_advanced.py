@@ -1779,8 +1779,11 @@ def main():
         )
 
     # Swap in filtered W&B callback to suppress label2id/id2label from config uploads.
-    trainer.remove_callback(WandbCallback)
-    trainer.add_callback(FilteredWandbCallback)
+    # Only when W&B is enabled: instantiating a WandbCallback while WANDB_DISABLED is set
+    # (the wandb.enabled=false path, e.g. smoke tests) raises a RuntimeError.
+    if config['wandb'].get('enabled', True):
+        trainer.remove_callback(WandbCallback)
+        trainer.add_callback(FilteredWandbCallback)
 
     # Weight EMA (Tier 2.6): copies averaged weights into the model at train end,
     # so the final evaluate()/save_model() below reflect the EMA weights.
