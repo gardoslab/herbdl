@@ -1139,9 +1139,25 @@ def main():
     else:
         os.environ['WANDB_DISABLED'] = 'true'
 
-    # Set the learning rate scheduler parameters from config
-    if 'lr_scheduler_kwargs' in config['training'] and config['training']['lr_scheduler_kwargs']:
-        training_args.lr_scheduler_kwargs = config['training']['lr_scheduler_kwargs']
+    # Set the learning rate scheduler parameters from config.
+    # Compat: this repo's configs use lr_scheduler_type "cosine" with
+    # lr_scheduler_kwargs {eta_min: X}, but transformers' get_cosine_schedule_with_warmup
+    # has no eta_min. The equivalent today is the "cosine_with_min_lr" scheduler, which
+    # takes an absolute min_lr — so translate eta_min -> min_lr and switch the type.
+    # For non-cosine schedulers eta_min is meaningless and is dropped.
+    if config['training'].get('lr_scheduler_kwargs'):
+        sched_kwargs = dict(config['training']['lr_scheduler_kwargs'])
+        if 'eta_min' in sched_kwargs:
+            eta_min = sched_kwargs.pop('eta_min')
+            if str(config['training'].get('lr_scheduler_type', '')).lower() == 'cosine':
+                training_args.lr_scheduler_type = 'cosine_with_min_lr'
+                sched_kwargs['min_lr'] = eta_min
+                print(f"__CUSTOM__: Mapped cosine eta_min={eta_min} -> "
+                      f"lr_scheduler_type=cosine_with_min_lr, min_lr={eta_min}")
+            else:
+                print(f"__CUSTOM__: Dropping eta_min={eta_min} "
+                      f"(not applicable to lr_scheduler_type={config['training'].get('lr_scheduler_type')})")
+        training_args.lr_scheduler_kwargs = sched_kwargs
 
     if training_args.should_log:
         transformers.utils.logging.set_verbosity_info()
