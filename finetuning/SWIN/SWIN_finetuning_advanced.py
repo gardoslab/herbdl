@@ -1029,6 +1029,15 @@ def main():
         train_val_split=config['data']['train_val_split'],
     )
 
+    # Warmup: transformers requires `warmup_steps` to be an int. Configs in this repo
+    # follow the convention that a float in (0, 1) means "fraction of total steps" — route
+    # those to `warmup_ratio` instead (e.g. 0.05 -> 5% warmup); ints pass through as steps.
+    _warmup = config['training'].get('warmup_steps', 0)
+    if isinstance(_warmup, float) and 0.0 < _warmup < 1.0:
+        _warmup_steps, _warmup_ratio = 0, _warmup
+    else:
+        _warmup_steps, _warmup_ratio = int(_warmup), 0.0
+
     # Create TrainingArguments from config
     training_args = TrainingArguments(
         output_dir=_relocate_output_dir(config['training']['output_dir']),
@@ -1039,7 +1048,8 @@ def main():
         per_device_eval_batch_size=config['training']['per_device_eval_batch_size'],
         learning_rate=float(config['training']['learning_rate']),
         num_train_epochs=config['training']['num_train_epochs'],
-        warmup_steps=config['training'].get('warmup_steps', 0),
+        warmup_steps=_warmup_steps,
+        warmup_ratio=_warmup_ratio,
         weight_decay=config['training']['weight_decay'],
         gradient_accumulation_steps=config['training']['gradient_accumulation_steps'],
         lr_scheduler_type=config['training']['lr_scheduler_type'],
