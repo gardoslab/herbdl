@@ -29,15 +29,15 @@ data:
 
 # Training configuration
 training:
-  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_UNFROZEN_MACRO"
-  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_UNFROZEN_MACRO"
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_B_BASELINE_HIGHER_LR"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_B_BASELINE_HIGHER_LR"
   do_train: true
   do_eval: true
   per_device_train_batch_size: 128
   per_device_eval_batch_size: 32
-  learning_rate: 0.0001  # Lower learning rate for full fine-tuning
+  learning_rate: 0.0002  # Lower learning rate for full fine-tuning
   num_train_epochs: 50
-  warmup_steps: 500
+  warmup_steps: 0.05
   weight_decay: 0.01  # Add weight decay for regularization
   gradient_accumulation_steps: 1
   lr_scheduler_type: "cosine"
@@ -50,7 +50,7 @@ training:
   eval_steps: 8964
   report_to: "wandb"
   bf16: true
-  dataloader_num_workers: 8
+  dataloader_num_workers: 16
   remove_unused_columns: false
   overwrite_output_dir: false
   seed: 42
@@ -61,8 +61,8 @@ custom:
   frozen: false  # No freezing - full fine-tuning
   frozen_type: "none"
   run_group: "SWIN_Base"
-  run_name: "SWIN_Base_Baseline"
-  run_id: "swin_base_unfrozen_15k_040326"
+  run_name: "SWIN_Base_Baseline_HigherLR"
+  run_id: "swin_base_baseline_highlr_052026"
 
 # WandB configuration
 wandb:

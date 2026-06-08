@@ -1,9 +1,10 @@
-# SWIN Base 224 with Multi-Task Learning Configuration
-# Enables hierarchical classification for family, genus, and species
+# Curriculum V2 — SWIN V2 architecture upgrade from 384 checkpoint
+# SWIN V2 arch is too different to chain directly, so we load V2 pretrained weights
+# but re-apply all techniques (heavy aug + arcface hybrid + multitask) from epoch 1.
+# Uses 192 native resolution for V2 (pre-trained window12-192).
 
-# Model configuration
 model:
-  model_name_or_path: "microsoft/swin-base-patch4-window7-224-in22k"
+  model_name_or_path: "microsoft/swinv2-base-patch4-window12-192-22k"
   config_name: null
   cache_dir: null
   model_revision: "main"
@@ -12,7 +13,6 @@ model:
   trust_remote_code: false
   ignore_mismatched_sizes: true
 
-# Data configuration
 data:
   dataset_name: null
   dataset_config_name: null
@@ -29,56 +29,51 @@ data:
   preprocessing_num_workers: null
   train_val_split: 0.2
 
-# Training configuration
 training:
-  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_224_MULTITASK_2"
-  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_224_MULTITASK_2"
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_CURRICULUM_V2"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_CURRICULUM_V2"
   do_train: true
   do_eval: true
   per_device_train_batch_size: 128
   per_device_eval_batch_size: 32
-  learning_rate: 0.0005  # 5e-4 (higher LR for multi-task learning)
+  learning_rate: 0.0003
   num_train_epochs: 100
-  warmup_steps: 1000
-  weight_decay: 0.01
+  warmup_steps: 2000
+  weight_decay: 0.05
   gradient_accumulation_steps: 1
   lr_scheduler_type: "cosine"
-  lr_scheduler_kwargs:
-    eta_min: 0.000001
   logging_strategy: "epoch"
   save_strategy: "epoch"
   save_total_limit: 5
   eval_strategy: "steps"
   eval_steps: 8964
+  eval_on_start: true
   report_to: "wandb"
   bf16: true
-  dataloader_num_workers: 8
+  dataloader_num_workers: 16
   remove_unused_columns: false
   overwrite_output_dir: false
   seed: 42
 
-# Custom configuration
 custom:
   lr_type: "cosine"
   frozen: false
   frozen_type: "none"
-  run_group: "SWIN_Base_MultiTask"
-  run_name: "SWIN_Base_224_MultiTask"
-  run_id: "swin_base_224_mt_032426"
+  run_group: "SWIN_Curriculum"
+  run_name: "Curriculum_V2"
+  run_id: "swin_curriculum_v2"
+  run_notes: "SWIN V2 architecture with all techniques from scratch. ImageNet22k pretrained V2 weights. All curriculum-derived techniques applied from epoch 1."
 
-# Advanced augmentation settings
 augmentation:
-  use_advanced: false
+  use_advanced: true
   randaugment:
     num_ops: 2
     magnitude: 9
   mixup:
-    enabled: true
-    alpha: 0.8
+    enabled: false
   cutmix:
-    enabled: true
-    alpha: 1.0
-  mixup_cutmix_prob: 0.5
+    enabled: false
+  mixup_cutmix_prob: 0.0
   label_smoothing: 0.1
   random_erasing:
     enabled: true
@@ -92,21 +87,26 @@ augmentation:
     saturation: 0.4
     hue: 0.1
 
-# Multi-task learning configuration
 multi_task:
   enabled: true
-  min_species_samples: 2  # Filter out species with <= 2 samples
-  family_weight: 0.2  # Weight for family classification loss
-  genus_weight: 0.3   # Weight for genus classification loss
-  species_weight: 1.0 # Weight for species classification loss (primary task)
+  min_species_samples: 2
+  family_weight: 0.2
+  genus_weight: 0.3
+  species_weight: 1.0
 
-# Multi-crop testing configuration (for inference only)
+arcface:
+  enabled: true
+  embedding_size: 512
+  scale: 30.0
+  margin: 0.50
+  num_subcenters: 3
+  hybrid_ce_weight: 0.3
+
 multi_crop:
   enabled: false
-  crop_sizes: [256, 288, 320, 384, 448]
-  target_size: 224
+  crop_sizes: [224, 256, 288, 320, 352]
+  target_size: 192
 
-# WandB configuration
 wandb:
   enabled: true
   entity: "gardoslab"

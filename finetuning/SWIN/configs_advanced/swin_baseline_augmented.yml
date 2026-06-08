@@ -1,9 +1,9 @@
-# SWIN Base 224 with Multi-Task Learning Configuration
-# Enables hierarchical classification for family, genus, and species
+# SWIN Base 224 - Baseline with Heavy Augmentation
+# Single-task species classification, full fine-tuning, 15K classes
 
 # Model configuration
 model:
-  model_name_or_path: "microsoft/swin-base-patch4-window7-224-in22k"
+  model_name_or_path: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_BASELINE/checkpoint-131250"
   config_name: null
   cache_dir: null
   model_revision: "main"
@@ -31,28 +31,27 @@ data:
 
 # Training configuration
 training:
-  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_224_MULTITASK_2"
-  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_224_MULTITASK_2"
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASELINE+AUG"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASELINE+AUG"
   do_train: true
   do_eval: true
   per_device_train_batch_size: 128
-  per_device_eval_batch_size: 32
-  learning_rate: 0.0005  # 5e-4 (higher LR for multi-task learning)
-  num_train_epochs: 100
-  warmup_steps: 1000
-  weight_decay: 0.01
+  per_device_eval_batch_size: 64
+  learning_rate: 0.00005
+  num_train_epochs: 75
+  warmup_steps: 1500
+  weight_decay: 0.05
   gradient_accumulation_steps: 1
   lr_scheduler_type: "cosine"
-  lr_scheduler_kwargs:
-    eta_min: 0.000001
   logging_strategy: "epoch"
   save_strategy: "epoch"
   save_total_limit: 5
   eval_strategy: "steps"
   eval_steps: 8964
+  eval_on_start: true
   report_to: "wandb"
   bf16: true
-  dataloader_num_workers: 8
+  dataloader_num_workers: 16
   remove_unused_columns: false
   overwrite_output_dir: false
   seed: 42
@@ -62,13 +61,15 @@ custom:
   lr_type: "cosine"
   frozen: false
   frozen_type: "none"
-  run_group: "SWIN_Base_MultiTask"
-  run_name: "SWIN_Base_224_MultiTask"
-  run_id: "swin_base_224_mt_032426"
+  run_group: "SWIN_Base"
+  run_name: "SWIN_Baseline+Aug"
+  run_id: "swin_baseline+aug_041026"
+  run_notes: "More aggressive augmentation from baseline checkpoint. Higher mixup/cutmix prob, stronger RandAugment, more random erasing. Targeting 0.78 F1."
 
-# Advanced augmentation settings
+# Augmentation settings
+# Augmentation settings (more aggressive)
 augmentation:
-  use_advanced: false
+  use_advanced: true
   randaugment:
     num_ops: 2
     magnitude: 9
@@ -85,26 +86,14 @@ augmentation:
     probability: 0.25
     min_area: 0.02
     max_area: 0.33
-  color_jitter:
-    enabled: true
-    brightness: 0.4
-    contrast: 0.4
-    saturation: 0.4
-    hue: 0.1
 
-# Multi-task learning configuration
+# Multi-task disabled (single-task baseline)
 multi_task:
-  enabled: true
-  min_species_samples: 2  # Filter out species with <= 2 samples
-  family_weight: 0.2  # Weight for family classification loss
-  genus_weight: 0.3   # Weight for genus classification loss
-  species_weight: 1.0 # Weight for species classification loss (primary task)
+  enabled: false
 
-# Multi-crop testing configuration (for inference only)
+# Multi-crop testing (inference only)
 multi_crop:
   enabled: false
-  crop_sizes: [256, 288, 320, 384, 448]
-  target_size: 224
 
 # WandB configuration
 wandb:

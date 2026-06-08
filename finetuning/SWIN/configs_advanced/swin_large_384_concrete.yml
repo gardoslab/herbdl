@@ -1,0 +1,150 @@
+# =============================================================================
+# Concrete next run (SWIN_training_setup_summary.md §10/§11 — "Putting it together")
+# =============================================================================
+# A single strong single-model candidate combining the cheap-but-high-value levers:
+#   - Backbone : SWIN-L @384, ImageNet-22k pretrained (Tier 1.1 "stay in SWIN", Tier 1.2)
+#   - Loss     : balanced-softmax CE (Tier 1.3-A) + multi-task family/genus/species heads
+#   - Schedule : 100 epochs, 5% warmup, cosine; EMA on (Tier 2.6)
+#   - Aug      : MEDIUM (RandAugment mag 7, mild erasing/mixup) — respects the curriculum
+#                finding that heavy aug applied COLD destroys performance (0.61 vs 0.745).
+#   - Inference: multi-crop + flip TTA wired (Tier 2.7), enabled only for final prediction.
+#
+# WARM-START (recommended once a 384 checkpoint exists — Tier 2.5 "always chain"):
+#   point model.model_name_or_path at a converged SWIN-L 384 output_dir (keep
+#   config_name / image_processor_name on the 384 arch) and raise RandAugment to 9.
+#   Cold-from-in22k here is the dependency-free default; chaining is strictly better.
+#
+# Seeds: launch the ensemble with submit_concrete.sh, which overrides
+#   training.seed / training.output_dir / custom.run_id via --set per job.
+# =============================================================================
+
+model:
+  model_name_or_path: "microsoft/swin-large-patch4-window12-384-in22k"
+  config_name: "microsoft/swin-large-patch4-window12-384-in22k"
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: "microsoft/swin-large-patch4-window12-384-in22k"
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: 50000
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+
+training:
+  output_dir: "/projectnb/herbdl/workspaces/tgardos/herbdl/finetuning/output/SWIN/SWIN_L_384_CONCRETE_SEED0"
+  logging_dir: "/projectnb/herbdl/workspaces/tgardos/herbdl/finetuning/output/SWIN/SWIN_L_384_CONCRETE_SEED0"
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 16
+  per_device_eval_batch_size: 8
+  learning_rate: 0.0001
+  num_train_epochs: 100
+  warmup_steps: 0.05
+  weight_decay: 0.05
+  gradient_accumulation_steps: 8          # effective batch = 16 * 8 = 128
+  gradient_checkpointing: true            # needed to fit SWIN-L @384 (wrappers pass it through)
+  lr_scheduler_type: "cosine"
+  lr_scheduler_kwargs:
+    eta_min: 0.000001
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 3
+  eval_strategy: "epoch"
+  eval_on_start: true
+  load_best_model_at_end: false           # EMA copies averaged weights in at train end; do not reload "best"
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 8
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 0
+
+custom:
+  lr_type: "cosine"
+  frozen: false
+  frozen_type: "none"
+  run_group: "SWIN_L_384_Concrete"
+  run_name: "SWIN_L_384_Concrete_Seed0"
+  run_id: "swin_l_384_concrete_seed0"
+  run_notes: "Concrete next run: SWIN-L 384 in22k, balanced-softmax + multi-task CE, medium aug, EMA, 100ep. Seed 0."
+
+augmentation:
+  use_advanced: true
+  randaugment:
+    num_ops: 2
+    magnitude: 7                          # MEDIUM (not 9) — cold start, see curriculum finding
+  mixup:
+    enabled: true
+    alpha: 0.8
+  cutmix:
+    enabled: true
+    alpha: 1.0
+  mixup_cutmix_prob: 0.3                   # mild mixing for a cold backbone
+  label_smoothing: 0.1
+  random_erasing:
+    enabled: true
+    probability: 0.15
+    min_area: 0.02
+    max_area: 0.33
+  color_jitter:
+    enabled: true
+    brightness: 0.4
+    contrast: 0.4
+    saturation: 0.4
+    hue: 0.1
+
+multi_task:
+  enabled: true
+  min_species_samples: 2
+  family_weight: 0.2
+  genus_weight: 0.3
+  species_weight: 1.0
+
+# Balanced softmax / logit adjustment (Tier 1.3-A). Adds tau * log(class_prior) to the
+# species logits during TRAINING only (off at inference) to lift macro-F1 on the long tail.
+long_tail:
+  logit_adjustment: true
+  tau: 1.0
+
+# Weight EMA (Tier 2.6). EMA weights are copied into the model at train end, so the
+# final eval/save reflect them. Keep load_best_model_at_end false (see above).
+ema:
+  enabled: true
+  decay: 0.9998
+
+# Multi-crop + horizontal-flip TTA (Tier 2.7). Leave disabled during training; enable
+# for the final/leaderboard prediction (crops are sized around the 384 target).
+multi_crop:
+  enabled: false
+  crop_sizes: [400, 416, 448, 480, 512]
+  target_size: 384
+  flip: true
+
+# ArcFace deferred (Tier 2.4) — kept off for this run.
+arcface:
+  enabled: false
+  embedding_size: 512
+  scale: 30.0
+  margin: 0.50
+  num_subcenters: 3
+  hybrid_ce_weight: 0.0
+
+wandb:
+  enabled: true
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"

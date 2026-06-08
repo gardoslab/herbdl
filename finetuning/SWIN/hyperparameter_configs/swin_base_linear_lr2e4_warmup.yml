@@ -1,5 +1,5 @@
-# SWIN Base Unfrozen (Full Fine-tuning) Configuration
-# Model configuration
+# SWIN Base — LR tuning: linear schedule, lr=2e-4, 5-epoch warmup (0 → 2e-4)
+# Warmup variant of swin_base_linear_lr2e4. warmup_steps=0.1 (ratio) → ~8964 warmup steps over 5 epochs.
 model:
   model_name_or_path: "microsoft/swin-base-patch4-window7-224-in22k"
   config_name: null
@@ -10,7 +10,6 @@ model:
   trust_remote_code: false
   ignore_mismatched_sizes: true
 
-# Data configuration
 data:
   dataset_name: null
   dataset_config_name: null
@@ -27,44 +26,41 @@ data:
   preprocessing_num_workers: null
   train_val_split: 0.2
 
-# Training configuration
 training:
-  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_UNFROZEN_MACRO"
-  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_UNFROZEN_MACRO"
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/LINEAR_LR2E4_WARMUP"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/LINEAR_LR2E4_WARMUP"
   do_train: true
   do_eval: true
   per_device_train_batch_size: 128
   per_device_eval_batch_size: 32
-  learning_rate: 0.0001  # Lower learning rate for full fine-tuning
-  num_train_epochs: 50
-  warmup_steps: 500
-  weight_decay: 0.01  # Add weight decay for regularization
+  learning_rate: 0.0002
+  num_train_epochs: 100
+  warmup_steps: 0.05
+  weight_decay: 0.01
   gradient_accumulation_steps: 1
-  lr_scheduler_type: "cosine"
-  lr_scheduler_kwargs:
-    eta_min: 0.000001
+  lr_scheduler_type: "linear"
   logging_strategy: "epoch"
   save_strategy: "epoch"
   save_total_limit: 5
   eval_strategy: "steps"
   eval_steps: 8964
+  torch_compile: true
   report_to: "wandb"
   bf16: true
-  dataloader_num_workers: 8
+  dataloader_num_workers: -1
   remove_unused_columns: false
   overwrite_output_dir: false
-  seed: 42
+  seed: 0
 
-# Custom configuration
 custom:
-  lr_type: "cosine"
-  frozen: false  # No freezing - full fine-tuning
+  lr_type: "linear"
+  frozen: false
   frozen_type: "none"
-  run_group: "SWIN_Base"
-  run_name: "SWIN_Base_Baseline"
-  run_id: "swin_base_unfrozen_15k_040326"
+  run_group: "SWIN_Base_LR_Sweep"
+  run_name: "SWIN_Base_Linear_LR2e4_Warmup"
+  run_id: "swin_base_linear_lr2e4_warmup_052026"
+  run_notes: "LR sweep: linear, lr=2e-4, 5-epoch warmup (0→2e-4). ImageNet-22k pretrained."
 
-# WandB configuration
 wandb:
   entity: "gardoslab"
   project: "herbdl"

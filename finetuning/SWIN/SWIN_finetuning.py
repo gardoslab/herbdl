@@ -51,8 +51,20 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils.versions import require_version
 
 import wandb
+from transformers.integrations import WandbCallback
 
 os.environ['WANDB_DISABLED'] = 'false'
+
+_WANDB_CONFIG_BLOCKLIST = {"label2id", "id2label"}
+
+class FilteredWandbCallback(WandbCallback):
+    """WandbCallback that skips large, uninformative model config keys."""
+    def on_train_begin(self, args, state, control, model=None, **kwargs):
+        super().on_train_begin(args, state, control, model=model, **kwargs)
+        wandb.config.update(
+            {k: None for k in _WANDB_CONFIG_BLOCKLIST if k in wandb.config},
+            allow_val_change=True,
+        )
 
 
 """ Fine-tuning a 🤗 Transformers model for image classification"""
@@ -622,6 +634,8 @@ def main():
         tokenizer=image_processor,
         data_collator=collate_fn,
     )
+    trainer.remove_callback(WandbCallback)
+    trainer.add_callback(FilteredWandbCallback)
 
     # Training
     if training_args.do_train:
