@@ -219,6 +219,29 @@ SET_ARGS="--set training.gradient_accumulation_steps=2 --set training.seed=0 --s
 > `grad_accum=8` on 4 GPUs → batch 512), scale the LR up accordingly and expect different
 > convergence.
 
+### Checking GPU availability (why a job sits in `qw`)
+
+A single-node DDP job (`-pe omp`) needs all its GPUs **free on one host**. SCC has scheduler
+job-info collection off, so there's no "queue position" — instead, check live availability:
+
+- `qstat -u $USER` — your jobs (`qw` = waiting, `r` = running).
+- `qgpus` — cluster-wide free GPUs by type (A100-80G, H200, …).
+- Per-node free count matching this run's needs (`cc≥8.0`, `80G`) — change `f>=2` to the GPU
+  count you requested (`f>=4` for the 4-GPU run, `f>=1` for 1-GPU):
+
+```bash
+qhost -F gpu_compute_capability,gpu_memory,gpus | awk '
+/^scc-/{h=$1;cc=m=f="";next}
+/compute_capability=/{s=$0;sub(/.*=/,"",s);cc=s+0}
+/gpu_memory=/{s=$0;sub(/.*=/,"",s);m=s+0}
+/hc:gpus=/{s=$0;sub(/.*=/,"",s);f=s+0; if(cc>=8 && m>=80 && f>=2) printf "%-12s cc=%-3s mem=%dG free=%d\n",h,cc,m,f}'
+```
+
+`hc:gpus` is the per-node *available* count, so a host only appears if it can satisfy your
+single-node request right now. No rows for `f>=4` but several for `f>=2` is exactly why the
+4-GPU run queues longer than the 2-GPU run. Knobs: `cc>=8` (8.0 = A100, 9.0 = H200), `m>=80`
+(min GB), `f>=N` (free GPUs on one node).
+
 ## Output paths auto-relocate to your workspace
 
 Most configs in this repo (inherited from faridkar's) hardcode `output_dir`/`logging_dir`
