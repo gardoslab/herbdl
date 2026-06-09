@@ -1150,7 +1150,9 @@ def main():
         if 'eta_min' in sched_kwargs:
             eta_min = sched_kwargs.pop('eta_min')
             if str(config['training'].get('lr_scheduler_type', '')).lower() == 'cosine':
-                training_args.lr_scheduler_type = 'cosine_with_min_lr'
+                # assign the SchedulerType enum (not a raw str) so downstream code that
+                # reads `.value` (e.g. create_model_card) doesn't break
+                training_args.lr_scheduler_type = transformers.SchedulerType('cosine_with_min_lr')
                 sched_kwargs['min_lr'] = eta_min
                 print(f"__CUSTOM__: Mapped cosine eta_min={eta_min} -> "
                       f"lr_scheduler_type=cosine_with_min_lr, min_lr={eta_min}")
