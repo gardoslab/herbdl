@@ -176,18 +176,20 @@ command after each 48h job ends — ~4 sequential jobs reach 100 epochs.
 | 4    | 2                             | ~44h → ≈ one 48h job |
 
 ⚠️ **DDP multiplies the effective batch by `NGPUS`** (each GPU runs its own
-`per_device_batch × grad_accum`). The config targets effective batch **128**, so **reduce
-`gradient_accumulation_steps`** to keep it there (and keep the LR valid). `submit_concrete.sh`
-doesn't forward extra `--set` args, so either set `gradient_accumulation_steps: 2` in
-`configs_advanced/swin_large_384_concrete.yml` for the multi-GPU run, or submit directly
-(below) for full control.
+`per_device_batch × grad_accum`). The base config targets effective batch **128**, so the
+4-GPU run needs `gradient_accumulation_steps: 2` (= `16 × 2 × 4`). A dedicated config —
+[`configs_advanced/swin_large_384_concrete_4gpu.yml`](configs_advanced/swin_large_384_concrete_4gpu.yml)
+— is identical to the base run but with `grad_accum: 2`, so the launcher path just works:
 
-**4-GPU run via the launcher** (set `gradient_accumulation_steps: 2` in the config first):
+**4-GPU run via the launcher** (no edits needed):
 ```bash
 cd finetuning/SWIN
-EMAIL=tgardos@bu.edu NGPUS=4 SEEDS="0" bash submit_concrete.sh
+EMAIL=tgardos@bu.edu NGPUS=4 RUN_PREFIX=SWIN_L_384_CONCRETE_4GPU \
+  CONFIG=configs_advanced/swin_large_384_concrete_4gpu.yml SEEDS="0" \
+  bash submit_concrete.sh
 ```
-`NGPUS=4` requests `gpus=4`, `omp 32`, and triggers torchrun (4 processes, 1 per GPU).
+`NGPUS=4` requests `gpus=4`, `omp 32`, and triggers torchrun (4 processes, 1 per GPU). For
+**2 GPUs**, use `grad_accum: 4` instead (edit the config or pass it inline as below).
 
 **4-GPU run via direct qsub** (grad-accum passed inline, no config edit):
 ```bash
