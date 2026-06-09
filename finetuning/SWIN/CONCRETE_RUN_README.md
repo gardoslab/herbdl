@@ -188,8 +188,17 @@ EMAIL=tgardos@bu.edu NGPUS=4 RUN_PREFIX=SWIN_L_384_CONCRETE_4GPU \
   CONFIG=configs_advanced/swin_large_384_concrete_4gpu.yml SEEDS="0" \
   bash submit_concrete.sh
 ```
-`NGPUS=4` requests `gpus=4`, `omp 32`, and triggers torchrun (4 processes, 1 per GPU). For
-**2 GPUs**, use `grad_accum: 4` instead (edit the config or pass it inline as below).
+`NGPUS=4` requests `gpus=4`, `omp 32`, and triggers torchrun (4 processes, 1 per GPU).
+
+**2-GPU run** (often schedules faster — more nodes have 2 free GPUs than 4; ~88h, one resume).
+Uses [`configs_advanced/swin_large_384_concrete_2gpu.yml`](configs_advanced/swin_large_384_concrete_2gpu.yml)
+(`grad_accum: 4` → `16 × 4 × 2 = 128`):
+```bash
+cd finetuning/SWIN
+EMAIL=tgardos@bu.edu NGPUS=2 RUN_PREFIX=SWIN_L_384_CONCRETE_2GPU \
+  CONFIG=configs_advanced/swin_large_384_concrete_2gpu.yml SEEDS="0" \
+  bash submit_concrete.sh
+```
 
 **4-GPU run via direct qsub** (grad-accum passed inline, no config edit):
 ```bash
