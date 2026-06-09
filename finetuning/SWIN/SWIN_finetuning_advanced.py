@@ -549,12 +549,20 @@ class MixupTrainer(Trainer):
 
         smoothing = getattr(self.data_collator, 'label_smoothing', 0.0)
 
-        # ArcFace: model computes its own loss internally (no mixup/cutmix with ArcFace)
+        # ArcFace: model computes its own loss internally (no mixup/cutmix with ArcFace).
+        # NOTE: logit_adjustment (balanced softmax) is intentionally NOT applied here —
+        # the ArcFace margin already provides a form of class separation, and adding
+        # log_prior on top of scaled cosine logits is not well-defined. If you enable
+        # both arcface and long_tail.logit_adjustment in the config, logit_adjustment
+        # has no effect during training (this early return bypasses _adjust_logits).
         if self.arcface:
             if self.multi_task:
                 family_labels = inputs.pop("family_labels", None)
                 genus_labels = inputs.pop("genus_labels", None)
                 species_labels = inputs.pop("species_labels", None)
+                # labels_a (popped above) equals species_labels here — both refer to the
+                # species target — but species_labels is used so the model's forward
+                # signature receives the named argument it expects.
                 outputs = model(
                     pixel_values=inputs["pixel_values"],
                     species_labels=species_labels,
