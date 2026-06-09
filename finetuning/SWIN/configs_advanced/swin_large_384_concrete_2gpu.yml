@@ -57,6 +57,9 @@ training:
   weight_decay: 0.05
   gradient_accumulation_steps: 4          # 2-GPU DDP: 16 * 4 * 2 GPUs = effective batch 128
   gradient_checkpointing: true            # needed to fit SWIN-L @384 (wrappers pass it through)
+  gradient_checkpointing_kwargs:
+    use_reentrant: false                  # REQUIRED under DDP: reentrant checkpointing fires
+                                          # autograd hooks twice -> "marked as ready twice" crash
   lr_scheduler_type: "cosine"
   lr_scheduler_kwargs:
     eta_min: 0.000001
