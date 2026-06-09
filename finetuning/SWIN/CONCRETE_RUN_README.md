@@ -242,6 +242,25 @@ single-node request right now. No rows for `f>=4` but several for `f>=2` is exac
 4-GPU run queues longer than the 2-GPU run. Knobs: `cc>=8` (8.0 = A100, 9.0 = H200), `m>=80`
 (min GB), `f>=N` (free GPUs on one node).
 
+#### Wall time matters more than you'd expect — keep it ≤ 24h
+
+Seeing idle GPUs but still stuck in `qw`? Most free GPU nodes are **buy-in** queues, and
+project `herbdl`'s access to them is **time-capped**:
+
+| Queue type | herbdl access | max `h_rt` |
+|------------|---------------|-----------|
+| `cds-gpu-long` (CDS buy-in) | yes | **24h** |
+| `cds-gpu`, public `*-pub` queues | yes | **12h** |
+| other groups' queues (`ece*`, `chapmangroup*`) | no | — |
+| shared long-GPU pool | yes | 48h, but scarce |
+
+A job requesting **`h_rt=48h` is locked out of every queue herbdl can borrow** (they cap at
+24h/12h) and waits behind the limited shared long-GPU pool — even while CDS/public GPUs sit
+idle. So **request ≤24h** and let per-epoch checkpoint + auto-resume carry the run across
+jobs. `submit_concrete.sh` now defaults `H_RT=24:00:00`; override with `H_RT=12:00:00` for the
+widest (public) queue access, or check eligibility/caps with
+`qconf -sq <queue>` (look at `projects` and `h_rt`).
+
 ## Output paths auto-relocate to your workspace
 
 Most configs in this repo (inherited from faridkar's) hardcode `output_dir`/`logging_dir`

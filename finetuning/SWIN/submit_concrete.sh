@@ -10,6 +10,11 @@
 #   SEEDS       — space-separated    (default: "0 1 2")
 #   NGPUS       — GPUs per job       (default: 1; set to 2 for multi-GPU / DDP)
 #   GPU_MEM     — GPU memory request (default: 80G)
+#   H_RT        — wall-time limit     (default: 24:00:00)
+#                 NOTE: project herbdl's GPU access caps at 24h (cds-gpu-long) / 12h
+#                 (public buy-in queues). Requesting >24h locks the job out of those
+#                 queues, so it waits behind the scarce shared long-GPU pool. Keep <=24h
+#                 and rely on per-epoch checkpoint + auto-resume across jobs.
 #   CKPT        — warm-start checkpoint dir (overrides model.model_name_or_path)
 #   EMAIL       — notification email (default: faridkar@bu.edu)
 #
@@ -38,9 +43,13 @@ OUT_BASE=${OUT_BASE:-"${REPO_ROOT}/finetuning/output/SWIN"}
 NGPUS=${NGPUS:-1}
 GPU_MEM=${GPU_MEM:-"80G"}
 EMAIL=${EMAIL:-"faridkar@bu.edu"}
+# 24h (not 48h): herbdl's GPU queues cap at 24h (cds-gpu-long) / 12h (public); a >24h
+# request can't use them and queues behind the scarce shared long-GPU pool. Checkpoints
+# are saved per epoch and the trainer auto-resumes, so multi-job runs are seamless.
+H_RT=${H_RT:-"24:00:00"}
 
 OMP_THREADS=$(( NGPUS * 8 ))
-QSUB_ARGS="-l h_rt=48:00:00 -pe omp ${OMP_THREADS} -P herbdl -l gpus=${NGPUS} -l gpu_c=8.0 -l gpu_memory=${GPU_MEM} -m beas -M ${EMAIL}"
+QSUB_ARGS="-l h_rt=${H_RT} -pe omp ${OMP_THREADS} -P herbdl -l gpus=${NGPUS} -l gpu_c=8.0 -l gpu_memory=${GPU_MEM} -m beas -M ${EMAIL}"
 
 # Pass NPROC_PER_NODE only when using multiple GPUs (triggers torchrun in train_advanced.sh)
 NPROC_VAR=""
