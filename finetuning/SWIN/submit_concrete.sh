@@ -25,10 +25,16 @@
 #
 # Nothing is auto-submitted by Claude — run this yourself when ready.
 
+# Default OUT_BASE to *this checkout's* output dir, derived from the script location
+# (.../<workspace>/herbdl/finetuning/SWIN/submit_concrete.sh -> .../herbdl/finetuning/output/SWIN),
+# so runs land in the submitter's own workspace regardless of who authored the config.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
 SEEDS=${SEEDS:-"0 1 2"}
 CONFIG=${CONFIG:-"configs_advanced/swin_large_384_concrete.yml"}
 RUN_PREFIX=${RUN_PREFIX:-"SWIN_L_384_CONCRETE"}
-OUT_BASE=${OUT_BASE:-"/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN"}
+OUT_BASE=${OUT_BASE:-"${REPO_ROOT}/finetuning/output/SWIN"}
 NGPUS=${NGPUS:-1}
 GPU_MEM=${GPU_MEM:-"80G"}
 EMAIL=${EMAIL:-"faridkar@bu.edu"}
