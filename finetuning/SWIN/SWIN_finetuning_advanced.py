@@ -1392,7 +1392,10 @@ def main():
                 metrics["genus_predictions_available"] = True
                 metrics["family_predictions_available"] = True
 
-            return metrics
+            # Drop metrics that weren't computed (None). The custom eval loop only
+            # reconstructs species predictions, so family/genus metrics are None here —
+            # and HF's log_metrics/save_metrics numeric-format every value and crash on None.
+            return {k: v for k, v in metrics.items() if v is not None}
     else:
         def preprocess_logits_for_metrics(logits, labels):
             """
@@ -1779,8 +1782,11 @@ def main():
         )
 
     # Swap in filtered W&B callback to suppress label2id/id2label from config uploads.
-    trainer.remove_callback(WandbCallback)
-    trainer.add_callback(FilteredWandbCallback)
+    # Only when W&B is enabled: instantiating a WandbCallback while WANDB_DISABLED is set
+    # (the wandb.enabled=false path, e.g. smoke tests) raises a RuntimeError.
+    if config['wandb'].get('enabled', True):
+        trainer.remove_callback(WandbCallback)
+        trainer.add_callback(FilteredWandbCallback)
 
     # Weight EMA (Tier 2.6): copies averaged weights into the model at train end,
     # so the final evaluate()/save_model() below reflect the EMA weights.
