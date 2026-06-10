@@ -229,10 +229,15 @@ class MultiTaskSwinModel(nn.Module):
     """
     Multi-task SWIN model with separate classification heads for family, genus, and species.
     """
-    def __init__(self, base_model, num_families, num_genera, num_species):
+    def __init__(self, base_model, num_families, num_genera, num_species,
+                 family_weight=0.2, genus_weight=0.3, species_weight=1.0):
         super().__init__()
         # Store config from base model - required by Trainer
         self.config = base_model.config
+        # Multi-task loss weights (configurable; defaults preserve the original recipe)
+        self.family_weight = family_weight
+        self.genus_weight = genus_weight
+        self.species_weight = species_weight
 
         # Extract the base SWIN encoder (works for both swin and swinv2)
         if hasattr(base_model, 'swinv2'):
@@ -273,7 +278,7 @@ class MultiTaskSwinModel(nn.Module):
             species_loss = loss_fct(species_logits, species_labels)
 
             # Weighted combination (species is most important, then genus, then family)
-            loss = species_loss + 0.3 * genus_loss + 0.2 * family_loss
+            loss = self.species_weight * species_loss + self.genus_weight * genus_loss + self.family_weight * family_loss
 
         return {
             'loss': loss,
@@ -524,10 +529,16 @@ class MixupTrainer(Trainer):
     Custom Trainer that handles Mixup/Cutmix loss computation and batch-wise evaluation.
     """
     def __init__(self, *args, multi_task=False, arcface=False,
-                 logit_adjustment=False, log_prior=None, logit_adjustment_tau=1.0, **kwargs):
+                 logit_adjustment=False, log_prior=None, logit_adjustment_tau=1.0,
+                 family_weight=0.2, genus_weight=0.3, species_weight=1.0, **kwargs):
         super().__init__(*args, **kwargs)
         self.multi_task = multi_task
         self.arcface = arcface
+        # Multi-task loss weights (used when recomputing the mixed/adjusted loss here;
+        # kept in sync with MultiTaskSwinModel's internal weighting).
+        self.family_weight = family_weight
+        self.genus_weight = genus_weight
+        self.species_weight = species_weight
         # Balanced-softmax / logit adjustment (Tier 1.3-A). log_prior is a
         # [num_species] tensor of log class frequencies; added to the species
         # logits during TRAINING only (never at inference) to down-weight head
@@ -606,7 +617,7 @@ class MixupTrainer(Trainer):
                 species_loss = lam * loss_fct(species_logits, species_labels) + (1 - lam) * loss_fct(species_logits, species_labels_b)
 
                 # Combined loss with same weighting as the model
-                loss = species_loss + 0.3 * genus_loss + 0.2 * family_loss
+                loss = self.species_weight * species_loss + self.genus_weight * genus_loss + self.family_weight * family_loss
             elif self.logit_adjustment:
                 # No mixup this batch, but balanced softmax is on: recompute the
                 # combined loss in-trainer so the species logits get the log-prior
@@ -616,7 +627,7 @@ class MixupTrainer(Trainer):
                 species_loss = loss_fct(species_logits, species_labels)
                 genus_loss = loss_fct(outputs.get("genus_logits"), genus_labels)
                 family_loss = loss_fct(outputs.get("family_logits"), family_labels)
-                loss = species_loss + 0.3 * genus_loss + 0.2 * family_loss
+                loss = self.species_weight * species_loss + self.genus_weight * genus_loss + self.family_weight * family_loss
             else:
                 # Model already computed the loss
                 loss = outputs.get("loss")
@@ -1539,7 +1550,10 @@ def main():
             base_model,
             num_families=hierarchical_mappings['num_families'],
             num_genera=hierarchical_mappings['num_genera'],
-            num_species=hierarchical_mappings['num_species']
+            num_species=hierarchical_mappings['num_species'],
+            family_weight=family_weight,
+            genus_weight=genus_weight,
+            species_weight=species_weight,
         )
 
         print(f"__CUSTOM__: Multi-task model created with {hierarchical_mappings['num_families']} families, "
@@ -1776,6 +1790,9 @@ def main():
             logit_adjustment=use_logit_adjustment,
             log_prior=log_prior,
             logit_adjustment_tau=logit_adjustment_tau,
+            family_weight=family_weight,
+            genus_weight=genus_weight,
+            species_weight=species_weight,
             preprocess_logits_for_metrics=preprocess_logits_for_metrics
         )
     else:
