@@ -1,0 +1,149 @@
+# =============================================================================
+# Domain-pretrained backbone — ConvNeXt-Large, iNaturalist-21, @384 (2-GPU DDP)
+# =============================================================================
+# Tier 1.1 lever: swap the ImageNet-22k backbone for an iNat21-pretrained one. The exact
+# ConvNeXt-V2-B@384 iNat21 checkpoint from the plan does not exist in a loadable form
+# (BBracke/convnextv2_base.inat21_384 -> 404), so this uses the established, closest match:
+#   timm/convnext_large_mlp.laion2b_ft_augreg_inat21  (ConvNeXt-Large @384, iNat21; ~1.8k dl)
+# Loaded via timm's hf-hub mechanism (num_classes=0 -> pooled features); preprocessing
+# (size/mean/std) comes from the timm data config, not an HF image processor.
+#
+# Same recipe as the SWIN-L 384 full-species run: multi-task heads on the FULL 15.5k
+# scientificNameEncoded species (== Kaggle metric), balanced softmax, EMA, medium aug,
+# multi-crop+flip TTA wired for inference. grad_accum 4 -> 2-GPU effective batch 128.
+#
+# Launch (NGPUS triggers torchrun):
+#   EMAIL=you@bu.edu NGPUS=2 RUN_PREFIX=CONVNEXT_L_INAT_384 \
+#     CONFIG=configs/convnext_large_inat_384_2gpu.yml SEEDS="0" bash submit.sh
+# Compare its eval_species_f1 (full 15.5k) head-to-head vs the SWIN-L 384 run — the
+# iNat-vs-ImageNet22k test. Inference/submission for timm models is not wired yet.
+# =============================================================================
+
+model:
+  backbone_type: timm
+  model_name_or_path: "timm/convnext_large_mlp.laion2b_ft_augreg_inat21"
+  img_size: 384
+  config_name: null
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: null        # unused — timm provides preprocessing
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: 50000
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+
+training:
+  output_dir: "/projectnb/herbdl/workspaces/tgardos/herbdl/finetuning/output/timm/CONVNEXT_L_INAT_384_2GPU_SEED0"
+  logging_dir: "/projectnb/herbdl/workspaces/tgardos/herbdl/finetuning/output/timm/CONVNEXT_L_INAT_384_2GPU_SEED0"
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 16
+  per_device_eval_batch_size: 8
+  learning_rate: 0.0001
+  num_train_epochs: 100
+  warmup_steps: 0.05
+  weight_decay: 0.05
+  gradient_accumulation_steps: 4          # 2-GPU DDP: 16 * 4 * 2 GPUs = effective batch 128
+  gradient_checkpointing: true            # timm wrapper -> backbone.set_grad_checkpointing()
+  gradient_checkpointing_kwargs:
+    use_reentrant: false                  # HF-only; ignored by the timm passthrough (harmless)
+  lr_scheduler_type: "cosine"
+  lr_scheduler_kwargs:
+    eta_min: 0.000001
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 3
+  eval_strategy: "epoch"
+  eval_on_start: true
+  load_best_model_at_end: false           # EMA copies averaged weights in at train end
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 8
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 0
+
+custom:
+  lr_type: "cosine"
+  frozen: false
+  frozen_type: "none"
+  run_group: "ConvNeXt_L_iNat_384"
+  run_name: "ConvNeXt_L_iNat_384_2GPU_Seed0"
+  run_id: "convnext_l_inat_384_2gpu_seed0"
+  run_notes: "Domain backbone: ConvNeXt-L iNat21 @384, multi-task full-species + balanced-softmax + EMA, medium aug, 100ep, 2-GPU. Seed 0."
+
+augmentation:
+  use_advanced: true
+  randaugment:
+    num_ops: 2
+    magnitude: 7
+  mixup:
+    enabled: true
+    alpha: 0.8
+  cutmix:
+    enabled: true
+    alpha: 1.0
+  mixup_cutmix_prob: 0.3
+  label_smoothing: 0.1
+  random_erasing:
+    enabled: true
+    probability: 0.15
+    min_area: 0.02
+    max_area: 0.33
+  color_jitter:
+    enabled: true
+    brightness: 0.4
+    contrast: 0.4
+    saturation: 0.4
+    hue: 0.1
+
+multi_task:
+  enabled: true
+  min_species_samples: 2
+  species_column: scientificNameEncoded   # full 15.5k Kaggle species (== leaderboard metric)
+  family_weight: 0.2
+  genus_weight: 0.3
+  species_weight: 1.0
+
+long_tail:
+  logit_adjustment: true
+  tau: 1.0
+
+ema:
+  enabled: true
+  decay: 0.9998
+
+multi_crop:
+  enabled: false
+  crop_sizes: [400, 416, 448, 480, 512]
+  target_size: 384
+  flip: true
+
+arcface:
+  enabled: false
+  embedding_size: 512
+  scale: 30.0
+  margin: 0.50
+  num_subcenters: 3
+  hybrid_ce_weight: 0.0
+
+wandb:
+  enabled: true
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"
