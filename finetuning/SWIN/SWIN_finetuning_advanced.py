@@ -1006,6 +1006,13 @@ def main():
     family_weight = multi_task_config.get('family_weight', 0.2)
     genus_weight = multi_task_config.get('genus_weight', 0.3)
     species_weight = multi_task_config.get('species_weight', 1.0)
+    # Which column the multi-task SPECIES head targets. Default "species" reproduces the
+    # original behavior (the species-EPITHET string, ~6.9k collapsed classes). Set to
+    # "scientificNameEncoded" to target the full Kaggle species (~15.5k classes) so the
+    # reported species accuracy/F1 matches the leaderboard metric, with family/genus as
+    # auxiliary coarse heads. Changing this changes the species head size (and breaks
+    # resume of checkpoints trained with the other setting).
+    species_column = multi_task_config.get('species_column', 'species')
 
     # Extract ArcFace parameters
     arcface_config = config.get('arcface', {})
@@ -1026,6 +1033,7 @@ def main():
     print(f"__CUSTOM__: Weight EMA: {use_ema} (decay={ema_decay})")
     if use_multi_task:
         print(f"__CUSTOM__: Min species samples: {min_species_samples}")
+        print(f"__CUSTOM__: Species head target column: {species_column}")
         print(f"__CUSTOM__: Loss weights - Family: {family_weight}, Genus: {genus_weight}, Species: {species_weight}")
     if use_arcface:
         print(f"__CUSTOM__: ArcFace embedding_size={arcface_embedding_size}, scale={arcface_scale}, margin={arcface_margin}, k={arcface_num_subcenters}, hybrid_ce_weight={arcface_hybrid_ce_weight}")
@@ -1271,7 +1279,7 @@ def main():
         print(f"__CUSTOM__: Filtering species with <={min_species_samples} samples")
 
         # Check if multi-task columns exist
-        required_columns = ['family', 'genus', 'species']
+        required_columns = ['family', 'genus', species_column]
         missing_columns = [col for col in required_columns if col not in dataset_column_names]
         if missing_columns:
             raise ValueError(
@@ -1279,18 +1287,18 @@ def main():
                 f"Available columns: {dataset_column_names}"
             )
 
-        # Filter by species count
-        species_counts = Counter(dataset["train"]["species"])
+        # Filter by species count (on the configured species head column)
+        species_counts = Counter(dataset["train"][species_column])
         valid_species = {s for s, c in species_counts.items() if c > min_species_samples}
 
         original_size = len(dataset["train"])
-        dataset["train"] = dataset["train"].filter(lambda x: x["species"] in valid_species)
+        dataset["train"] = dataset["train"].filter(lambda x: x[species_column] in valid_species)
         filtered_size = len(dataset["train"])
         print(f"__CUSTOM__: Filtered {original_size - filtered_size} samples, kept {filtered_size} samples")
 
         # Also filter validation set if it exists
         if "validation" in dataset:
-            dataset["validation"] = dataset["validation"].filter(lambda x: x["species"] in valid_species)
+            dataset["validation"] = dataset["validation"].filter(lambda x: x[species_column] in valid_species)
             print(f"__CUSTOM__: Validation set filtered to {len(dataset['validation'])} samples")
 
     # If we don't have a validation split, split off a percentage of train as validation
@@ -1319,10 +1327,10 @@ def main():
     if use_multi_task:
         print("__CUSTOM__: Creating hierarchical label mappings for multi-task learning")
 
-        # Get unique values for each taxonomy level
+        # Get unique values for each taxonomy level (species head uses species_column)
         unique_families = sorted(dataset["train"].unique("family"))
         unique_genera = sorted(dataset["train"].unique("genus"))
-        unique_species = sorted(dataset["train"].unique("species"))
+        unique_species = sorted(dataset["train"].unique(species_column))
 
         # Create label-to-id mappings
         family2id = {f: i for i, f in enumerate(unique_families)}
@@ -1448,7 +1456,7 @@ def main():
         from collections import Counter
         if use_multi_task:
             sp2id = hierarchical_mappings['species2id']
-            cnt = Counter(sp2id[s] for s in dataset["train"]["species"])
+            cnt = Counter(sp2id[s] for s in dataset["train"][species_column])
             n_cls = hierarchical_mappings['num_species']
         else:
             cnt = Counter(dataset["train"][data_args.label_column_name])
@@ -1692,7 +1700,7 @@ def main():
                 hierarchical_mappings['genus2id'][g] for g in example_batch["genus"]
             ]
             example_batch["species_label"] = [
-                hierarchical_mappings['species2id'][s] for s in example_batch["species"]
+                hierarchical_mappings['species2id'][s] for s in example_batch[species_column]
             ]
 
         return example_batch
@@ -1712,7 +1720,7 @@ def main():
                 hierarchical_mappings['genus2id'][g] for g in example_batch["genus"]
             ]
             example_batch["species_label"] = [
-                hierarchical_mappings['species2id'][s] for s in example_batch["species"]
+                hierarchical_mappings['species2id'][s] for s in example_batch[species_column]
             ]
 
         return example_batch
