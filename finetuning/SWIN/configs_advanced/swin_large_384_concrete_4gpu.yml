@@ -110,6 +110,10 @@ augmentation:
 multi_task:
   enabled: true
   min_species_samples: 2
+  # Species head targets the full Kaggle species (~15.5k scientificNameEncoded classes),
+  # NOT the collapsed ~6.9k species-epithet strings, so eval accuracy/F1 == the leaderboard
+  # metric. Family/genus heads stay as auxiliary coarse supervision.
+  species_column: scientificNameEncoded
   family_weight: 0.2
   genus_weight: 0.3
   species_weight: 1.0
