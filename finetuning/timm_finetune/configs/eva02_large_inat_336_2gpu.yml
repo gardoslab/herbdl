@@ -1,0 +1,142 @@
+# =============================================================================
+# Domain-pretrained backbone — EVA-02-Large, iNaturalist-21, @336 (2-GPU DDP)
+# =============================================================================
+# Alternative to the ConvNeXt-L config: the strongest general iNat21 backbone available.
+#   timm/eva02_large_patch14_clip_336.merged2b_ft_inat21  (EVA-02-L @336, iNat21; ~1.5k dl)
+# Loaded via timm hf-hub (num_classes=0 -> pooled features). EVA-02-L is a ~300M ViT, so it
+# runs at 336 (its native res) and uses a lower LR than the ConvNeXt run. Same recipe
+# otherwise (multi-task full-species, balanced softmax, EMA, medium aug, TTA wired).
+#
+# Launch:
+#   EMAIL=you@bu.edu NGPUS=2 RUN_PREFIX=EVA02_L_INAT_336 \
+#     CONFIG=configs/eva02_large_inat_336_2gpu.yml SEEDS="0" bash submit.sh
+# =============================================================================
+
+model:
+  backbone_type: timm
+  model_name_or_path: "timm/eva02_large_patch14_clip_336.merged2b_ft_inat21"
+  img_size: 336
+  config_name: null
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: 50000
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+
+training:
+  output_dir: "/projectnb/herbdl/workspaces/tgardos/herbdl/finetuning/output/timm/EVA02_L_INAT_336_2GPU_SEED0"
+  logging_dir: "/projectnb/herbdl/workspaces/tgardos/herbdl/finetuning/output/timm/EVA02_L_INAT_336_2GPU_SEED0"
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 16
+  per_device_eval_batch_size: 8
+  learning_rate: 0.00005                  # lower LR for a ~300M ViT full fine-tune
+  num_train_epochs: 100
+  warmup_steps: 0.05
+  weight_decay: 0.05
+  gradient_accumulation_steps: 4          # 2-GPU DDP: 16 * 4 * 2 GPUs = effective batch 128
+  gradient_checkpointing: true
+  gradient_checkpointing_kwargs:
+    use_reentrant: false
+  lr_scheduler_type: "cosine"
+  lr_scheduler_kwargs:
+    eta_min: 0.000001
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 3
+  eval_strategy: "epoch"
+  eval_on_start: true
+  load_best_model_at_end: false
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 8
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 0
+
+custom:
+  lr_type: "cosine"
+  frozen: false
+  frozen_type: "none"
+  run_group: "EVA02_L_iNat_336"
+  run_name: "EVA02_L_iNat_336_2GPU_Seed0"
+  run_id: "eva02_l_inat_336_2gpu_seed0"
+  run_notes: "Domain backbone: EVA-02-L iNat21 @336, multi-task full-species + balanced-softmax + EMA, medium aug, 100ep, 2-GPU. Seed 0."
+
+augmentation:
+  use_advanced: true
+  randaugment:
+    num_ops: 2
+    magnitude: 7
+  mixup:
+    enabled: true
+    alpha: 0.8
+  cutmix:
+    enabled: true
+    alpha: 1.0
+  mixup_cutmix_prob: 0.3
+  label_smoothing: 0.1
+  random_erasing:
+    enabled: true
+    probability: 0.15
+    min_area: 0.02
+    max_area: 0.33
+  color_jitter:
+    enabled: true
+    brightness: 0.4
+    contrast: 0.4
+    saturation: 0.4
+    hue: 0.1
+
+multi_task:
+  enabled: true
+  min_species_samples: 2
+  species_column: scientificNameEncoded
+  family_weight: 0.2
+  genus_weight: 0.3
+  species_weight: 1.0
+
+long_tail:
+  logit_adjustment: true
+  tau: 1.0
+
+ema:
+  enabled: true
+  decay: 0.9998
+
+multi_crop:
+  enabled: false
+  crop_sizes: [352, 368, 384, 400, 420]
+  target_size: 336
+  flip: true
+
+arcface:
+  enabled: false
+  embedding_size: 512
+  scale: 30.0
+  margin: 0.50
+  num_subcenters: 3
+  hybrid_ce_weight: 0.0
+
+wandb:
+  enabled: true
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"
