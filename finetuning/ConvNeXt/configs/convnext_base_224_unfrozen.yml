@@ -1,0 +1,108 @@
+# ConvNeXt Base 224 Unfrozen Configuration
+# Model configuration
+model:
+  model_name_or_path: "facebook/convnext-base-224-22k"
+  config_name: null
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+# Data configuration
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: 50000
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+
+# Training configuration
+training:
+  output_dir: "/projectnb/herbdl/workspaces/llindon/herbdl/finetuning/output/ConvNeXt/CONVNEXT_BASE_224_UF_LRAdjust_F1_MACRO"
+  logging_dir: "/projectnb/herbdl/workspaces/llindon/herbdl/finetuning/output/ConvNeXt/CONVNEXT_BASE_224_UF_LRAdjust_F1_MACRO"
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 128
+  per_device_eval_batch_size: 32
+  learning_rate: 0.00003
+  num_train_epochs: 50
+  warmup_steps: 1000
+  weight_decay: 0.01
+  gradient_accumulation_steps: 2
+  # Previous (broken): lr_scheduler_type="cosine" with lr_scheduler_kwargs={eta_min: 0.000001}
+  # HF's get_cosine_schedule_with_warmup does not accept eta_min (that's a PyTorch CosineAnnealingLR kwarg),
+  # so it raised TypeError. Use cosine_with_min_lr + min_lr to actually floor the LR at 1e-6.
+  # To revert: set lr_scheduler_type: "cosine" and remove lr_scheduler_kwargs (LR will decay to 0).
+  lr_scheduler_type: "cosine_with_min_lr"
+  lr_scheduler_kwargs:
+    min_lr: 0.000001
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 5
+  eval_strategy: "steps"
+  eval_steps: 17928
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 8
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 42
+
+# Custom configuration
+custom:
+  lr_type: "cosine"
+  frozen: false
+  frozen_type: "none"
+  run_group: "ConvNeXt_Base"
+  run_name: "ConvNeXt_Base_224_Unfrozen_LRAdjust_f1_macro"
+  run_id: "convnext_base_224_unfrozen_lradjust_f1_macro_051226"
+
+# WandB configuration
+wandb:
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"
+
+# Augmentation configuration (nested schema — keys must match ConvNeXt_finetuning_advanced.py).
+# All OFF for the baseline; the aug_sweep/ clones flip individual knobs on.
+# (The old flat schema — randaugment: false, etc. — would crash the trainer if use_advanced were
+#  enabled, because the code does aug_config.get('randaugment', {}).get('num_ops', 0).)
+augmentation:
+  use_advanced: false
+  randaugment:
+    num_ops: 0
+    magnitude: 9
+  mixup:
+    enabled: false
+    alpha: 0.8
+  cutmix:
+    enabled: false
+    alpha: 1.0
+  mixup_cutmix_prob: 0.5
+  label_smoothing: 0.0
+  random_erasing:
+    enabled: false
+    probability: 0.25
+    min_area: 0.02
+    max_area: 0.33
+  color_jitter:
+    enabled: false
+    brightness: 0.4
+    contrast: 0.4
+    saturation: 0.4
+    hue: 0.1
+
+# Multi-task configuration
+multi_task:
+  enabled: false
