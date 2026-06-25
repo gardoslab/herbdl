@@ -387,6 +387,13 @@ class SwinWithArcFace(nn.Module):
             if self.use_multi_task and family_labels is not None and genus_labels is not None:
                 loss = loss + self.family_weight * F.cross_entropy(self.family_classifier(pooled), family_labels)
                 loss = loss + self.genus_weight * F.cross_entropy(self.genus_classifier(pooled), genus_labels)
+
+            result = {'loss': loss, 'logits': logits}
+            if self.hybrid_ce_weight > 0:
+                # Expose components so MixupTrainer can override the CE branch with
+                # mixup / logit-adjustment without touching the ArcFace margin loss.
+                result['arc_loss'] = arc_loss
+                result['ce_logits'] = ce_logits
         else:
             # Inference: cosine similarity, no margin
             weight = F.normalize(self.arcface.weight, p=2, dim=1)
@@ -401,9 +408,8 @@ class SwinWithArcFace(nn.Module):
                 logits = torch.log((1 - w) * F.softmax(arc_logits, dim=1) + w * F.softmax(ce_logits, dim=1) + 1e-8)
             else:
                 logits = arc_logits
-            loss = None
+            result = {'loss': None, 'logits': logits}
 
-        result = {'loss': loss, 'logits': logits}
         if self.use_multi_task:
             result['family_logits'] = self.family_classifier(pooled)
             result['genus_logits'] = self.genus_classifier(pooled)
@@ -530,10 +536,12 @@ class MixupTrainer(Trainer):
     """
     def __init__(self, *args, multi_task=False, arcface=False,
                  logit_adjustment=False, log_prior=None, logit_adjustment_tau=1.0,
-                 family_weight=0.2, genus_weight=0.3, species_weight=1.0, **kwargs):
+                 family_weight=0.2, genus_weight=0.3, species_weight=1.0,
+                 hybrid_ce_weight=0.0, **kwargs):
         super().__init__(*args, **kwargs)
         self.multi_task = multi_task
         self.arcface = arcface
+        self.hybrid_ce_weight = hybrid_ce_weight
         # Multi-task loss weights (used when recomputing the mixed/adjusted loss here;
         # kept in sync with MultiTaskSwinModel's internal weighting).
         self.family_weight = family_weight
@@ -560,20 +568,20 @@ class MixupTrainer(Trainer):
 
         smoothing = getattr(self.data_collator, 'label_smoothing', 0.0)
 
-        # ArcFace: model computes its own loss internally (no mixup/cutmix with ArcFace).
-        # NOTE: logit_adjustment (balanced softmax) is intentionally NOT applied here —
-        # the ArcFace margin already provides a form of class separation, and adding
-        # log_prior on top of scaled cosine logits is not well-defined. If you enable
-        # both arcface and long_tail.logit_adjustment in the config, logit_adjustment
-        # has no effect during training (this early return bypasses _adjust_logits).
+        # ArcFace path. The ArcFace margin loss always uses hard labels (arc_loss).
+        # For hybrid ArcFace+CE runs, the CE branch is re-computed here so it can
+        # receive (a) mixup/cutmix soft labels and (b) logit adjustment — both of
+        # which are well-defined on standard CE logits but not on ArcFace cosine space.
+        # Pure ArcFace runs (hybrid_ce_weight == 0) fall straight through to the
+        # model's internal loss with no adjustment applied.
         if self.arcface:
             if self.multi_task:
                 family_labels = inputs.pop("family_labels", None)
                 genus_labels = inputs.pop("genus_labels", None)
                 species_labels = inputs.pop("species_labels", None)
-                # labels_a (popped above) equals species_labels here — both refer to the
-                # species target — but species_labels is used so the model's forward
-                # signature receives the named argument it expects.
+                family_labels_b = inputs.pop("family_labels_b", None)
+                genus_labels_b = inputs.pop("genus_labels_b", None)
+                species_labels_b = inputs.pop("species_labels_b", None)
                 outputs = model(
                     pixel_values=inputs["pixel_values"],
                     species_labels=species_labels,
@@ -582,7 +590,38 @@ class MixupTrainer(Trainer):
                 )
             else:
                 outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a)
-            loss = outputs.get("loss")
+
+            if self.hybrid_ce_weight > 0 and (labels_b is not None or self.logit_adjustment):
+                # Override the CE branch: apply logit adjustment and/or mixup.
+                w = self.hybrid_ce_weight
+                arc_loss = outputs["arc_loss"]
+                ce_logits = self._adjust_logits(outputs["ce_logits"])
+                loss_fct = nn.CrossEntropyLoss(label_smoothing=smoothing)
+                hard_labels = species_labels if self.multi_task else labels_a
+
+                if labels_b is not None:
+                    # Mixup/CutMix: ArcFace margin sees hard labels (handled in forward());
+                    # CE branch gets the standard mixed loss.
+                    hard_labels_b = species_labels_b if self.multi_task else labels_b
+                    ce_loss = lam * loss_fct(ce_logits, hard_labels) + (1 - lam) * loss_fct(ce_logits, hard_labels_b)
+                else:
+                    ce_loss = loss_fct(ce_logits, hard_labels)
+
+                loss = (1 - w) * arc_loss + w * ce_loss
+
+                if self.multi_task and family_labels is not None:
+                    family_logits = outputs["family_logits"]
+                    genus_logits = outputs["genus_logits"]
+                    if labels_b is not None:
+                        f_loss = lam * loss_fct(family_logits, family_labels) + (1 - lam) * loss_fct(family_logits, family_labels_b)
+                        g_loss = lam * loss_fct(genus_logits, genus_labels) + (1 - lam) * loss_fct(genus_logits, genus_labels_b)
+                    else:
+                        f_loss = loss_fct(family_logits, family_labels)
+                        g_loss = loss_fct(genus_logits, genus_labels)
+                    loss = loss + self.family_weight * f_loss + self.genus_weight * g_loss
+            else:
+                loss = outputs.get("loss")
+
             return (loss, outputs) if return_outputs else loss
 
         # Handle multi-task learning
@@ -1795,6 +1834,7 @@ def main():
             data_collator=data_collator,
             multi_task=use_multi_task,
             arcface=use_arcface,
+            hybrid_ce_weight=arcface_hybrid_ce_weight,
             logit_adjustment=use_logit_adjustment,
             log_prior=log_prior,
             logit_adjustment_tau=logit_adjustment_tau,
