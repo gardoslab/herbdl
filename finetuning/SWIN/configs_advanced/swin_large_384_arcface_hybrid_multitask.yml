@@ -1,0 +1,153 @@
+# =============================================================================
+# SWIN-L @384 — Hybrid ArcFace+CE + Multi-task CE heads + Medium Aug + EMA
+# =============================================================================
+# Hybrid species loss (70% ArcFace + 30% CE) with multi-task auxiliary CE heads.
+#   - Backbone   : SWIN-L @384, ImageNet-22k pretrained
+#   - Loss       : Hybrid species head — SubCenter ArcFace (k=3, s=30, m=0.50)
+#                  blended with a parallel CE classifier (70/30 split);
+#                  CE auxiliary heads for family and genus (weights 0.2 / 0.3).
+#                  At inference, logits are blended as:
+#                  log(0.7*softmax(arc) + 0.3*softmax(ce))
+#   - Schedule   : 100 epochs, linear LR 1e-4, 5% warmup
+#   - Aug        : MEDIUM + mixup/cutmix (applied to CE branch only; ArcFace branch
+#                  always uses hard labels): RandAugment mag 7, mixup+cutmix prob 0.3,
+#                  random erasing 0.15, color jitter
+#   - Label smoothing: OFF — no-op with ArcFace (margin provides regularization)
+#   - EMA        : enabled (decay=0.9998)
+#   - Logit adjustment: ON — applied to CE logits only (well-defined; ArcFace cosine
+#                  space is unaffected). Lifts macro-F1 on long-tail species.
+#
+# Compare against swin_large_384_arcface_multitask.yml (pure ArcFace, no CE blend)
+# to isolate the hybrid contribution.
+# =============================================================================
+
+model:
+  model_name_or_path: "microsoft/swin-large-patch4-window12-384-in22k"
+  config_name: "microsoft/swin-large-patch4-window12-384-in22k"
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: "microsoft/swin-large-patch4-window12-384-in22k"
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: 50000
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+
+training:
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_L_384_ARCFACE_HYBRID_MT_V2_SEED0"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_L_384_ARCFACE_HYBRID_MT_V2_SEED0"
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 64
+  per_device_eval_batch_size: 32
+  learning_rate: 0.0001
+  num_train_epochs: 100
+  warmup_steps: 0.05                      # 5% warmup ratio
+  weight_decay: 0.05
+  gradient_accumulation_steps: 4          # effective batch = 64 * 4 = 256
+  gradient_checkpointing: true
+  lr_scheduler_type: "linear"
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 3
+  eval_strategy: "epoch"
+  eval_on_start: true
+  load_best_model_at_end: false           # EMA copies weights at train end; do not reload
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 8
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 0
+
+custom:
+  lr_type: "linear"
+  frozen: false
+  frozen_type: "none"
+  run_group: "SWIN_L_384_ArcFace_Hybrid_MT_V2"
+  run_name: "SWIN_L_384_ArcFace_Hybrid_MT_V2_Seed0"
+  run_id: "swin_l_384_arcface_hybrid_mt_v2_seed0"
+  run_notes: >
+    SWIN-L @384 in22k pretrained. Hybrid species loss: SubCenter ArcFace (k=3, s=30,
+    m=0.50) blended 70/30 with a parallel CE classifier. CE auxiliary heads for
+    family (w=0.2) and genus (w=0.3). Medium aug WITH mixup/cutmix (prob=0.3): the
+    CE branch receives mixed-label soft targets while ArcFace always uses hard labels.
+    Logit adjustment (tau=1.0) applied to CE logits only — well-defined on standard
+    logits, not applied to ArcFace cosine space. RandAugment mag 7, random erasing
+    0.15, color jitter. No label smoothing (no-op with ArcFace). EMA (decay=0.9998).
+    Linear LR 1e-4, 5% warmup, 100 epochs.
+
+augmentation:
+  use_advanced: true
+  randaugment:
+    num_ops: 2
+    magnitude: 7
+  mixup:
+    enabled: true
+    alpha: 0.8
+  cutmix:
+    enabled: true
+    alpha: 1.0
+  mixup_cutmix_prob: 0.3
+  label_smoothing: 0.0
+  random_erasing:
+    enabled: true
+    probability: 0.15
+    min_area: 0.02
+    max_area: 0.33
+  color_jitter:
+    enabled: true
+    brightness: 0.4
+    contrast: 0.4
+    saturation: 0.4
+    hue: 0.1
+
+multi_task:
+  enabled: true
+  min_species_samples: 2
+  species_column: scientificNameEncoded   # full ~15.5k leaderboard classes, not epithet
+  family_weight: 0.2
+  genus_weight: 0.3
+  species_weight: 1.0
+
+long_tail:
+  logit_adjustment: true
+  tau: 1.0
+
+ema:
+  enabled: true
+  decay: 0.9998
+
+multi_crop:
+  enabled: false
+  crop_sizes: [400, 416, 448, 480, 512]
+  target_size: 384
+  flip: true
+
+arcface:
+  enabled: true
+  embedding_size: 512
+  scale: 30.0
+  margin: 0.50
+  num_subcenters: 3
+  hybrid_ce_weight: 0.3
+
+wandb:
+  enabled: true
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"

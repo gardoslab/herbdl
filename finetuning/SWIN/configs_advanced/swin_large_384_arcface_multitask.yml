@@ -1,20 +1,20 @@
 # =============================================================================
-# ArcFace ablation — SWIN-L @384 + SubCenter ArcFace, nothing else
+# SWIN-L @384 — SubCenter ArcFace + Multi-task CE heads + Medium Aug + EMA
 # =============================================================================
-# Isolates the ArcFace contribution against the plain SWIN-L 384 baseline.
-# Deliberately excludes multi-task heads, logit adjustment, EMA, and mixup/cutmix
-# so results are directly attributable to the ArcFace loss.
+# ArcFace species head with multi-task auxiliary CE heads for family/genus.
+#   - Backbone   : SWIN-L @384, ImageNet-22k pretrained
+#   - Loss       : SubCenter ArcFace (k=3, s=30, m=0.50) for species;
+#                  CE auxiliary heads for family and genus (weights 0.2 / 0.3)
+#   - Schedule   : 100 epochs, linear LR 1e-4, 5% warmup
+#   - Aug        : MEDIUM, no mixup/cutmix (incompatible with ArcFace hard labels);
+#                  RandAugment mag 7, random erasing 0.15, color jitter
+#   - Label smoothing: OFF — no-op with ArcFace (margin provides regularization)
+#   - EMA        : enabled (decay=0.9998)
+#   - Logit adjustment: OFF — not well-defined on ArcFace cosine logits
 #
-# Augmentation: basic only (RandomResizedCrop + HFlip + RandAugment). Mixup and
-# CutMix are incompatible with ArcFace hard-label margin and are left off.
-# Random erasing and color jitter are safe (label-preserving) and left on.
-#
-# ArcFace settings: SubCenter k=3 (noise-robust), s=30, m=0.50 (standard).
-# Inference uses cosine similarity over ArcFace weight matrix, no margin.
-#
-# NOTE: If the job OOMs, halve per_device_train_batch_size and double
-# gradient_accumulation_steps to keep effective batch constant
-# (e.g. per_device=32, grad_accum=8 → effective 256).
+# Compare against swin_large_384_arcface.yml (no multi-task) to isolate the
+# multi-task contribution, and against swin_large_384_arcface_hybrid_multitask.yml
+# to isolate the hybrid CE blend.
 # =============================================================================
 
 model:
@@ -44,27 +44,25 @@ data:
   train_val_split: 0.2
 
 training:
-  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_L_384_ARCFACE"
-  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_L_384_ARCFACE"
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_L_384_ARCFACE_MT_V2_SEED0"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_L_384_ARCFACE_MT_V2_SEED0"
   do_train: true
   do_eval: true
   per_device_train_batch_size: 64
   per_device_eval_batch_size: 32
   learning_rate: 0.0001
   num_train_epochs: 100
-  warmup_steps: 0.05
+  warmup_steps: 0.05                      # 5% warmup ratio
   weight_decay: 0.05
   gradient_accumulation_steps: 4          # effective batch = 64 * 4 = 256
   gradient_checkpointing: true
-  lr_scheduler_type: "cosine"
-  lr_scheduler_kwargs:
-    eta_min: 0.000001
+  lr_scheduler_type: "linear"
   logging_strategy: "epoch"
   save_strategy: "epoch"
   save_total_limit: 3
   eval_strategy: "epoch"
   eval_on_start: true
-  load_best_model_at_end: false
+  load_best_model_at_end: false           # EMA copies weights at train end; do not reload
   report_to: "wandb"
   bf16: true
   dataloader_num_workers: 8
@@ -73,17 +71,19 @@ training:
   seed: 0
 
 custom:
-  lr_type: "cosine"
+  lr_type: "linear"
   frozen: false
   frozen_type: "none"
-  run_group: "SWIN_L_384_ArcFace"
-  run_name: "SWIN_L_384_ArcFace"
-  run_id: "swin_l_384_arcface"
+  run_group: "SWIN_L_384_ArcFace_MT_V2"
+  run_name: "SWIN_L_384_ArcFace_MT_V2_Seed0"
+  run_id: "swin_l_384_arcface_mt_v2_seed0"
   run_notes: >
-    ArcFace ablation: SWIN-L @384 in22k pretrained + SubCenter ArcFace (k=3, s=30, m=0.50),
-    no other techniques. Isolates ArcFace contribution against plain SWIN-L 384 baseline.
-    No multi-task, no logit adjustment, no EMA, no mixup/cutmix.
-    Basic aug only: RandAugment mag 7, random erasing, color jitter.
+    SWIN-L @384 in22k pretrained. SubCenter ArcFace (k=3, s=30, m=0.50) for species
+    + CE auxiliary heads for family (w=0.2) and genus (w=0.3). Medium aug without
+    mixup/cutmix: RandAugment mag 7, random erasing 0.15, color jitter. No label
+    smoothing (no-op with ArcFace). EMA (decay=0.9998). Linear LR 1e-4, 5% warmup,
+    100 epochs. Compare against swin_large_384_arcface (no multi-task) and
+    swin_large_384_arcface_hybrid_multitask (hybrid CE blend).
 
 augmentation:
   use_advanced: true
@@ -98,7 +98,7 @@ augmentation:
   label_smoothing: 0.0
   random_erasing:
     enabled: true
-    probability: 0.25
+    probability: 0.15
     min_area: 0.02
     max_area: 0.33
   color_jitter:
@@ -109,8 +109,9 @@ augmentation:
     hue: 0.1
 
 multi_task:
-  enabled: false
+  enabled: true
   min_species_samples: 2
+  species_column: scientificNameEncoded   # full ~15.5k leaderboard classes, not epithet
   family_weight: 0.2
   genus_weight: 0.3
   species_weight: 1.0
@@ -120,7 +121,7 @@ long_tail:
   tau: 1.0
 
 ema:
-  enabled: false
+  enabled: true
   decay: 0.9998
 
 multi_crop:

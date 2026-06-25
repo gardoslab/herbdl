@@ -1,0 +1,150 @@
+# =============================================================================
+# SwinV2-B 192 — Heavy Augmentation + Multi-task + Balanced Softmax + EMA
+# =============================================================================
+# Combination of high-value levers on the SwinV2-Base backbone:
+#   - Backbone  : SwinV2-B @192, ImageNet-22k pretrained
+#   - Loss      : balanced-softmax CE (logit adjustment, tau=1.0) + multi-task
+#                 family/genus/species heads; label smoothing 0.1 throughout
+#   - Schedule  : 100 epochs, linear LR 1e-4, 5-epoch (5%) warmup via warmup_ratio
+#   - Aug       : HEAVY — RandAugment mag 9, mixup+cutmix prob 0.5, random erasing 0.25
+#   - EMA       : enabled (decay=0.9998); keep load_best_model_at_end: false
+#   - Hardware  : single A100-80G (set NGPUS=2 in submit for 2-GPU DDP)
+#   - Gradient checkpointing: on
+#
+# Label smoothing path (verified):
+#   augmentation.label_smoothing → MixupCutmixCollator.label_smoothing →
+#   MixupTrainer.compute_loss reads it via getattr(data_collator, 'label_smoothing').
+#   With logit_adjustment=True every training batch (mixup or not) hits the
+#   trainer-recomputed CE with label_smoothing. The model's internal CE (no smoothing)
+#   is bypassed in all paths when logit_adjustment is enabled.
+#
+# Seeds: submit_concrete.sh overrides training.seed / training.output_dir /
+#   custom.run_id per job. This file is seed-agnostic (seed 0 shown as default).
+# =============================================================================
+
+model:
+  model_name_or_path: "microsoft/swinv2-base-patch4-window12-192-22k"
+  config_name: "microsoft/swinv2-base-patch4-window12-192-22k"
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: "microsoft/swinv2-base-patch4-window12-192-22k"
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: 50000
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+
+training:
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWINV2_B_192_HEAVY_MT_SEED0"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWINV2_B_192_HEAVY_MT_SEED0"
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 256
+  per_device_eval_batch_size: 32
+  learning_rate: 0.0001                   # 1e-4 linear LR
+  num_train_epochs: 100
+  warmup_steps: 0.05                      # 5 epochs / 100 = 5% warmup
+  weight_decay: 0.05
+  gradient_accumulation_steps: 1
+  gradient_checkpointing: true
+  lr_scheduler_type: "linear"
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 3
+  eval_strategy: "epoch"
+  eval_on_start: true
+  load_best_model_at_end: false           # EMA copies weights at train end; do not reload
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 8
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 0
+
+custom:
+  lr_type: "linear"
+  frozen: false
+  frozen_type: "none"
+  run_group: "SwinV2_B_192_Heavy_MT"
+  run_name: "SwinV2_B_192_Heavy_MT_Seed0"
+  run_id: "swinv2_b_192_heavy_mt_seed0"
+  run_notes: >
+    SwinV2-B @192 cold-start: heavy aug (RandAug mag 9, mixup+cutmix p=0.5,
+    erasing p=0.25), multi-task family/genus/species CE, balanced-softmax logit
+    adjustment (tau=1.0), label smoothing 0.1, EMA (decay=0.9998), linear LR
+    1e-4 with 5-epoch (5%) warmup, gradient checkpointing.
+    Seed 0 of 5-seed ensemble.
+
+augmentation:
+  use_advanced: true
+  randaugment:
+    num_ops: 2
+    magnitude: 9
+  mixup:
+    enabled: true
+    alpha: 0.8
+  cutmix:
+    enabled: true
+    alpha: 1.0
+  mixup_cutmix_prob: 0.5
+  label_smoothing: 0.1
+  random_erasing:
+    enabled: true
+    probability: 0.25
+    min_area: 0.02
+    max_area: 0.33
+  color_jitter:
+    enabled: true
+    brightness: 0.4
+    contrast: 0.4
+    saturation: 0.4
+    hue: 0.1
+
+multi_task:
+  enabled: true
+  min_species_samples: 2
+  family_weight: 0.2
+  genus_weight: 0.3
+  species_weight: 1.0
+
+long_tail:
+  logit_adjustment: true
+  tau: 1.0
+
+ema:
+  enabled: true
+  decay: 0.9998
+
+multi_crop:
+  enabled: false
+  crop_sizes: [224, 256, 288, 320, 352]
+  target_size: 192
+  flip: true
+
+arcface:
+  enabled: false
+  embedding_size: 512
+  scale: 30.0
+  margin: 0.50
+  num_subcenters: 3
+  hybrid_ce_weight: 0.0
+
+wandb:
+  enabled: true
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "never"
