@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repository contains experiments in unsupervised learning of herbarium specimens, focusing on plant species classification using deep learning models including SWIN Transformers, CLIP, and BioCLIP.
 
+For the multi-agent research workflow (experimentation/exploration agents per
+research direction, cross-cutting reflection/documentation agents, SCC job
+lifecycle and ledger conventions), see [AGENT_RESEARCH.md](AGENT_RESEARCH.md).
+
 ## Environment & Setup
 
 This project runs on Boston University's Shared Computing Cluster (SCC). Key paths:

@@ -19,6 +19,9 @@ The initial set of directions we're pursuing:
    (vs. coarse) classification.
 4. **Other fine-grained testbeds** — identifying and evaluating additional
    benchmarks beyond the Kaggle herbarium datasets.
+5. **Zero-shot recognition with contrastive learning** - can we replicate the success of BioCLIP
+in zero-shot classification in the herbarium domain? Investigate different combinations of
+text and image encoders to assess their impact. 
 
 New directions can be added following the same structure.
 
