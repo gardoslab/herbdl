@@ -50,15 +50,19 @@ the scaling law result?") is their job.
 
 ## Workspace layout
 
-Each research direction gets its own folder:
+Each research direction gets its own top-level folder (not nested under a
+shared `research/` directory):
 
 ```
-research/<direction>/
+<direction>/
   ledger.md      # one row per SCC job: status, smoketest result, checkpoint path
   notes.md       # running log of hypotheses, what was tried, what the exploration agent proposed
 ```
 
-Example: `research/scaling-laws/ledger.md`, `research/interpretability/notes.md`.
+Example: `scaling-laws/ledger.md`, `interpretability/notes.md`.
+
+Agent configs live in `.claude/agents/`, one file per (direction, role) pair,
+e.g. `.claude/agents/interpretability-experimentation.md`.
 
 ## Job lifecycle
 
@@ -96,11 +100,16 @@ notes           # free-form context
 
 ## Open items / next steps
 
-This document describes the intended workflow; none of the following are
-built yet:
+Built so far:
 
-- Per-direction `research/<direction>/` folders and initial `ledger.md` /
-  `notes.md` files
+- Per-direction top-level folders and `ledger.md` / `notes.md` for
+  `interpretability/` and `scaling-laws/`
+- Experimentation and exploration agent configs for those two directions
+  (`.claude/agents/`)
+
+Still to do:
+
 - The cross-direction cron routine that polls SCC job status
-- Concrete agent configs (prompts, model assignments) for experimentation,
-  exploration, reflection, and documentation agents
+- Reflection and documentation agent configs
+- Folders/agents for the remaining directions (training paradigms, other
+  testbeds, zero-shot contrastive) once we're ready to scaffold them
