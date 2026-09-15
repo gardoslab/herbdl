@@ -1,9 +1,8 @@
 #!/bin/bash -l
 
 module load miniconda
-module load academic-ml/spring-2026
 
-conda activate spring-2026-pyt
+conda activate herb_env
 
 # CONFIG_FILE must be provided (e.g. via `qsub -v CONFIG_FILE=...`, as submit_concrete.sh
 # does). Fail fast rather than silently running an arbitrary default config.
