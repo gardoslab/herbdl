@@ -4,15 +4,12 @@ This directory contains YAML configuration files for SWIN model training. Each c
 
 ## Usage
 
-To use a config file, simply update the `CONFIG_FILE` variable in `train.sh`:
+To use a config file, pass it as `CONFIG_FILE` when submitting `../train_advanced.sh`:
 
 ```bash
-CONFIG_FILE="configs/swin_l_frozen_v3.yml"
-```
-
-Then run your training as usual:
-```bash
-qsub -l h_rt=48:00:00 -pe omp 16 -P herbdl -l gpus=2 -l gpu_c=8.0 -l gpu_memory=48G -m beas -M faridkar@bu.edu train.sh
+qsub -l h_rt=48:00:00 -pe omp 16 -P herbdl -l gpus=2 -l gpu_c=8.0 -l gpu_memory=48G \
+     -v CONFIG_FILE=configs/swin_l_frozen_v3.yml \
+     -m beas -M faridkar@bu.edu ../train_advanced.sh
 ```
 
 ## Available Configurations
@@ -40,7 +37,7 @@ To create a new configuration:
 
 2. Edit the parameters you want to change
 
-3. Update `train.sh` to point to your new config
+3. Point `CONFIG_FILE` at your new config when submitting (see Usage above)
 
 4. Run training
 

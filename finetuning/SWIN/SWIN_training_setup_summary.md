@@ -41,7 +41,7 @@ All initialized from **ImageNet-22k pretrained** weights and fine-tuned full (`f
 
 ## 4. The training engine — `SWIN_finetuning_advanced.py`
 
-A single config-driven script (YAML in, HF `Trainer` underneath) that supports a stack of optional techniques, each toggled by a config section. This is the heart of the setup. (`SWIN_finetuning.py` is the older/simpler baseline version; `SWIN_finetuning_arcface.py` is a variant.)
+A single config-driven script (YAML in, HF `Trainer` underneath) that supports a stack of optional techniques, each toggled by a config section. This is the heart of the setup — the older `SWIN_finetuning.py` (simple baseline) and `SWIN_finetuning_arcface.py` (ArcFace-only variant) have been removed since their functionality is a strict subset of this script's config-toggled features.
 
 Key custom components:
 
