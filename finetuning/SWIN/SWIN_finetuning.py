@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 
 import argparse
+import inspect
 import logging
 import os
 import sys
@@ -269,9 +270,19 @@ def main():
     )
 
     # Create TrainingArguments from config
+    # transformers>=5.16 dropped the `logging_dir` and `overwrite_output_dir` kwargs;
+    # only pass them if supported. overwrite_output_dir is tracked separately below so
+    # the output-dir-exists check still works regardless of transformers version.
+    _targs_params = inspect.signature(TrainingArguments.__init__).parameters
+    _targs_extra_kwargs = {}
+    if 'logging_dir' in _targs_params:
+        _targs_extra_kwargs['logging_dir'] = config['training']['logging_dir']
+    _overwrite_output_dir = config['training']['overwrite_output_dir']
+    if 'overwrite_output_dir' in _targs_params:
+        _targs_extra_kwargs['overwrite_output_dir'] = _overwrite_output_dir
+
     training_args = TrainingArguments(
         output_dir=config['training']['output_dir'],
-        logging_dir=config['training']['logging_dir'],
         do_train=config['training']['do_train'],
         do_eval=config['training']['do_eval'],
         per_device_train_batch_size=config['training']['per_device_train_batch_size'],
@@ -291,8 +302,8 @@ def main():
         bf16=config['training']['bf16'],
         dataloader_num_workers=config['training']['dataloader_num_workers'],
         remove_unused_columns=config['training']['remove_unused_columns'],
-        overwrite_output_dir=config['training']['overwrite_output_dir'],
         seed=config['training']['seed'],
+        **_targs_extra_kwargs,
     )
 
     # Setup logging
@@ -380,7 +391,7 @@ def main():
 
     # Detecting last checkpoint.
     last_checkpoint = None
-    if os.path.isdir(training_args.output_dir) and training_args.do_train and not training_args.overwrite_output_dir:
+    if os.path.isdir(training_args.output_dir) and training_args.do_train and not _overwrite_output_dir:
         last_checkpoint = get_last_checkpoint(training_args.output_dir)
         if last_checkpoint is None and len(os.listdir(training_args.output_dir)) > 0:
             raise ValueError(

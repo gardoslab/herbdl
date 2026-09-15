@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 
 import argparse
+import inspect
 import logging
 import os
 import re
@@ -1043,9 +1044,19 @@ def main():
         _warmup_steps, _warmup_ratio = int(_warmup), 0.0
 
     # Create TrainingArguments from config
+    # transformers>=5.16 dropped the `logging_dir` and `warmup_ratio` kwargs; only pass
+    # them if supported. When warmup_ratio isn't supported, we convert it to an equivalent
+    # warmup_steps once the train dataset size is known (see below, before Trainer init).
+    _targs_params = inspect.signature(TrainingArguments.__init__).parameters
+    _targs_extra_kwargs = {}
+    if 'logging_dir' in _targs_params:
+        _targs_extra_kwargs['logging_dir'] = _relocate_output_dir(config['training']['logging_dir'])
+    _warmup_ratio_supported = 'warmup_ratio' in _targs_params
+    if _warmup_ratio_supported:
+        _targs_extra_kwargs['warmup_ratio'] = _warmup_ratio
+
     training_args = TrainingArguments(
         output_dir=_relocate_output_dir(config['training']['output_dir']),
-        logging_dir=_relocate_output_dir(config['training']['logging_dir']),
         do_train=config['training']['do_train'],
         do_eval=config['training']['do_eval'],
         per_device_train_batch_size=config['training']['per_device_train_batch_size'],
@@ -1053,7 +1064,6 @@ def main():
         learning_rate=float(config['training']['learning_rate']),
         num_train_epochs=config['training']['num_train_epochs'],
         warmup_steps=_warmup_steps,
-        warmup_ratio=_warmup_ratio,
         weight_decay=config['training']['weight_decay'],
         gradient_accumulation_steps=config['training']['gradient_accumulation_steps'],
         lr_scheduler_type=config['training']['lr_scheduler_type'],
@@ -1074,6 +1084,7 @@ def main():
         gradient_checkpointing=config['training'].get('gradient_checkpointing', False),
         gradient_checkpointing_kwargs=config['training'].get('gradient_checkpointing_kwargs', None),
         load_best_model_at_end=config['training'].get('load_best_model_at_end', False),
+        **_targs_extra_kwargs,
     )
 
     # Setup logging
@@ -1295,6 +1306,21 @@ def main():
         dataset["validation"] = split["test"]
         print(f"Split the dataset into train and validation with proportions {1 - data_args.train_val_split} and {data_args.train_val_split}.")
         print(f"Training split has {len(dataset['train'])} examples and validation split has {len(dataset['validation'])} examples.")
+
+    if not _warmup_ratio_supported and _warmup_ratio > 0:
+        _effective_batch_size = (
+            training_args.per_device_train_batch_size
+            * training_args.world_size
+            * training_args.gradient_accumulation_steps
+        )
+        _steps_per_epoch = math.ceil(len(dataset['train']) / _effective_batch_size)
+        _total_steps = _steps_per_epoch * training_args.num_train_epochs
+        training_args.warmup_steps = round(_total_steps * _warmup_ratio)
+        print(
+            f"__CUSTOM__: transformers {transformers.__version__} has no `warmup_ratio` kwarg; "
+            f"converted warmup_ratio={_warmup_ratio} to warmup_steps={training_args.warmup_steps} "
+            f"(of {_total_steps} total steps)."
+        )
 
     # Prepare label mappings
     labels = dataset["train"].unique(data_args.label_column_name)
@@ -1811,15 +1837,21 @@ def main():
         # so that downstream stages can call AutoConfig.from_pretrained on this directory.
         if hasattr(model, 'config') and not isinstance(model, transformers.PreTrainedModel):
             model.config.save_pretrained(training_args.output_dir)
-        trainer.log_metrics("train", train_result.metrics)
-        trainer.save_metrics("train", train_result.metrics)
+        # compute_metrics can leave family/genus accuracy as None when not applicable
+        # (e.g. multi-task disabled or not produced this eval). Newer transformers'
+        # log_metrics formats every value with `:>width` and crashes on None, so drop
+        # None entries here rather than logging a placeholder.
+        _train_metrics = {k: v for k, v in train_result.metrics.items() if v is not None}
+        trainer.log_metrics("train", _train_metrics)
+        trainer.save_metrics("train", _train_metrics)
         trainer.save_state()
 
     # Evaluation
     if training_args.do_eval:
         metrics = trainer.evaluate()
-        trainer.log_metrics("eval", metrics)
-        trainer.save_metrics("eval", metrics)
+        _eval_metrics = {k: v for k, v in metrics.items() if v is not None}
+        trainer.log_metrics("eval", _eval_metrics)
+        trainer.save_metrics("eval", _eval_metrics)
 
     # Multi-crop evaluation (test-time augmentation)
     if multi_crop_enabled and training_args.do_eval:
