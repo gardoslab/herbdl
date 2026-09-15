@@ -139,8 +139,10 @@ SEEDS="0 1 2 3 4" bash submit_concrete.sh
 ```
 
 Each job requests 1 A100-80G GPU on `herbdl` for 48h and writes to
-`finetuning/output/SWIN/SWIN_L_384_CONCRETE_SEED<seed>/`. Adjust the `-M` email in
-`submit_concrete.sh` if needed.
+`finetuning/output/SWIN/SWIN_L_384_CONCRETE_SEED<seed>/` (in your own workspace). Set
+`EMAIL=you@bu.edu` for job notifications (it otherwise defaults to the script author).
+**A single 1-GPU job will not finish 100 epochs in 48h — see "Runtime" below for the
+multi-GPU and resume options.**
 
 ### Smoke test first (recommended)
 Verify the pipeline end-to-end cheaply before committing 48h jobs:
@@ -151,6 +153,113 @@ qsub -l h_rt=2:00:00 -pe omp 8 -P herbdl -l gpus=1 -l gpu_c=8.0 -l gpu_memory=80
 -v SET_ARGS="--set data.max_train_samples=2000 --set data.max_eval_samples=2000 --set training.num_train_epochs=1 --set training.output_dir=/projectnb/herbdl/workspaces/tgardos/herbdl/finetuning/output/SWIN/SMOKE --set training.overwrite_output_dir=true --set wandb.enabled=false" \
      train_advanced.sh
 ```
+
+## Runtime: 48h wall limit, multi-GPU (DDP), and resuming
+
+The full run is **100 epochs × ~671,817 images** at effective batch 128 = **524,900
+optimization steps**. On **1 A100-80G** it settles at ~1.2 s/step ≈ **~175h (~7 days)** — far
+past the **48h** job wall limit (`-l h_rt=48:00:00`), so a single 1-GPU job only reaches
+~epoch 27 before SGE kills it. Three options, combinable:
+
+**1. Resume across jobs (no changes).** A checkpoint is saved every epoch
+(`save_strategy: epoch`, ~1.8h on 1 GPU) and the trainer auto-resumes from the latest one when
+you resubmit to the same `output_dir` (`overwrite_output_dir: false`). Just rerun the same
+command after each 48h job ends — ~4 sequential jobs reach 100 epochs.
+
+**2. Multi-GPU / DDP — recommended.** `submit_concrete.sh` honors `NGPUS`, which sets
+`NPROC_PER_NODE` so `train_advanced.sh` launches via `torchrun`. Wall-time scales ~linearly:
+
+| GPUs | grad_accum for eff. batch 128 | ~wall time (100 ep) |
+|------|-------------------------------|---------------------|
+| 1    | 8 (default)                   | ~175h → needs resume |
+| 2    | 4                             | ~88h → needs resume  |
+| 4    | 2                             | ~44h → ≈ one 48h job |
+
+⚠️ **DDP multiplies the effective batch by `NGPUS`** (each GPU runs its own
+`per_device_batch × grad_accum`). The base config targets effective batch **128**, so the
+4-GPU run needs `gradient_accumulation_steps: 2` (= `16 × 2 × 4`). A dedicated config —
+[`configs_advanced/swin_large_384_concrete_4gpu.yml`](configs_advanced/swin_large_384_concrete_4gpu.yml)
+— is identical to the base run but with `grad_accum: 2`, so the launcher path just works:
+
+**4-GPU run via the launcher** (no edits needed):
+```bash
+cd finetuning/SWIN
+EMAIL=tgardos@bu.edu NGPUS=4 RUN_PREFIX=SWIN_L_384_CONCRETE_4GPU \
+  CONFIG=configs_advanced/swin_large_384_concrete_4gpu.yml SEEDS="0" \
+  bash submit_concrete.sh
+```
+`NGPUS=4` requests `gpus=4`, `omp 32`, and triggers torchrun (4 processes, 1 per GPU).
+
+**2-GPU run** (often schedules faster — more nodes have 2 free GPUs than 4; ~88h, one resume).
+Uses [`configs_advanced/swin_large_384_concrete_2gpu.yml`](configs_advanced/swin_large_384_concrete_2gpu.yml)
+(`grad_accum: 4` → `16 × 4 × 2 = 128`):
+```bash
+cd finetuning/SWIN
+EMAIL=tgardos@bu.edu NGPUS=2 RUN_PREFIX=SWIN_L_384_CONCRETE_2GPU \
+  CONFIG=configs_advanced/swin_large_384_concrete_2gpu.yml SEEDS="0" \
+  bash submit_concrete.sh
+```
+
+**4-GPU run via direct qsub** (grad-accum passed inline, no config edit):
+```bash
+cd finetuning/SWIN
+OUT=/projectnb/herbdl/workspaces/tgardos/herbdl/finetuning/output/SWIN/SWIN_L_384_CONCRETE_SEED0
+qsub -l h_rt=48:00:00 -pe omp 32 -P herbdl -l gpus=4 -l gpu_c=8.0 -l gpu_memory=80G \
+     -m beas -M tgardos@bu.edu -N SWINL384_S0 \
+     -v CONFIG_FILE=configs_advanced/swin_large_384_concrete.yml,NPROC_PER_NODE=4,\
+SET_ARGS="--set training.gradient_accumulation_steps=2 --set training.seed=0 --set training.output_dir=$OUT --set training.logging_dir=$OUT" \
+     train_advanced.sh
+```
+
+**3. Fewer epochs.** 100 is generous — the 224-px curriculum plateaued by ~50 epochs. Trim with
+`--set training.num_train_epochs=50` for a faster first result; resume-extend later.
+
+> Effective-batch note: DDP at 4 GPUs with `grad_accum=2` keeps the global batch at
+> `16 × 2 × 4 = 128`, matching the 1-GPU recipe. If you intentionally let it grow (e.g.
+> `grad_accum=8` on 4 GPUs → batch 512), scale the LR up accordingly and expect different
+> convergence.
+
+### Checking GPU availability (why a job sits in `qw`)
+
+A single-node DDP job (`-pe omp`) needs all its GPUs **free on one host**. SCC has scheduler
+job-info collection off, so there's no "queue position" — instead, check live availability:
+
+- `qstat -u $USER` — your jobs (`qw` = waiting, `r` = running).
+- `qgpus` — cluster-wide free GPUs by type (A100-80G, H200, …).
+- Per-node free count matching this run's needs (`cc≥8.0`, `80G`) — change `f>=2` to the GPU
+  count you requested (`f>=4` for the 4-GPU run, `f>=1` for 1-GPU):
+
+```bash
+qhost -F gpu_compute_capability,gpu_memory,gpus | awk '
+/^scc-/{h=$1;cc=m=f="";next}
+/compute_capability=/{s=$0;sub(/.*=/,"",s);cc=s+0}
+/gpu_memory=/{s=$0;sub(/.*=/,"",s);m=s+0}
+/hc:gpus=/{s=$0;sub(/.*=/,"",s);f=s+0; if(cc>=8 && m>=80 && f>=2) printf "%-12s cc=%-3s mem=%dG free=%d\n",h,cc,m,f}'
+```
+
+`hc:gpus` is the per-node *available* count, so a host only appears if it can satisfy your
+single-node request right now. No rows for `f>=4` but several for `f>=2` is exactly why the
+4-GPU run queues longer than the 2-GPU run. Knobs: `cc>=8` (8.0 = A100, 9.0 = H200), `m>=80`
+(min GB), `f>=N` (free GPUs on one node).
+
+#### Wall time matters more than you'd expect — keep it ≤ 24h
+
+Seeing idle GPUs but still stuck in `qw`? Most free GPU nodes are **buy-in** queues, and
+project `herbdl`'s access to them is **time-capped**:
+
+| Queue type | herbdl access | max `h_rt` |
+|------------|---------------|-----------|
+| `cds-gpu-long` (CDS buy-in) | yes | **24h** |
+| `cds-gpu`, public `*-pub` queues | yes | **12h** |
+| other groups' queues (`ece*`, `chapmangroup*`) | no | — |
+| shared long-GPU pool | yes | 48h, but scarce |
+
+A job requesting **`h_rt=48h` is locked out of every queue herbdl can borrow** (they cap at
+24h/12h) and waits behind the limited shared long-GPU pool — even while CDS/public GPUs sit
+idle. So **request ≤24h** and let per-epoch checkpoint + auto-resume carry the run across
+jobs. `submit_concrete.sh` now defaults `H_RT=24:00:00`; override with `H_RT=12:00:00` for the
+widest (public) queue access, or check eligibility/caps with
+`qconf -sq <queue>` (look at `projects` and `h_rt`).
 
 ## Output paths auto-relocate to your workspace
 

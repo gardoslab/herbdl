@@ -220,10 +220,15 @@ class MultiTaskSwinModel(nn.Module):
     """
     Multi-task SWIN model with separate classification heads for family, genus, and species.
     """
-    def __init__(self, base_model, num_families, num_genera, num_species):
+    def __init__(self, base_model, num_families, num_genera, num_species,
+                 family_weight=0.2, genus_weight=0.3, species_weight=1.0):
         super().__init__()
         # Store config from base model - required by Trainer
         self.config = base_model.config
+        # Multi-task loss weights (configurable; defaults preserve the original recipe)
+        self.family_weight = family_weight
+        self.genus_weight = genus_weight
+        self.species_weight = species_weight
 
         # Extract the base SWIN encoder (works for both swin and swinv2)
         if hasattr(base_model, 'swinv2'):
@@ -266,7 +271,7 @@ class MultiTaskSwinModel(nn.Module):
             species_loss = loss_fct(species_logits, species_labels)
 
             # Weighted combination (species is most important, then genus, then family)
-            loss = species_loss + 0.3 * genus_loss + 0.2 * family_loss
+            loss = self.species_weight * species_loss + self.genus_weight * genus_loss + self.family_weight * family_loss
 
         return {
             'loss': loss,
@@ -517,10 +522,16 @@ class MixupTrainer(Trainer):
     Custom Trainer that handles Mixup/Cutmix loss computation and batch-wise evaluation.
     """
     def __init__(self, *args, multi_task=False, arcface=False,
-                 logit_adjustment=False, log_prior=None, logit_adjustment_tau=1.0, **kwargs):
+                 logit_adjustment=False, log_prior=None, logit_adjustment_tau=1.0,
+                 family_weight=0.2, genus_weight=0.3, species_weight=1.0, **kwargs):
         super().__init__(*args, **kwargs)
         self.multi_task = multi_task
         self.arcface = arcface
+        # Multi-task loss weights (used when recomputing the mixed/adjusted loss here;
+        # kept in sync with MultiTaskSwinModel's internal weighting).
+        self.family_weight = family_weight
+        self.genus_weight = genus_weight
+        self.species_weight = species_weight
         # Balanced-softmax / logit adjustment (Tier 1.3-A). log_prior is a
         # [num_species] tensor of log class frequencies; added to the species
         # logits during TRAINING only (never at inference) to down-weight head
@@ -542,12 +553,20 @@ class MixupTrainer(Trainer):
 
         smoothing = getattr(self.data_collator, 'label_smoothing', 0.0)
 
-        # ArcFace: model computes its own loss internally (no mixup/cutmix with ArcFace)
+        # ArcFace: model computes its own loss internally (no mixup/cutmix with ArcFace).
+        # NOTE: logit_adjustment (balanced softmax) is intentionally NOT applied here —
+        # the ArcFace margin already provides a form of class separation, and adding
+        # log_prior on top of scaled cosine logits is not well-defined. If you enable
+        # both arcface and long_tail.logit_adjustment in the config, logit_adjustment
+        # has no effect during training (this early return bypasses _adjust_logits).
         if self.arcface:
             if self.multi_task:
                 family_labels = inputs.pop("family_labels", None)
                 genus_labels = inputs.pop("genus_labels", None)
                 species_labels = inputs.pop("species_labels", None)
+                # labels_a (popped above) equals species_labels here — both refer to the
+                # species target — but species_labels is used so the model's forward
+                # signature receives the named argument it expects.
                 outputs = model(
                     pixel_values=inputs["pixel_values"],
                     species_labels=species_labels,
@@ -591,7 +610,7 @@ class MixupTrainer(Trainer):
                 species_loss = lam * loss_fct(species_logits, species_labels) + (1 - lam) * loss_fct(species_logits, species_labels_b)
 
                 # Combined loss with same weighting as the model
-                loss = species_loss + 0.3 * genus_loss + 0.2 * family_loss
+                loss = self.species_weight * species_loss + self.genus_weight * genus_loss + self.family_weight * family_loss
             elif self.logit_adjustment:
                 # No mixup this batch, but balanced softmax is on: recompute the
                 # combined loss in-trainer so the species logits get the log-prior
@@ -601,7 +620,7 @@ class MixupTrainer(Trainer):
                 species_loss = loss_fct(species_logits, species_labels)
                 genus_loss = loss_fct(outputs.get("genus_logits"), genus_labels)
                 family_loss = loss_fct(outputs.get("family_logits"), family_labels)
-                loss = species_loss + 0.3 * genus_loss + 0.2 * family_loss
+                loss = self.species_weight * species_loss + self.genus_weight * genus_loss + self.family_weight * family_loss
             else:
                 # Model already computed the loss
                 loss = outputs.get("loss")
@@ -980,6 +999,13 @@ def main():
     family_weight = multi_task_config.get('family_weight', 0.2)
     genus_weight = multi_task_config.get('genus_weight', 0.3)
     species_weight = multi_task_config.get('species_weight', 1.0)
+    # Which column the multi-task SPECIES head targets. Default "species" reproduces the
+    # original behavior (the species-EPITHET string, ~6.9k collapsed classes). Set to
+    # "scientificNameEncoded" to target the full Kaggle species (~15.5k classes) so the
+    # reported species accuracy/F1 matches the leaderboard metric, with family/genus as
+    # auxiliary coarse heads. Changing this changes the species head size (and breaks
+    # resume of checkpoints trained with the other setting).
+    species_column = multi_task_config.get('species_column', 'species')
 
     # Extract ArcFace parameters
     arcface_config = config.get('arcface', {})
@@ -1000,6 +1026,7 @@ def main():
     print(f"__CUSTOM__: Weight EMA: {use_ema} (decay={ema_decay})")
     if use_multi_task:
         print(f"__CUSTOM__: Min species samples: {min_species_samples}")
+        print(f"__CUSTOM__: Species head target column: {species_column}")
         print(f"__CUSTOM__: Loss weights - Family: {family_weight}, Genus: {genus_weight}, Species: {species_weight}")
     if use_arcface:
         print(f"__CUSTOM__: ArcFace embedding_size={arcface_embedding_size}, scale={arcface_scale}, margin={arcface_margin}, k={arcface_num_subcenters}, hybrid_ce_weight={arcface_hybrid_ce_weight}")
@@ -1169,7 +1196,9 @@ def main():
         if 'eta_min' in sched_kwargs:
             eta_min = sched_kwargs.pop('eta_min')
             if str(config['training'].get('lr_scheduler_type', '')).lower() == 'cosine':
-                training_args.lr_scheduler_type = 'cosine_with_min_lr'
+                # assign the SchedulerType enum (not a raw str) so downstream code that
+                # reads `.value` (e.g. create_model_card) doesn't break
+                training_args.lr_scheduler_type = transformers.SchedulerType('cosine_with_min_lr')
                 sched_kwargs['min_lr'] = eta_min
                 print(f"__CUSTOM__: Mapped cosine eta_min={eta_min} -> "
                       f"lr_scheduler_type=cosine_with_min_lr, min_lr={eta_min}")
@@ -1269,7 +1298,7 @@ def main():
         print(f"__CUSTOM__: Filtering species with <={min_species_samples} samples")
 
         # Check if multi-task columns exist
-        required_columns = ['family', 'genus', 'species']
+        required_columns = ['family', 'genus', species_column]
         missing_columns = [col for col in required_columns if col not in dataset_column_names]
         if missing_columns:
             raise ValueError(
@@ -1277,18 +1306,18 @@ def main():
                 f"Available columns: {dataset_column_names}"
             )
 
-        # Filter by species count
-        species_counts = Counter(dataset["train"]["species"])
+        # Filter by species count (on the configured species head column)
+        species_counts = Counter(dataset["train"][species_column])
         valid_species = {s for s, c in species_counts.items() if c > min_species_samples}
 
         original_size = len(dataset["train"])
-        dataset["train"] = dataset["train"].filter(lambda x: x["species"] in valid_species)
+        dataset["train"] = dataset["train"].filter(lambda x: x[species_column] in valid_species)
         filtered_size = len(dataset["train"])
         print(f"__CUSTOM__: Filtered {original_size - filtered_size} samples, kept {filtered_size} samples")
 
         # Also filter validation set if it exists
         if "validation" in dataset:
-            dataset["validation"] = dataset["validation"].filter(lambda x: x["species"] in valid_species)
+            dataset["validation"] = dataset["validation"].filter(lambda x: x[species_column] in valid_species)
             print(f"__CUSTOM__: Validation set filtered to {len(dataset['validation'])} samples")
 
     # If we don't have a validation split, split off a percentage of train as validation
@@ -1332,10 +1361,10 @@ def main():
     if use_multi_task:
         print("__CUSTOM__: Creating hierarchical label mappings for multi-task learning")
 
-        # Get unique values for each taxonomy level
+        # Get unique values for each taxonomy level (species head uses species_column)
         unique_families = sorted(dataset["train"].unique("family"))
         unique_genera = sorted(dataset["train"].unique("genus"))
-        unique_species = sorted(dataset["train"].unique("species"))
+        unique_species = sorted(dataset["train"].unique(species_column))
 
         # Create label-to-id mappings
         family2id = {f: i for i, f in enumerate(unique_families)}
@@ -1426,7 +1455,10 @@ def main():
                 metrics["genus_predictions_available"] = True
                 metrics["family_predictions_available"] = True
 
-            return metrics
+            # Drop metrics that weren't computed (None). The custom eval loop only
+            # reconstructs species predictions, so family/genus metrics are None here —
+            # and HF's log_metrics/save_metrics numeric-format every value and crash on None.
+            return {k: v for k, v in metrics.items() if v is not None}
     else:
         def preprocess_logits_for_metrics(logits, labels):
             """
@@ -1458,7 +1490,7 @@ def main():
         from collections import Counter
         if use_multi_task:
             sp2id = hierarchical_mappings['species2id']
-            cnt = Counter(sp2id[s] for s in dataset["train"]["species"])
+            cnt = Counter(sp2id[s] for s in dataset["train"][species_column])
             n_cls = hierarchical_mappings['num_species']
         else:
             cnt = Counter(dataset["train"][data_args.label_column_name])
@@ -1560,7 +1592,10 @@ def main():
             base_model,
             num_families=hierarchical_mappings['num_families'],
             num_genera=hierarchical_mappings['num_genera'],
-            num_species=hierarchical_mappings['num_species']
+            num_species=hierarchical_mappings['num_species'],
+            family_weight=family_weight,
+            genus_weight=genus_weight,
+            species_weight=species_weight,
         )
 
         print(f"__CUSTOM__: Multi-task model created with {hierarchical_mappings['num_families']} families, "
@@ -1699,7 +1734,7 @@ def main():
                 hierarchical_mappings['genus2id'][g] for g in example_batch["genus"]
             ]
             example_batch["species_label"] = [
-                hierarchical_mappings['species2id'][s] for s in example_batch["species"]
+                hierarchical_mappings['species2id'][s] for s in example_batch[species_column]
             ]
 
         return example_batch
@@ -1719,7 +1754,7 @@ def main():
                 hierarchical_mappings['genus2id'][g] for g in example_batch["genus"]
             ]
             example_batch["species_label"] = [
-                hierarchical_mappings['species2id'][s] for s in example_batch["species"]
+                hierarchical_mappings['species2id'][s] for s in example_batch[species_column]
             ]
 
         return example_batch
@@ -1797,6 +1832,9 @@ def main():
             logit_adjustment=use_logit_adjustment,
             log_prior=log_prior,
             logit_adjustment_tau=logit_adjustment_tau,
+            family_weight=family_weight,
+            genus_weight=genus_weight,
+            species_weight=species_weight,
             preprocess_logits_for_metrics=preprocess_logits_for_metrics
         )
     else:
@@ -1813,6 +1851,8 @@ def main():
         )
 
     # Swap in filtered W&B callback to suppress label2id/id2label from config uploads.
+    # Only when W&B is enabled: instantiating a WandbCallback while WANDB_DISABLED is set
+    # (the wandb.enabled=false path, e.g. smoke tests) raises a RuntimeError.
     if config['wandb'].get('enabled', True):
         from transformers.integrations import WandbCallback as _WandbCallback
         trainer.remove_callback(_WandbCallback)

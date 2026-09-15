@@ -1,21 +1,21 @@
 # =============================================================================
-# Concrete next run (SWIN_training_setup_summary.md §10/§11 — "Putting it together")
+# Concrete next run — 2-GPU (DDP) variant
 # =============================================================================
-# A single strong single-model candidate combining the cheap-but-high-value levers:
-#   - Backbone : SWIN-L @384, ImageNet-22k pretrained (Tier 1.1 "stay in SWIN", Tier 1.2)
-#   - Loss     : balanced-softmax CE (Tier 1.3-A) + multi-task family/genus/species heads
-#   - Schedule : 100 epochs, 5% warmup, cosine; EMA on (Tier 2.6)
-#   - Aug      : MEDIUM (RandAugment mag 7, mild erasing/mixup) — respects the curriculum
-#                finding that heavy aug applied COLD destroys performance (0.61 vs 0.745).
-#   - Inference: multi-crop + flip TTA wired (Tier 2.7), enabled only for final prediction.
+# Identical to swin_large_384_concrete.yml EXCEPT gradient_accumulation_steps is 4
+# (not 8), so under DDP across 2 GPUs the effective batch stays 128
+# (16 per-device x 4 accum x 2 GPUs = 128), matching the 1-GPU recipe.
+# Same levers: SWIN-L @384 in22k, balanced-softmax + multi-task, medium aug, EMA,
+# 100 epochs, TTA wired for inference.
 #
-# WARM-START (recommended once a 384 checkpoint exists — Tier 2.5 "always chain"):
-#   point model.model_name_or_path at a converged SWIN-L 384 output_dir (keep
-#   config_name / image_processor_name on the 384 arch) and raise RandAugment to 9.
-#   Cold-from-in22k here is the dependency-free default; chaining is strictly better.
+# Why 2 GPUs: easier to schedule than 4-on-one-node (more nodes have 2 free).
+# ~88h for 100 epochs, so plan on one resume across 48h jobs (auto-resumes from
+# the per-epoch checkpoint in output_dir).
 #
-# Seeds: launch the ensemble with submit_concrete.sh, which overrides
-#   training.seed / training.output_dir / custom.run_id via --set per job.
+# Launch (NGPUS triggers torchrun via train_advanced.sh's NPROC_PER_NODE):
+#   EMAIL=you@bu.edu NGPUS=2 RUN_PREFIX=SWIN_L_384_CONCRETE_2GPU \
+#     CONFIG=configs_advanced/swin_large_384_concrete_2gpu.yml SEEDS="0" \
+#     bash submit_concrete.sh
+# (submit_concrete.sh overrides training.seed / output_dir / run_id per seed.)
 # =============================================================================
 
 model:
@@ -45,8 +45,8 @@ data:
   train_val_split: 0.2
 
 training:
-  output_dir: "/projectnb/herbdl/workspaces/tgardos/herbdl/finetuning/output/SWIN/SWIN_L_384_CONCRETE_SEED0"
-  logging_dir: "/projectnb/herbdl/workspaces/tgardos/herbdl/finetuning/output/SWIN/SWIN_L_384_CONCRETE_SEED0"
+  output_dir: "/projectnb/herbdl/workspaces/tgardos/herbdl/finetuning/output/SWIN/SWIN_L_384_CONCRETE_2GPU_SEED0"
+  logging_dir: "/projectnb/herbdl/workspaces/tgardos/herbdl/finetuning/output/SWIN/SWIN_L_384_CONCRETE_2GPU_SEED0"
   do_train: true
   do_eval: true
   per_device_train_batch_size: 16
@@ -55,8 +55,11 @@ training:
   num_train_epochs: 100
   warmup_steps: 0.05
   weight_decay: 0.05
-  gradient_accumulation_steps: 8          # effective batch = 16 * 8 = 128
+  gradient_accumulation_steps: 4          # 2-GPU DDP: 16 * 4 * 2 GPUs = effective batch 128
   gradient_checkpointing: true            # needed to fit SWIN-L @384 (wrappers pass it through)
+  gradient_checkpointing_kwargs:
+    use_reentrant: false                  # REQUIRED under DDP: reentrant checkpointing fires
+                                          # autograd hooks twice -> "marked as ready twice" crash
   lr_scheduler_type: "cosine"
   lr_scheduler_kwargs:
     eta_min: 0.000001
@@ -77,10 +80,10 @@ custom:
   lr_type: "cosine"
   frozen: false
   frozen_type: "none"
-  run_group: "SWIN_L_384_Concrete"
-  run_name: "SWIN_L_384_Concrete_Seed0"
-  run_id: "swin_l_384_concrete_seed0"
-  run_notes: "Concrete next run: SWIN-L 384 in22k, balanced-softmax + multi-task CE, medium aug, EMA, 100ep. Seed 0."
+  run_group: "SWIN_L_384_Concrete_2GPU"
+  run_name: "SWIN_L_384_Concrete_2GPU_Seed0"
+  run_id: "swin_l_384_concrete_2gpu_seed0"
+  run_notes: "Concrete run, 2-GPU DDP (grad_accum 4 -> eff batch 128): SWIN-L 384 in22k, balanced-softmax + multi-task CE, medium aug, EMA, 100ep. Seed 0."
 
 augmentation:
   use_advanced: true
