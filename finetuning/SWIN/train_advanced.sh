@@ -1,13 +1,9 @@
 #!/bin/bash -l
 
 module load miniconda
+module load academic-ml/spring-2026 2>/dev/null || module load academic-ml/fall-2026
 
 conda activate herb_env
-
-# accelerate probes for deepspeed at Trainer init (even when unused); deepspeed's
-# CUDA compatibility check needs CUDA_HOME to find nvcc, which isn't set by default
-# in this job environment. Point it at the conda env's own bundled CUDA toolkit.
-export CUDA_HOME="${CUDA_HOME:-$CONDA_PREFIX}"
 
 # CONFIG_FILE must be provided (e.g. via `qsub -v CONFIG_FILE=...`, as submit_concrete.sh
 # does). Fail fast rather than silently running an arbitrary default config.
