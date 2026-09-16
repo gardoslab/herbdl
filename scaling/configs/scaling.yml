@@ -1,4 +1,4 @@
-# Label-cardinality sweep -- balanced regime, frozen SWIN representation.
+# Label-cardinality sweep -- balanced regime, FINE-TUNED SWIN representation.
 #
 # This is the config the fixed run command reads. Child experiment nodes edit
 # THIS file on their own branch; the run command never changes.
@@ -11,10 +11,43 @@ data:
   image_column: "filename"
   label_column: "scientificNameEncoded"
 
+  # Probe-eval images come from the split held out of SWIN fine-tuning
+  # (finetuning/SWIN/configs/swin_base_baseline.yml trains on train_2022.json
+  # with val_2022.json as validation). This is NOT optional for a fine-tuned
+  # backbone: scoring it on images it was fine-tuned on measures memorisation,
+  # which would flatten the cardinality curve for a completely uninteresting
+  # reason. The run asserts the two pools do not share a path.
+  eval_manifest: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  fail_on_pool_overlap: true
+
 features:
-  # Frozen, and NOT trained on the herbarium label space -- otherwise the
-  # representation already encodes the 15k-way decision and the sweep is circular.
-  backbone: "microsoft/swin-base-patch4-window7-224-in22k"
+  # Frozen at sweep time, but -- unlike the parent node -- this backbone WAS
+  # trained on the 15k herbarium label space. That is the point of this node,
+  # and it changes the question being asked:
+  #   parent  : how far does a GENERIC representation carry as labels multiply?
+  #   here    : how far does a representation OPTIMISED FOR EXACTLY THIS 15k
+  #             decision carry as labels multiply?
+  # The features here already encode the 15k-way decision, so this arm cannot
+  # be read as a clean measure of intrinsic task difficulty. It answers the
+  # practical question instead: does task-adapted pretraining change the SHAPE
+  # of the decline, or only its height? Held-out eval (above) is what keeps
+  # even that question answerable.
+  # Fine-tuned on the full Kaggle-2022 15k label space. This session cannot
+  # list the SCC checkpoint tree (SSH needs 2FA), so the run inventories it and
+  # tries these names in order; the inventory is printed before anything
+  # expensive happens, so a miss is diagnosable from the log alone.
+  backbone:
+    - "SWIN_BASE_BASELINE"
+    - "SWIN_B_BASELINE_HIGHER_LR"
+    - "SWIN_B_BASELINE"
+  checkpoint_roots:
+    - "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/"
+  # Hard constraint, not a preference -- a 50-class checkpoint whose directory
+  # name happens to match is refused rather than silently substituted.
+  expect_num_labels: 15501
+  # Last resort if no name matches: take the highest-checkpoint model whose
+  # label space is within 25% of the above, and say so loudly in the log.
+  auto_select_by_label_count: true
   image_size: 224
   batch_size: 256
   num_workers: 16
@@ -58,4 +91,4 @@ probe:
 
 output:
   dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/scaling/results"
-  results_file: "converged_budget_ladder_swin_base_in22k.json"
+  results_file: "cardinality_finetuned_swin15k.json"

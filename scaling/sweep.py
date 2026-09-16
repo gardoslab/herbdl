@@ -45,20 +45,36 @@ def log(msg):
     print(f"__LCS__: {msg}", flush=True)
 
 
-def build_task(labels, valid, n_classes, k_train, k_eval, rng_seed, eligible_order):
-    """Nested N-way task: first `n_classes` of the shuffled eligible order."""
+def build_task(labels, valid, n_classes, k_train, k_eval, rng_seed, eligible_order,
+               is_eval=None):
+    """Nested N-way task: first `n_classes` of the shuffled eligible order.
+
+    `is_eval` selects between two regimes:
+      None  -- one pool, split within each class (the generic-backbone case).
+      array -- two disjoint pools. Probe-train images come from the pool the
+               backbone may have been fine-tuned on; probe-eval images come
+               only from the held-out pool. Required whenever the backbone was
+               trained on this dataset, or the probe scores memorisation.
+    """
     chosen = eligible_order[:n_classes]
     # Per-class image permutation is seeded by (seed, class) only -- never by N --
     # so a class's train/eval images are byte-identical across the whole sweep.
     tr_idx, tr_lab, ev_idx, ev_lab = [], [], [], []
     for new_id, cls in enumerate(chosen):
-        pool = np.flatnonzero((labels == cls) & valid)
-        perm = np.random.default_rng((rng_seed, int(cls))).permutation(pool.size)
-        sel = pool[perm]
-        tr_idx.append(sel[:k_train])
-        ev_idx.append(sel[k_train:k_train + k_eval])
-        tr_lab.append(np.full(k_train, new_id, dtype=np.int64))
-        ev_lab.append(np.full(min(k_eval, max(0, sel.size - k_train)), new_id, dtype=np.int64))
+        mask = (labels == cls) & valid
+        if is_eval is None:
+            pool = np.flatnonzero(mask)
+            sel = pool[np.random.default_rng((rng_seed, int(cls))).permutation(pool.size)]
+            t, e = sel[:k_train], sel[k_train:k_train + k_eval]
+        else:
+            ptr = np.flatnonzero(mask & ~is_eval)
+            pev = np.flatnonzero(mask & is_eval)
+            t = ptr[np.random.default_rng((rng_seed, int(cls))).permutation(ptr.size)][:k_train]
+            e = pev[np.random.default_rng((rng_seed, int(cls), 1)).permutation(pev.size)][:k_eval]
+        tr_idx.append(t)
+        ev_idx.append(e)
+        tr_lab.append(np.full(t.size, new_id, dtype=np.int64))
+        ev_lab.append(np.full(e.size, new_id, dtype=np.int64))
     return (np.concatenate(tr_idx), np.concatenate(tr_lab),
             np.concatenate(ev_idx), np.concatenate(ev_lab), chosen)
 
@@ -163,14 +179,54 @@ def main():
     if device == "cuda":
         log(f"gpu={torch.cuda.get_device_name(0)}")
 
-    df, info = data_mod.load_manifest(cfg["data"]["manifest"],
-                                      cfg["data"].get("image_column"),
-                                      cfg["data"].get("label_column"),
-                                      cfg["data"].get("image_root", ""))
+    eval_manifest = cfg["data"].get("eval_manifest")
+    if eval_manifest:
+        df, info = data_mod.load_pair(
+            cfg["data"]["manifest"], eval_manifest,
+            cfg["data"].get("image_column"), cfg["data"].get("label_column"),
+            cfg["data"].get("image_root", ""))
+    else:
+        df, info = data_mod.load_manifest(
+            cfg["data"]["manifest"], cfg["data"].get("image_column"),
+            cfg["data"].get("label_column"), cfg["data"].get("image_root", ""))
     data_mod.census(df, info)
+    is_eval = None
+    if eval_manifest:
+        n_overlap = data_mod.pool_census(df, info)
+        if n_overlap and cfg["data"].get("fail_on_pool_overlap", True):
+            raise RuntimeError(
+                f"{n_overlap:,} images appear in BOTH the train and eval manifests. "
+                "With a backbone fine-tuned on the train pool this silently measures "
+                "memorisation. Fix the manifests or set data.fail_on_pool_overlap: false.")
+        is_eval = df["is_eval"].to_numpy()
+
+        # Pre-flight on manifest counts alone, BEFORE feature extraction. If the
+        # held-out pool is too thin to give k_eval images to a useful number of
+        # classes, that is knowable in milliseconds and should not cost half an
+        # hour of GPU first.
+        _lab = df["label"].to_numpy()
+        _kt, _ke = cfg["sweep"]["k_train"], cfg["sweep"]["k_eval"]
+        _ctr = np.bincount(_lab[~is_eval], minlength=info["n_classes"])
+        _cev = np.bincount(_lab[is_eval], minlength=info["n_classes"])
+        _elig = int(((_ctr >= _kt) & (_cev >= _ke)).sum())
+        log(f"pre-flight: {_elig:,} of {info['n_classes']:,} classes would clear "
+            f"k_train={_kt}/k_eval={_ke} before readability filtering")
+        if _elig < 50:
+            raise RuntimeError(
+                f"Only {_elig} classes have {_kt} train and {_ke} held-out images. "
+                f"The eval manifest is too thin for this k -- lower sweep.k_eval "
+                f"(eval imgs/class: max={int(_cev.max())}) rather than reusing "
+                f"training images, which would defeat the point of the held-out pool.")
+
+    # Resolve the backbone against whatever is actually on disk, and print the
+    # inventory first so a miss is diagnosable from the log alone.
+    inv = feat_mod.inventory_checkpoints(cfg["features"].get("checkpoint_roots", []))
+    backbone = feat_mod.resolve_backbone(
+        cfg["features"]["backbone"], inv, cfg["features"].get("expect_num_labels"),
+        auto_by_labels=cfg["features"].get("auto_select_by_label_count", False))
 
     feats, valid = feat_mod.build_cache(
-        df["path"].tolist(), cfg["features"]["cache_root"], cfg["features"]["backbone"],
+        df["path"].tolist(), cfg["features"]["cache_root"], backbone,
         cfg["features"]["image_size"], cfg["features"]["batch_size"],
         cfg["features"]["num_workers"], device)
 
@@ -178,10 +234,20 @@ def main():
     k_train, k_eval = cfg["sweep"]["k_train"], cfg["sweep"]["k_eval"]
     need = k_train + k_eval
 
-    counts = np.bincount(labels[valid], minlength=info["n_classes"])
-    eligible = np.flatnonzero(counts >= need)
-    log(f"k_train={k_train} k_eval={k_eval} -> {len(eligible):,} of {info['n_classes']:,} "
-        f"classes have >={need} usable images ({len(eligible) / info['n_classes']:.1%})")
+    if is_eval is None:
+        counts = np.bincount(labels[valid], minlength=info["n_classes"])
+        eligible = np.flatnonzero(counts >= need)
+        log(f"k_train={k_train} k_eval={k_eval} -> {len(eligible):,} of {info['n_classes']:,} "
+            f"classes have >={need} usable images ({len(eligible) / info['n_classes']:.1%})")
+    else:
+        c_tr = np.bincount(labels[valid & ~is_eval], minlength=info["n_classes"])
+        c_ev = np.bincount(labels[valid & is_eval], minlength=info["n_classes"])
+        eligible = np.flatnonzero((c_tr >= k_train) & (c_ev >= k_eval))
+        log(f"k_train={k_train} (train pool) k_eval={k_eval} (held-out pool) -> "
+            f"{len(eligible):,} of {info['n_classes']:,} classes clear both "
+            f"({len(eligible) / info['n_classes']:.1%}); "
+            f"{int((c_tr >= k_train).sum()):,} clear train only, "
+            f"{int((c_ev >= k_eval).sum()):,} clear eval only")
     if len(eligible) < 50:
         raise RuntimeError(f"Only {len(eligible)} eligible classes at k={need}; lower k_train/k_eval.")
 
@@ -204,7 +270,7 @@ def main():
         order = np.random.default_rng(seed).permutation(eligible)
         for n_classes in ladder:
             tr_i, tr_y, ev_i, ev_y, chosen = build_task(
-                labels, valid, n_classes, k_train, k_eval, seed, order)
+                labels, valid, n_classes, k_train, k_eval, seed, order, is_eval)
 
             xt = all_feats[torch.from_numpy(tr_i).to(device)]
             yt = torch.from_numpy(tr_y).to(device)

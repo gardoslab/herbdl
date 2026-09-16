@@ -142,3 +142,149 @@ def build_cache(paths, cache_root, backbone, image_size, batch_size, num_workers
     print(f"__LCS__: features {feats.shape} dtype={feats.dtype}  "
           f"valid={valid.sum():,}/{n:,} ({1 - valid.mean():.4%} unreadable)")
     return feats, valid
+
+
+# --------------------------------------------------------------------------
+# Checkpoint discovery.
+#
+# The fine-tuned SWIN checkpoints live on SCC under a tree this session cannot
+# list interactively (SCC SSH requires 2FA). So the run inventories the tree
+# itself and prints it before doing anything expensive: one run then both tells
+# us what exists and uses it, instead of guessing a path and failing 20 minutes
+# into feature extraction.
+# --------------------------------------------------------------------------
+
+def _read_json(path):
+    try:
+        with open(path) as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def _ckpt_meta(d):
+    cfg = _read_json(os.path.join(d, "config.json"))
+    if not cfg:
+        return None
+    n_lab = cfg.get("num_labels")
+    if n_lab is None and isinstance(cfg.get("id2label"), dict):
+        n_lab = len(cfg["id2label"])
+    pre = _read_json(os.path.join(d, "preprocessor_config.json"))
+    size = pre.get("size")
+    if isinstance(size, dict):
+        size = size.get("height") or size.get("shortest_edge")
+    has_weights = any(os.path.exists(os.path.join(d, f)) for f in
+                      ("model.safetensors", "pytorch_model.bin",
+                       "model.safetensors.index.json", "pytorch_model.bin.index.json"))
+    return {"path": d, "num_labels": n_lab, "image_size": size,
+            "arch": (cfg.get("architectures") or [None])[0],
+            "base": cfg.get("_name_or_path"), "has_weights": has_weights}
+
+
+def inventory_checkpoints(roots, max_depth=3):
+    """Walk checkpoint trees and print every directory that looks loadable."""
+    found = []
+    for root in roots:
+        if not os.path.isdir(root):
+            print(f"__LCS__: inventory root missing: {root}")
+            continue
+        base_depth = root.rstrip("/").count("/")
+        for dirpath, dirnames, _ in os.walk(root):
+            if dirpath.count("/") - base_depth > max_depth:
+                dirnames[:] = []
+                continue
+            m = _ckpt_meta(dirpath)
+            if m:
+                found.append(m)
+                dirnames[:] = []  # don't descend into a checkpoint
+    print("__LCS__ checkpoint inventory --------------------------------")
+    if not found:
+        print("  (nothing with a config.json under: %s)" % ", ".join(roots))
+    for m in sorted(found, key=lambda x: (-(x["num_labels"] or 0), x["path"])):
+        print("  {:<6} labels={:<7} size={:<5} {:<28} {}".format(
+            "OK" if m["has_weights"] else "NOWTS",
+            m["num_labels"] if m["num_labels"] is not None else "?",
+            m["image_size"] or "?", (m["arch"] or "?")[:28],
+            m["path"]))
+    print("__LCS__ checkpoint inventory end ----------------------------", flush=True)
+    return found
+
+
+def resolve_backbone(spec, inventory, want_labels=None, tol=0.25, auto_by_labels=False):
+    """Turn a config `backbone` value into something from_pretrained can load.
+
+    Accepts, in order: an existing local path; a HuggingFace hub id; or a bare
+    run name (e.g. SWIN_BASE_BASELINE) to be matched against the inventory. For
+    a bare name that maps to a training output dir rather than a checkpoint, the
+    highest-numbered `checkpoint-N` beneath it wins.
+    """
+    # A list means "try these in order" -- this session cannot list the SCC
+    # checkpoint tree interactively, so the config names several plausible run
+    # directories rather than betting the job on one guess.
+    if isinstance(spec, (list, tuple)):
+        errs = []
+        for one in spec:
+            try:
+                return resolve_backbone(one, inventory, want_labels, tol, auto_by_labels=False)
+            except FileNotFoundError as e:
+                errs.append(str(e).split("\n")[0])
+        print("__LCS__: none of the named candidates resolved:")
+        for e in errs:
+            print("           " + e)
+        if auto_by_labels and want_labels:
+            near = [m for m in inventory if m["has_weights"] and m["num_labels"]
+                    and abs(m["num_labels"] - want_labels) <= tol * want_labels]
+            if near:
+                pick = sorted(near, key=lambda m: (m["num_labels"], m["path"]))[-1]
+                print("__LCS__: AUTO-SELECTED by label count: {} (num_labels={}). "
+                      "No configured name matched; this was chosen only because it sits "
+                      "within {:.0%} of the requested {:,}-label space."
+                      .format(pick["path"], pick["num_labels"], tol, want_labels))
+                return pick["path"]
+        raise FileNotFoundError(
+            "No configured backbone candidate resolved and no inventoried checkpoint "
+            "is within {:.0%} of {} labels. See the inventory above.".format(
+                tol, want_labels))
+
+    if os.path.isdir(spec):
+        return spec
+    if "/" in spec and not spec.startswith("/"):
+        return spec  # hub id such as microsoft/swin-base-...
+
+    parts_match = lambda m: (os.path.basename(m["path"].rstrip("/")) == spec
+                             or spec in m["path"].split("/")
+                             or any(spec.lower() == q.lower() for q in m["path"].split("/")))
+    cands = [m for m in inventory if parts_match(m)]
+    cands = [m for m in cands if m["has_weights"]]
+    # want_labels is a HARD constraint, not a preference. "Keep it at the 15k
+    # label space" has to mean a 50-class checkpoint is refused rather than
+    # quietly accepted because its directory name happened to match.
+    if want_labels and cands:
+        near = [m for m in cands if m["num_labels"]
+                and abs(m["num_labels"] - want_labels) <= tol * want_labels]
+        if not near:
+            raise FileNotFoundError(
+                "Backbone '{}' resolved to {} but its label space is {}, outside "
+                "{:.0%} of the required {:,}. Refusing rather than silently "
+                "swapping in a different task.".format(
+                    spec, cands[0]["path"], cands[0]["num_labels"], tol, want_labels))
+        cands = near
+
+    if not cands:
+        names = sorted({p for m in inventory for p in m["path"].split("/")
+                        if p.startswith("SWIN") or p.startswith("swin")})
+        raise FileNotFoundError(
+            "Could not resolve backbone '{}'. It is not a directory, not a hub id, "
+            "and no inventoried checkpoint matches it.\n"
+            "  SWIN-ish names seen in the inventory: {}\n"
+            "  Set features.backbone to one of the inventory paths printed above."
+            .format(spec, ", ".join(names) or "(none)"))
+
+    def ckpt_num(m):
+        b = os.path.basename(m["path"].rstrip("/"))
+        return int(b.split("-")[-1]) if b.startswith("checkpoint-") and b.split("-")[-1].isdigit() else -1
+
+    best = sorted(cands, key=lambda m: (ckpt_num(m), m["path"]))[-1]
+    print(f"__LCS__: resolved backbone '{spec}' -> {best['path']} "
+          f"(num_labels={best['num_labels']}, image_size={best['image_size']})")
+    return best["path"]
