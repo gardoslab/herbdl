@@ -1,0 +1,51 @@
+# Label-cardinality sweep -- balanced regime, frozen SWIN representation.
+#
+# This is the config the fixed run command reads. Child experiment nodes edit
+# THIS file on their own branch; the run command never changes.
+
+data:
+  # Kaggle Herbarium 2022. The census printed at the start of every run states
+  # exactly what was loaded -- read it before trusting any number below it.
+  manifest: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.csv"
+  image_root: "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/"
+  image_column: "filename"
+  label_column: "scientificNameEncoded"
+
+features:
+  # Frozen, and NOT trained on the herbarium label space -- otherwise the
+  # representation already encodes the 15k-way decision and the sweep is circular.
+  backbone: "microsoft/swin-base-patch4-window7-224-in22k"
+  image_size: 224
+  batch_size: 256
+  num_workers: 16
+  # Outside the run directory: this cache is the expensive artifact and every
+  # later node in this line reuses it.
+  cache_root: "/projectnb/herbdl/workspaces/faridkar/herbdl/scaling/features"
+
+sweep:
+  # Images per class, held constant at every N. This is the whole point of the
+  # control: "more classes" must not also mean "more or less evidence per class".
+  k_train: 10
+  k_eval: 5
+  # The ladder is capped at however many classes actually have k_train+k_eval
+  # usable images; the resolved ceiling is appended automatically and logged.
+  n_classes: [50, 200, 1000, 5000, 15000]
+  seeds: [0, 1, 2]
+  # The first `anchor_classes` of each seed's shuffled order. Nested sampling
+  # keeps them present at every N with identical train/eval images.
+  anchor_classes: 50
+
+probe:
+  lr: 0.001
+  weight_decay: 0.0001
+  # Constant across every N on purpose -- see train_probe(). Fixing epochs
+  # instead would hand the large-N tasks more gradient steps than the small
+  # ones and the sweep would measure optimisation budget, not cardinality.
+  steps: 4000
+  batch_size: 1024
+  label_smoothing: 0.0
+  convergence_check: true
+
+output:
+  dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/scaling/results"
+  results_file: "balanced_swin_base_in22k.json"
