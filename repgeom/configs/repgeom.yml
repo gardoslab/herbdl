@@ -1,0 +1,26 @@
+# SWIN_BASE_BASELINE: microsoft/swin-base-patch4-window7-224-in22k fine-tuned to
+# 15,501 Kaggle-Herbarium-2022 species. Reported val accuracy 0.7797, F1 0.7455
+# (finetuning/output/SWIN/SWIN_BASE_BASELINE/all_results.json).
+model:
+  checkpoint: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_BASELINE
+  # label_mapping.json ships next to the checkpoint: encoded id -> "Family Genus species"
+  label_mapping: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_BASELINE/label_mapping.json
+
+data:
+  # The exact split the checkpoint was evaluated on: the config that trained it
+  # passes validation_file, so HF never re-splits and val == this file.
+  val_manifest: /projectnb/herbdl/data/kaggle-herbaria/val_2022.json
+  # Only used for the per-class training-frequency covariate.
+  train_manifest: /projectnb/herbdl/data/kaggle-herbaria/train_2022.json
+  image_column: filename
+  label_column: scientificNameEncoded
+
+extract:
+  cache_root: /projectnb/herbdl/workspaces/faridkar/herbdl/repgeom/cache
+  batch_size: 128
+  num_workers: 16
+  topk: 5
+
+analysis:
+  # Per-class recall on fewer than this many val images is too noisy to regress on.
+  min_val_per_class: 5
