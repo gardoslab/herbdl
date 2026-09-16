@@ -115,29 +115,51 @@ def run_depth(cfg, df, n_classes, device):
     print(f"__RG__: split  fit={fit.sum():,}  eval={(~fit).sum():,} "
           f"(per-class alternation)")
 
-    section("DEPTH x TAXONOMIC LEVEL (nearest-centroid accuracy, held-out half)")
-    print(f"__RG__: {'stage':10s} {'dim':>6s} {'family':>9s} {'genus':>9s} {'species':>9s} "
-          f"{'nn-is-congener':>16s}")
-    rows = []
+    section("REPRESENTATION DIAGNOSTIC")
+    # A nearest-centroid score is only readable if the vectors at that depth
+    # actually point in different directions. Check that before believing any of
+    # the accuracies below.
+    print(f"__RG__: {'stage':10s} {'dim':>6s} {'pairwise cos (raw)':>26s} {'(centred)':>22s}")
     for nm, X in feats.items():
-        a_f, _ = depth.nearest_centroid_accuracy(X[fit], y_fam[fit], X[~fit], y_fam[~fit],
-                                                 len(fam_ids), device)
-        a_g, _ = depth.nearest_centroid_accuracy(X[fit], y_gen[fit], X[~fit], y_gen[~fit],
-                                                 len(gen_ids), device)
-        a_s, live = depth.nearest_centroid_accuracy(X[fit], y[fit], X[~fit], y[~fit],
-                                                    n_classes, device)
-        cong, tot = depth.congener_neighbour_rate(X, y, n_classes, gen, device)
-        print(f"__RG__: {nm:10s} {X.shape[1]:6d} {a_f:9.4f} {a_g:9.4f} {a_s:9.4f} "
-              f"{cong:16.4f}", flush=True)
-        rows.append({"stage": nm, "dim": int(X.shape[1]), "family": a_f, "genus": a_g,
-                     "species": a_s, "species_centroids_live": live,
-                     "nn_is_congener": cong, "classes_with_centroid": tot})
+        m0, s0 = depth.cosine_concentration(X, device)
+        m1, s1 = depth.cosine_concentration(depth.prep(X, True), device)
+        print(f"__RG__: {nm:10s} {X.shape[1]:6d} {m0:14.4f} +/-{s0:8.4f} "
+              f"{m1:12.4f} +/-{s1:8.4f}")
 
-    # How much of each level's final accuracy is already present at each depth?
-    section("FRACTION OF FINAL-STAGE ACCURACY REACHED")
-    last = rows[-1]
+    rows = []
+    for centre in (False, True):
+        tag = "centred" if centre else "raw"
+        section(f"DEPTH x TAXONOMIC LEVEL [{tag}] (nearest-centroid, held-out half)")
+        print(f"__RG__: {'stage':10s} {'dim':>6s} {'family':>9s} {'genus':>9s} "
+              f"{'species':>9s} {'nn-is-congener':>16s}")
+        for nm, X0 in feats.items():
+            X = depth.prep(X0, centre)
+            a_f, _ = depth.nearest_centroid_accuracy(X[fit], y_fam[fit], X[~fit], y_fam[~fit],
+                                                     len(fam_ids), device)
+            a_g, _ = depth.nearest_centroid_accuracy(X[fit], y_gen[fit], X[~fit], y_gen[~fit],
+                                                     len(gen_ids), device)
+            a_s, live = depth.nearest_centroid_accuracy(X[fit], y[fit], X[~fit], y[~fit],
+                                                        n_classes, device)
+            cong, tot = depth.congener_neighbour_rate(X, y, n_classes, gen, device)
+            print(f"__RG__: {nm:10s} {X.shape[1]:6d} {a_f:9.4f} {a_g:9.4f} {a_s:9.4f} "
+                  f"{cong:16.4f}", flush=True)
+            rows.append({"mode": tag, "stage": nm, "dim": int(X.shape[1]), "family": a_f,
+                         "genus": a_g, "species": a_s, "nn_is_congener": cong,
+                         "species_centroids_live": live, "classes_with_centroid": tot})
+
+    # Chance baselines, so "low" can be read against something.
+    section("CHANCE BASELINES (majority-class on the held-out half)")
+    for lvl, yy, k in (("family", y_fam, len(fam_ids)), ("genus", y_gen, len(gen_ids)),
+                       ("species", y, n_classes)):
+        maj = np.bincount(yy[~fit], minlength=k).max() / (~fit).sum()
+        print(f"__RG__: {lvl:8s} groups={k:6,d}  majority-class acc={maj:.4f}  "
+              f"uniform={1.0 / k:.6f}")
+
+    section("FRACTION OF FINAL-STAGE ACCURACY REACHED [centred]")
+    cen = [r for r in rows if r["mode"] == "centred"]
+    last = cen[-1]
     print(f"__RG__: {'stage':10s} {'family':>9s} {'genus':>9s} {'species':>9s}")
-    for r in rows:
+    for r in cen:
         print(f"__RG__: {r['stage']:10s} " + " ".join(
             f"{r[k] / last[k]:9.3f}" for k in ("family", "genus", "species")))
 

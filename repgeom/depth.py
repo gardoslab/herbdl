@@ -123,6 +123,33 @@ def build_depth_cache(paths, cfg, device):
     return feats
 
 
+def cosine_concentration(X, device, n_sample=2000, seed=0):
+    """Mean/std of pairwise cosine among sampled images.
+
+    The diagnostic that decides whether a nearest-centroid number at this depth
+    means anything. If every pooled vector points essentially the same way
+    (mean cosine ~1, tiny spread), the argmax over class centroids is resolving
+    noise and the resulting accuracy is not interpretable as "this distinction
+    is unavailable here" -- it is an artefact of an uncentred representation.
+    """
+    rng = np.random.default_rng(seed)
+    idx = rng.choice(len(X), size=min(n_sample, len(X)), replace=False)
+    x = torch.as_tensor(np.ascontiguousarray(X[idx])).to(device).float()
+    xn = torch.nn.functional.normalize(x, dim=1)
+    s = (xn @ xn.T)
+    iu = torch.triu_indices(len(idx), len(idx), offset=1, device=device)
+    v = s[iu[0], iu[1]]
+    return float(v.mean()), float(v.std())
+
+
+def prep(X, centre):
+    """Optionally remove the global mean direction before any cosine is taken."""
+    if not centre:
+        return X
+    mu = X.astype(np.float32).mean(axis=0, keepdims=True)
+    return (X.astype(np.float32) - mu)
+
+
 def alternating_split(labels, n_classes):
     """Within each class, send images to fit/eval alternately.
 
