@@ -15,6 +15,7 @@ import pandas as pd
 import torch
 import yaml
 
+import depth
 import extract
 import geometry
 import spatial
@@ -94,6 +95,60 @@ def train_counts(path, label_key, n_classes):
     return counts
 
 
+def run_depth(cfg, df, n_classes, device):
+    """Depth x taxonomic-level resolution table."""
+    y = df["label"].to_numpy()
+    fam, gen, spe = taxonomy.build_taxonomy(df, cfg["model"]["label_mapping"], n_classes)
+
+    # Genus / family ids per image, derived from the species label.
+    gen_ids = {g: i for i, g in enumerate(sorted(set(gen)))}
+    fam_ids = {f: i for i, f in enumerate(sorted(set(fam)))}
+    gen_of_class = np.array([gen_ids[g] for g in gen])
+    fam_of_class = np.array([fam_ids[f] for f in fam])
+    y_gen, y_fam = gen_of_class[y], fam_of_class[y]
+    print(f"__RG__: levels -> species {n_classes:,}  genus {len(gen_ids):,}  family {len(fam_ids):,}")
+
+    section("DEPTH EXTRACT")
+    feats = depth.build_depth_cache(df["path"].tolist(), cfg, device)
+
+    fit = depth.alternating_split(y, n_classes)
+    print(f"__RG__: split  fit={fit.sum():,}  eval={(~fit).sum():,} "
+          f"(per-class alternation)")
+
+    section("DEPTH x TAXONOMIC LEVEL (nearest-centroid accuracy, held-out half)")
+    print(f"__RG__: {'stage':10s} {'dim':>6s} {'family':>9s} {'genus':>9s} {'species':>9s} "
+          f"{'nn-is-congener':>16s}")
+    rows = []
+    for nm, X in feats.items():
+        a_f, _ = depth.nearest_centroid_accuracy(X[fit], y_fam[fit], X[~fit], y_fam[~fit],
+                                                 len(fam_ids), device)
+        a_g, _ = depth.nearest_centroid_accuracy(X[fit], y_gen[fit], X[~fit], y_gen[~fit],
+                                                 len(gen_ids), device)
+        a_s, live = depth.nearest_centroid_accuracy(X[fit], y[fit], X[~fit], y[~fit],
+                                                    n_classes, device)
+        cong, tot = depth.congener_neighbour_rate(X, y, n_classes, gen, device)
+        print(f"__RG__: {nm:10s} {X.shape[1]:6d} {a_f:9.4f} {a_g:9.4f} {a_s:9.4f} "
+              f"{cong:16.4f}", flush=True)
+        rows.append({"stage": nm, "dim": int(X.shape[1]), "family": a_f, "genus": a_g,
+                     "species": a_s, "species_centroids_live": live,
+                     "nn_is_congener": cong, "classes_with_centroid": tot})
+
+    # How much of each level's final accuracy is already present at each depth?
+    section("FRACTION OF FINAL-STAGE ACCURACY REACHED")
+    last = rows[-1]
+    print(f"__RG__: {'stage':10s} {'family':>9s} {'genus':>9s} {'species':>9s}")
+    for r in rows:
+        print(f"__RG__: {r['stage']:10s} " + " ".join(
+            f"{r[k] / last[k]:9.3f}" for k in ("family", "genus", "species")))
+
+    section("ARTIFACTS")
+    outdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
+    os.makedirs(outdir, exist_ok=True)
+    pd.DataFrame(rows).to_csv(os.path.join(outdir, "depth_taxonomy.csv"), index=False)
+    print(f"__RG__: wrote {os.path.join(outdir, 'depth_taxonomy.csv')}")
+    section("DONE")
+
+
 def section(title):
     print(f"\n__RG__ ===== {title} " + "=" * max(0, 58 - len(title)), flush=True)
 
@@ -128,6 +183,10 @@ def main():
     n_tr = train_counts(cfg["data"]["train_manifest"], cfg["data"]["label_column"], n_classes)
     print(f"__RG__: train images     {n_tr.sum():,}  "
           f"(classes with 0 train images: {(n_tr == 0).sum():,})")
+
+    if cfg["analysis"].get("mode", "geometry") == "depth":
+        run_depth(cfg, df, n_classes, device)
+        return
 
     # --- preprocessing fidelity ------------------------------------------
     # The reported accuracy of a checkpoint is only reproducible under the
