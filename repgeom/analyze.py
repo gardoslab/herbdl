@@ -129,6 +129,19 @@ def main():
     print(f"__RG__: train images     {n_tr.sum():,}  "
           f"(classes with 0 train images: {(n_tr == 0).sum():,})")
 
+    # --- preprocessing fidelity ------------------------------------------
+    # The reported accuracy of a checkpoint is only reproducible under the
+    # preprocessing it was scored with, and this analysis is only about the
+    # reported model if it matches. Probe, print, then proceed.
+    n_probe = int(cfg["analysis"].get("preprocess_probe_n", 0))
+    if n_probe > 0:
+        section("PREPROCESSING PROBE")
+        res = extract.probe_preprocessing(df["path"].tolist(), df["label"].to_numpy(),
+                                          cfg, device, n_probe)
+        best = max(res, key=res.get)
+        print(f"__RG__: best on probe = {best} ({res[best]:.4f}); "
+              f"configured = {cfg['extract']['preprocess']}")
+
     # --- forward pass ----------------------------------------------------
     section("EXTRACT")
     cache = extract.build_cache(df["path"].tolist(), df["label"].to_numpy(), cfg, device)

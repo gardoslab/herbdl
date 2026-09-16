@@ -37,12 +37,44 @@ FIELDS = ("feat", "pred", "valid", "true_logit", "true_rank",
           "topk_idx", "topk_logit", "entropy", "spat_true", "spat_pred")
 
 
+def build_preprocess(mode, proc, size):
+    """The three candidate val-time pipelines.
+
+    They matter more than they look. A herbarium sheet is a tall rectangle, so
+    squashing it to a square and cropping its middle square are genuinely
+    different views of the specimen, and bilinear vs bicubic is a real
+    difference at a ~5x downsample. Which one the checkpoint was scored under
+    decides whether this analysis describes the model that was reported.
+
+      processor      the saved ViTImageProcessor: bicubic squash to 224x224
+      eval_protocol  what SWIN_finetuning.py's _val_transforms actually does:
+                     Resize((224,224)) -- torchvision defaults to BILINEAR and
+                     a 2-tuple squashes -- then a no-op CenterCrop
+      shortest_edge  aspect-preserving resize of the short side, then the
+                     centre square: the usual ImageNet recipe, kept as a control
+    """
+    from torchvision import transforms as T
+
+    if mode == "processor":
+        return lambda img: proc(images=img, return_tensors="pt").pixel_values[0]
+
+    norm = T.Normalize(mean=proc.image_mean, std=proc.image_std)
+    if mode == "eval_protocol":
+        t = T.Compose([T.Resize((size, size)), T.CenterCrop((size, size)), T.ToTensor(), norm])
+    elif mode == "shortest_edge":
+        t = T.Compose([T.Resize(size, interpolation=T.InterpolationMode.BICUBIC),
+                       T.CenterCrop(size), T.ToTensor(), norm])
+    else:
+        raise ValueError(f"unknown preprocess mode {mode!r}")
+    return t
+
+
 class ImageList(Dataset):
     """Paths -> preprocessed tensors, tolerant of unreadable scans."""
 
-    def __init__(self, paths, processor, size):
+    def __init__(self, paths, transform, size):
         self.paths = paths
-        self.processor = processor
+        self.transform = transform
         self.size = size
 
     def __len__(self):
@@ -50,9 +82,7 @@ class ImageList(Dataset):
 
     def __getitem__(self, i):
         try:
-            img = Image.open(self.paths[i]).convert("RGB")
-            px = self.processor(images=img, return_tensors="pt").pixel_values[0]
-            return px, 1
+            return self.transform(Image.open(self.paths[i]).convert("RGB")), 1
         except Exception:
             # A few corrupt files in a 168k-image pool must not kill a job that
             # holds a GPU. They are flagged invalid and dropped from every
@@ -60,8 +90,68 @@ class ImageList(Dataset):
             return torch.zeros(3, self.size, self.size), 0
 
 
-def cache_dir_for(root, checkpoint):
-    return os.path.join(root, os.path.basename(checkpoint.rstrip("/")))
+def processor_size(proc):
+    """transformers >=4.57 returns a SizeDict here: mapping-like, not a dict."""
+    raw = getattr(proc, "size", None)
+    if raw is None:
+        return 224
+    try:
+        return int(raw["height"])
+    except Exception:
+        return int(getattr(raw, "height", 224) or 224)
+
+
+def probe_preprocessing(paths, labels, cfg, device, n_probe):
+    """Score a sample under every candidate pipeline and print the comparison.
+
+    The checkpoint ships a reported accuracy; whichever row reproduces it is the
+    preprocessing the rest of this analysis must use. Printing all of them makes
+    that choice auditable from the log instead of asserted in a comment.
+    """
+    from transformers import AutoImageProcessor, SwinForImageClassification
+
+    ck = cfg["model"]["checkpoint"]
+    rng = np.random.default_rng(0)
+    idx = rng.choice(len(paths), size=min(n_probe, len(paths)), replace=False)
+    sub_paths = [paths[i] for i in idx]
+    sub_y = np.asarray(labels)[idx]
+
+    proc = AutoImageProcessor.from_pretrained(ck)
+    size = processor_size(proc)
+    model = SwinForImageClassification.from_pretrained(ck).to(device).eval()
+    autocast = torch.bfloat16 if device == "cuda" else torch.float32
+
+    print(f"__RG__: preprocessing probe on {len(sub_paths):,} sampled val images", flush=True)
+    results = {}
+    for mode in ("processor", "eval_protocol", "shortest_edge"):
+        tf = build_preprocess(mode, proc, size)
+        loader = DataLoader(ImageList(sub_paths, tf, size),
+                            batch_size=int(cfg["extract"]["batch_size"]),
+                            num_workers=int(cfg["extract"]["num_workers"]),
+                            pin_memory=(device == "cuda"), shuffle=False)
+        preds, off = [], 0
+        with torch.no_grad():
+            for px, _ok in loader:
+                px = px.to(device, non_blocking=True)
+                with torch.autocast(device_type=device, dtype=autocast,
+                                    enabled=(device == "cuda")):
+                    logits = model(pixel_values=px).logits
+                preds.append(logits.float().argmax(1).cpu().numpy())
+                off += px.shape[0]
+        acc = float((np.concatenate(preds) == sub_y).mean())
+        results[mode] = acc
+        print(f"__RG__:     {mode:16s} top-1 = {acc:.4f}", flush=True)
+
+    del model
+    if device == "cuda":
+        torch.cuda.empty_cache()
+    return results
+
+
+def cache_dir_for(root, checkpoint, mode):
+    # Preprocessing is part of the cache identity: the same checkpoint under a
+    # different resize is a different set of features.
+    return os.path.join(root, os.path.basename(checkpoint.rstrip("/")) + "__" + mode)
 
 
 def _p(cdir, field, i):
@@ -78,7 +168,8 @@ def _save_atomic(path, arr):
 def build_cache(paths, labels, cfg, device):
     """Extract (or resume) the val-split cache. Returns a dict of arrays."""
     ck = cfg["model"]["checkpoint"]
-    cdir = cache_dir_for(cfg["extract"]["cache_root"], ck)
+    mode = cfg["extract"]["preprocess"]
+    cdir = cache_dir_for(cfg["extract"]["cache_root"], ck, mode)
     os.makedirs(cdir, exist_ok=True)
     n = len(paths)
     topk = int(cfg["extract"]["topk"])
@@ -88,12 +179,14 @@ def build_cache(paths, labels, cfg, device):
     if os.path.exists(manifest_file):
         with open(manifest_file) as fh:
             prior = json.load(fh)
-        if prior.get("n_images") != n or prior.get("checkpoint") != ck or prior.get("topk") != topk:
+        if (prior.get("n_images") != n or prior.get("checkpoint") != ck
+                or prior.get("topk") != topk or prior.get("preprocess") != mode):
             raise RuntimeError(
                 f"Cache at {cdir} was built for n={prior.get('n_images')} "
-                f"checkpoint={prior.get('checkpoint')} topk={prior.get('topk')}, but this run "
-                f"has n={n} checkpoint={ck} topk={topk}. Point extract.cache_root elsewhere "
-                "rather than mixing pools.")
+                f"checkpoint={prior.get('checkpoint')} topk={prior.get('topk')} "
+                f"preprocess={prior.get('preprocess')}, but this run has n={n} "
+                f"checkpoint={ck} topk={topk} preprocess={mode}. Point extract.cache_root "
+                "elsewhere rather than mixing pools.")
 
     done = [s for s in range(n_shards) if all(os.path.exists(_p(cdir, f, s)) for f in FIELDS)]
     print(f"__RG__: cache {cdir}")
@@ -103,30 +196,21 @@ def build_cache(paths, labels, cfg, device):
         from transformers import AutoImageProcessor, SwinForImageClassification
 
         proc = AutoImageProcessor.from_pretrained(ck)
-        # transformers >=4.57 returns a SizeDict here, which is mapping-like but
-        # not a dict subclass, so probe rather than isinstance-check. Only the
-        # corrupt-image fallback tensor depends on this; the real preprocessing
-        # is whatever the checkpoint's processor does.
-        raw = getattr(proc, "size", None)
-        size = 224
-        if raw is not None:
-            try:
-                size = int(raw["height"])
-            except Exception:
-                size = int(getattr(raw, "height", 224) or 224)
+        size = processor_size(proc)
+        tf = build_preprocess(mode, proc, size)
         model = SwinForImageClassification.from_pretrained(ck).to(device).eval()
         W = model.classifier.weight.detach()          # (K, C)
         n_classes = W.shape[0]
         autocast = torch.bfloat16 if device == "cuda" else torch.float32
         print(f"__RG__: model loaded, classes={n_classes:,} feat_dim={W.shape[1]} "
-              f"image_size={size}", flush=True)
+              f"image_size={size} preprocess={mode}", flush=True)
 
         t0, seen = time.time(), 0
         for s in range(n_shards):
             if s in done:
                 continue
             lo, hi = s * SHARD_SIZE, min((s + 1) * SHARD_SIZE, n)
-            loader = DataLoader(ImageList(paths[lo:hi], proc, size),
+            loader = DataLoader(ImageList(paths[lo:hi], tf, size),
                                 batch_size=int(cfg["extract"]["batch_size"]),
                                 num_workers=int(cfg["extract"]["num_workers"]),
                                 pin_memory=(device == "cuda"), shuffle=False, drop_last=False)
@@ -186,7 +270,7 @@ def build_cache(paths, labels, cfg, device):
             torch.cuda.empty_cache()
         with open(manifest_file, "w") as fh:
             json.dump({"n_images": n, "checkpoint": ck, "topk": topk,
-                       "n_classes": int(n_classes)}, fh)
+                       "preprocess": mode, "n_classes": int(n_classes)}, fh)
 
     cache = {f: np.concatenate([np.load(_p(cdir, f, s)) for s in range(n_shards)])
              for f in FIELDS}

@@ -16,11 +16,18 @@ data:
   label_column: scientificNameEncoded
 
 extract:
+  # Which val-time pipeline to cache features under. `eval_protocol` mirrors
+  # SWIN_finetuning.py's _val_transforms, which is what produced the reported
+  # 0.7797; see the PREPROCESSING PROBE block in the run log.
+  preprocess: eval_protocol
   cache_root: /projectnb/herbdl/workspaces/faridkar/herbdl/repgeom/cache
   batch_size: 128
   num_workers: 16
   topk: 5
 
 analysis:
+  # Score this many sampled val images under every candidate preprocessing and
+  # print the comparison. 0 disables the probe.
+  preprocess_probe_n: 20000
   # Per-class recall on fewer than this many val images is too noisy to regress on.
   min_val_per_class: 5
