@@ -103,8 +103,17 @@ def build_cache(paths, labels, cfg, device):
         from transformers import AutoImageProcessor, SwinForImageClassification
 
         proc = AutoImageProcessor.from_pretrained(ck)
-        size = getattr(proc, "size", {"height": 224, "width": 224})
-        size = size.get("height", 224) if isinstance(size, dict) else int(size)
+        # transformers >=4.57 returns a SizeDict here, which is mapping-like but
+        # not a dict subclass, so probe rather than isinstance-check. Only the
+        # corrupt-image fallback tensor depends on this; the real preprocessing
+        # is whatever the checkpoint's processor does.
+        raw = getattr(proc, "size", None)
+        size = 224
+        if raw is not None:
+            try:
+                size = int(raw["height"])
+            except Exception:
+                size = int(getattr(raw, "height", 224) or 224)
         model = SwinForImageClassification.from_pretrained(ck).to(device).eval()
         W = model.classifier.weight.detach()          # (K, C)
         n_classes = W.shape[0]
