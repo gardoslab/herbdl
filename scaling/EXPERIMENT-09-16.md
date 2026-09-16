@@ -103,11 +103,12 @@ steps at every rung**, batch size 1024 — identical compute whether it was
 separating 50 species or 13,548.
 
 That sounds fair, but in terms of passes over the data it isn't, because more
-classes at 10 images each means a bigger training set:
+classes at 10 images each means a bigger training set. (At N=50 the batch is
+clamped to the 500 training images, so each step is one full-batch pass.)
 
 | N | training images | passes over the data |
 |---:|---:|---:|
-| 50 | 500 | 8,192 |
+| 50 | 500 | 4,000 |
 | 200 | 2,000 | 2,048 |
 | 1,000 | 10,000 | 410 |
 | 5,000 | 50,000 | 82 |
@@ -116,7 +117,7 @@ classes at 10 images each means a bigger training set:
 We chose fixed steps deliberately. Fixing *epochs* instead was tried first and
 made the accuracy curve come out **increasing** in N — obviously an artifact of
 handing the larger tasks proportionally more compute. But fixed steps carries
-the opposite bias, and 30 passes versus 8,192 is a wide enough gap to matter.
+the opposite bias, and 30 passes versus 4,000 is a wide enough gap to matter.
 
 Neither knob is neutral. Read the numbers below with that in mind.
 
@@ -232,7 +233,7 @@ There's corroborating evidence. At 50 species the classifier got 100% on its own
 training photos, which is what you'd expect. At 13,548 species it managed only
 49% on its own training photos. It couldn't memorise the material it was shown,
 which is the signature of a classifier cut off partway. Given the table above —
-30 passes at the top rung against 8,192 at the bottom — that's unsurprising in
+30 passes at the top rung against 4,000 at the bottom — that's unsurprising in
 hindsight.
 
 ### What this means concretely

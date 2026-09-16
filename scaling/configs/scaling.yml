@@ -38,14 +38,24 @@ sweep:
 probe:
   lr: 0.001
   weight_decay: 0.0001
-  # Constant across every N on purpose -- see train_probe(). Fixing epochs
-  # instead would hand the large-N tasks more gradient steps than the small
-  # ones and the sweep would measure optimisation budget, not cardinality.
+  # `steps` is now only a fallback; the ladder below drives training.
   steps: 4000
   batch_size: 1024
   label_smoothing: 0.0
-  convergence_check: true
+
+  # The parent node fixed 4000 steps at every N. That equalised COMPUTE but not
+  # PASSES OVER THE DATA -- 8,192 epochs at N=50 against 30 at N=13,548 -- and
+  # the top rungs came out undertrained (train acc 0.492, and doubling the
+  # budget moved macro-F1 0.160 -> 0.199).
+  #
+  # Rather than pick a different fixed number and inherit a different bias,
+  # this node measures the budget instead of assuming it. Each (N, seed) is
+  # trained at every rung of this ladder -- each a COMPLETE OneCycle schedule
+  # from scratch -- and climbs until doubling buys less than `convergence_tol`
+  # macro-F1. Steps-to-convergence is then itself a reported quantity.
+  budget_ladder: [4000, 8000, 16000, 32000, 64000, 128000]
+  convergence_tol: 0.005
 
 output:
   dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/scaling/results"
-  results_file: "balanced_swin_base_in22k.json"
+  results_file: "converged_budget_ladder_swin_base_in22k.json"

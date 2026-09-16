@@ -198,10 +198,11 @@ def main():
     all_feats = torch.nn.functional.normalize(all_feats.float(), dim=1)
 
     results = []
+    budgets = [int(b) for b in cfg["probe"]["budget_ladder"]]
+    tol = float(cfg["probe"]["convergence_tol"])
     for seed in cfg["sweep"]["seeds"]:
         order = np.random.default_rng(seed).permutation(eligible)
         for n_classes in ladder:
-            t0 = time.time()
             tr_i, tr_y, ev_i, ev_y, chosen = build_task(
                 labels, valid, n_classes, k_train, k_eval, seed, order)
 
@@ -213,73 +214,83 @@ def main():
             cent = class_centroids(xt, yt, n_classes)
             sep = nearest_other_centroid_distance(cent).cpu().numpy()
 
-            probe_cfg = dict(cfg)
-            probe_cfg["seed"] = seed
-            head, final_loss, train_acc = train_probe(xt, yt, n_classes, probe_cfg, device)
+            # NCM has no optimisation budget, so it is computed once per task
+            # rather than once per rung of the ladder.
+            ncm_m, ncm_f1 = metric_mod.decompose(
+                ev_y_np, ncm_predict(xe, cent).cpu().numpy(), n_classes, separability=sep)
 
-            row = {"seed": seed, "n_classes": n_classes, "k_train": k_train,
-                   "k_eval": k_eval, "n_train": int(len(tr_y)), "n_eval": int(len(ev_y)),
-                   "probe_final_loss": final_loss, "probe_train_accuracy": train_acc,
-                   "mean_nn_centroid_distance": float(sep.mean()),
-                   "median_nn_centroid_distance": float(np.median(sep))}
+            # Budget ladder. Each rung is a COMPLETE OneCycle schedule trained
+            # from scratch -- not an early-stopped snapshot of a longer run.
+            # That distinction matters: OneCycle anneals the LR to ~0 at the end
+            # of whatever budget it is given, so a truncated long run and a
+            # finished short run are different objects. Climb until doubling the
+            # budget buys less than `tol` macro-F1.
+            prev_f1 = None
+            for steps in budgets:
+                t0 = time.time()
+                probe_cfg = dict(cfg)
+                probe_cfg["seed"] = seed
+                probe_cfg["probe"] = dict(cfg["probe"])
+                probe_cfg["probe"]["steps"] = steps
+                head, final_loss, train_acc = train_probe(xt, yt, n_classes, probe_cfg, device)
 
-            for name, preds in (("probe", probe_predict(head, xe)),
-                                ("ncm", ncm_predict(xe, cent))):
-                m, f1 = metric_mod.decompose(ev_y_np, preds.cpu().numpy(),
+                row = {"seed": seed, "n_classes": n_classes, "steps": steps,
+                       "epochs": round(steps * min(int(cfg["probe"]["batch_size"]),
+                                                   int(xt.shape[0])) / float(xt.shape[0]), 1),
+                       "k_train": k_train, "k_eval": k_eval,
+                       "n_train": int(len(tr_y)), "n_eval": int(len(ev_y)),
+                       "probe_final_loss": final_loss, "probe_train_accuracy": train_acc,
+                       "mean_nn_centroid_distance": float(sep.mean()),
+                       "median_nn_centroid_distance": float(np.median(sep))}
+
+                m, f1 = metric_mod.decompose(ev_y_np, probe_predict(head, xe).cpu().numpy(),
                                              n_classes, separability=sep)
                 for k, v in m.items():
                     if k not in ("n_classes", "n_eval"):
-                        row[f"{name}_{k}"] = v
+                        row[f"probe_{k}"] = v
                 # Anchor set: the SAME classes at every N. Their F1 moving is
                 # the clean cardinality effect -- same images, same features,
                 # only the number of competing labels changed.
-                row[f"{name}_anchor_macro_f1"] = float(f1[:anchor_n].mean())
-                row[f"{name}_anchor_dead_rate"] = float(np.mean(f1[:anchor_n] == 0))
+                row["probe_anchor_macro_f1"] = float(f1[:anchor_n].mean())
+                row["probe_anchor_dead_rate"] = float(np.mean(f1[:anchor_n] == 0))
+                for k, v in ncm_m.items():
+                    if k not in ("n_classes", "n_eval"):
+                        row[f"ncm_{k}"] = v
+                row["ncm_anchor_macro_f1"] = float(ncm_f1[:anchor_n].mean())
+                row["ncm_anchor_dead_rate"] = float(np.mean(ncm_f1[:anchor_n] == 0))
 
-            row["seconds"] = round(time.time() - t0, 1)
-            results.append(row)
-            log(f"seed={seed} N={n_classes:>6,d} | probe acc={row['probe_accuracy']:.4f} "
-                f"macroF1={row['probe_macro_f1']:.4f} anchorF1={row['probe_anchor_macro_f1']:.4f} "
-            f"trainAcc={row['probe_train_accuracy']:.3f} "
-                f"gini={row['probe_f1_gini']:.3f} Neff={row['probe_n_eff']:.0f} "
-                f"dead={row['probe_dead_class_rate']:.3f} | ncm macroF1={row['ncm_macro_f1']:.4f} "
-                f"| {row['seconds']}s")
+                gain = None if prev_f1 is None else row["probe_macro_f1"] - prev_f1
+                row["gain_over_half_budget"] = gain
+                row["seconds"] = round(time.time() - t0, 1)
+                results.append(row)
 
-            del xt, xe, cent, head
+                log("seed={} N={:>6,d} steps={:>6,d} ({:>7.1f} ep) | macroF1={:.4f} "
+                    "anchorF1={:.4f} trainAcc={:.3f} gini={:.3f} dead={:.3f} | gain={} | {}s".format(
+                        seed, n_classes, steps, row["epochs"], row["probe_macro_f1"],
+                        row["probe_anchor_macro_f1"], row["probe_train_accuracy"],
+                        row["probe_f1_gini"], row["probe_dead_class_rate"],
+                        "   --  " if gain is None else "{:+.4f}".format(gain), row["seconds"]))
+
+                del head
+                if device == "cuda":
+                    torch.cuda.empty_cache()
+
+                if gain is not None and gain < tol:
+                    row["converged"] = True
+                    break
+                prev_f1 = row["probe_macro_f1"]
+            else:
+                # Ran off the top of the ladder while still improving. This is a
+                # real caveat, not a footnote -- say so loudly.
+                results[-1]["converged"] = False
+                results[-1]["budget_limited"] = True
+                log("  !! N={:,} seed={} still improving at the {:,}-step cap "
+                    "(last gain {:+.4f}) -- treat its value as a LOWER BOUND".format(
+                        n_classes, seed, budgets[-1], results[-1]["gain_over_half_budget"]))
+
+            del xt, xe, cent
             if device == "cuda":
                 torch.cuda.empty_cache()
-
-    # Validity check on the fixed step budget. The whole sweep rests on 4k steps
-    # being enough at every N; if the hardest task (largest N) still moves when
-    # given twice the budget, the curve is partly an optimisation artifact and
-    # the reader needs to know. One extra probe, seconds of compute.
-    if cfg["probe"].get("convergence_check", True):
-        top_n, seed = ladder[-1], cfg["sweep"]["seeds"][0]
-        order = np.random.default_rng(seed).permutation(eligible)
-        tr_i, tr_y, ev_i, ev_y, _ = build_task(labels, valid, top_n, k_train, k_eval, seed, order)
-        xt = all_feats[torch.from_numpy(tr_i).to(device)]
-        yt = torch.from_numpy(tr_y).to(device)
-        xe = all_feats[torch.from_numpy(ev_i).to(device)]
-        doubled = dict(cfg)
-        doubled["seed"] = seed
-        doubled["probe"] = dict(cfg["probe"])
-        doubled["probe"]["steps"] = int(cfg["probe"]["steps"]) * 2
-        head2, _, tr2 = train_probe(xt, yt, top_n, doubled, device)
-        m2, _ = metric_mod.decompose(ev_y, probe_predict(head2, xe).cpu().numpy(), top_n)
-        base_rows = [r for r in results if r["n_classes"] == top_n and r["seed"] == seed]
-        b = base_rows[0]
-        log("convergence check at N={:,} seed={}: {} steps -> macroF1 {:.4f} (trainAcc {:.3f}) | "
-            "{} steps -> macroF1 {:.4f} (trainAcc {:.3f}) | delta {:+.4f}".format(
-                top_n, seed, cfg["probe"]["steps"], b["probe_macro_f1"], b["probe_train_accuracy"],
-                doubled["probe"]["steps"], m2["macro_f1"], tr2,
-                m2["macro_f1"] - b["probe_macro_f1"]))
-        results.append({"seed": seed, "n_classes": top_n, "tag": "convergence_check_2x_steps",
-                        "steps": doubled["probe"]["steps"], "probe_macro_f1": m2["macro_f1"],
-                        "probe_train_accuracy": tr2})
-        del xt, xe, head2
-        if device == "cuda":
-            torch.cuda.empty_cache()
-
     out_dir = cfg["output"]["dir"]
     os.makedirs(out_dir, exist_ok=True)
     out_file = os.path.join(out_dir, cfg["output"]["results_file"])
@@ -295,7 +306,8 @@ def summarise(results, ladder, anchor_n):
     import statistics as st
 
     def agg(n, key):
-        vals = [r[key] for r in results if r["n_classes"] == n and key in r and "tag" not in r]
+        vals = [r[key] for r in results
+                if r["n_classes"] == n and key in r and "converged" in r]
         if not vals:
             return float("nan"), 0.0
         return st.mean(vals), (st.stdev(vals) if len(vals) > 1 else 0.0)
@@ -325,6 +337,35 @@ def summarise(results, ladder, anchor_n):
         print("{:>8,d} | ".format(n) + " | ".join(cells))
     print("-" * len(header))
 
+    print("BUDGET LADDER -- macro-F1 at each complete OneCycle schedule (mean over seeds).")
+    print("  'ep' = passes over that task's training set. Blank = ladder stopped earlier.")
+    all_budgets = sorted({r["steps"] for r in results})
+    bh = "{:>8} | {:>9} | ".format("N", "ep@4k") + " | ".join(
+        "{:>9,d}".format(b) for b in all_budgets) + " | {:>10} | {:>9}".format("converged", "steps")
+    print(bh)
+    print("-" * len(bh))
+    for n in ladder:
+        rows_n = [r for r in results if r["n_classes"] == n]
+        cells = []
+        for b in all_budgets:
+            v = [r["probe_macro_f1"] for r in rows_n if r["steps"] == b]
+            cells.append("{:>9}".format("{:.4f}".format(st.mean(v)) if v else ""))
+        fin = [r for r in rows_n if "converged" in r]
+        conv = all(r.get("converged") for r in fin)
+        steps_used = st.mean([r["steps"] for r in fin]) if fin else float("nan")
+        ep4k = [r["epochs"] for r in rows_n if r["steps"] == all_budgets[0]]
+        print("{:>8,d} | {:>9.1f} | ".format(n, st.mean(ep4k) if ep4k else float("nan"))
+              + " | ".join(cells)
+              + " | {:>10} | {:>9,.0f}".format("yes" if conv else "NO (cap)", steps_used))
+    print("-" * len(bh))
+    limited = sorted({r["n_classes"] for r in results if r.get("budget_limited")})
+    if limited:
+        print("  !! still improving at the cap for N in {} -- those are LOWER BOUNDS.".format(
+            ", ".join("{:,}".format(x) for x in limited)))
+    else:
+        print("  every rung converged within the ladder; no value below is budget-limited.")
+    print("=" * len(header))
+
     base, top = ladder[0], ladder[-1]
     a0, _ = agg(base, "probe_anchor_macro_f1")
     a1, _ = agg(top, "probe_anchor_macro_f1")
@@ -342,7 +383,7 @@ def summarise(results, ladder, anchor_n):
     print("          Whole-task probe macro-F1 {:.4f} -> {:.4f} over the same range.".format(m0, m1))
     print("=" * len(header))
 
-    top_rows = [r for r in results if r["n_classes"] == top and "tag" not in r]
+    top_rows = [r for r in results if r["n_classes"] == top and "converged" in r]
     if top_rows:
         prof = np.mean([r["probe_f1_decile_profile"] for r in top_rows], axis=0)
         print("PER-CLASS F1 DECILES at N={:,} (sorted by F1; d1 = best tenth of classes):".format(top))
