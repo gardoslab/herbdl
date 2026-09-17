@@ -66,7 +66,9 @@ training:
   num_train_epochs: 100
   warmup_steps: 0.05
   weight_decay: 0.05
-  gradient_accumulation_steps: 8          # effective batch = 16 * 8 = 128
+  gradient_accumulation_steps: 4          # effective batch = 16 * 4 * 2 GPUs = 128 (unchanged from v3's
+                                           # 1-GPU 16*8=128, so the LR schedule/step count matches the
+                                           # checkpoint being resumed from — halved to compensate for DDP world_size=2)
   gradient_checkpointing: true            # needed to fit SWIN-L @384
   lr_scheduler_type: "cosine"
   lr_scheduler_kwargs:
