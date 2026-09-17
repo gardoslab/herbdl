@@ -70,6 +70,40 @@ def effective_rank(s):
     }
 
 
+def svd_full(M):
+    """Singular values and right singular vectors, descending order, float64.
+
+    `singular_values()` above is enough to characterise a spectrum, but testing
+    whether a specific direction is "loud" or "quiet" for a specific row needs
+    an actual change of basis -- the vectors, not just their lengths.
+    """
+    _u, s, vt = torch.linalg.svd(torch.as_tensor(np.asarray(M), dtype=torch.float64),
+                                 full_matrices=False)
+    return s.numpy(), vt.numpy()
+
+
+def tail_energy_fraction(M_centered, vt, n_loud):
+    """Per-row share of squared norm lying outside the top `n_loud` directions.
+
+    `M_centered` rows and `vt` (from svd_full on the same matrix) must agree on
+    centering -- an off-centre M would let the discarded global-mean direction
+    leak into "loud" for every row alike, which is exactly the mean-pooling
+    artifact the depth analysis had to correct for, and would silently do so
+    again here.
+
+    0 means a row's position is entirely explained by the informative
+    directions; 1 means it lives entirely in the near-degenerate tail.
+    """
+    M = np.asarray(M_centered, dtype=np.float64)
+    total = (M ** 2).sum(axis=1)
+    energy_loud = (M @ vt[:n_loud].T) ** 2
+    energy_loud = energy_loud.sum(axis=1)
+    frac = np.full(len(M), np.nan)
+    nz = total > 0
+    frac[nz] = 1.0 - energy_loud[nz] / total[nz]
+    return frac
+
+
 def random_baseline(shape, seed=0):
     """The honest null: what a matrix with no preferred dimension looks like.
 

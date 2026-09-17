@@ -26,10 +26,11 @@ extract:
   topk: 5
 
 analysis:
-  # geometry  = the parent node's final-layer regression (not used here).
-  # capacity  = this node: singular-value spectrum of the classifier weight
-  #             matrix and the class centroids, against a random-matrix null.
-  mode: capacity
+  # geometry  = the geometry root's final-layer regression (not used here).
+  # capacity  = the parent node's singular-value spectrum (not used here).
+  # subspace  = this node: does a species' reliance on the near-degenerate
+  #             directions of the centroid matrix predict detector misalignment.
+  mode: subspace
   # Score this many sampled val images under every candidate preprocessing and
   # print the comparison. 0 disables the probe. Irrelevant in capacity mode,
   # which returns before this code runs; left at 0 rather than deleted so the
