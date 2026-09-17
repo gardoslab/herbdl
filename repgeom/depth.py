@@ -40,11 +40,19 @@ CHUNK = 2048
 
 
 def _pool(hs):
-    """Stage output -> one vector per image, whatever layout Swin hands back."""
+    """Stage output -> (spatial mean, spatial std) per image.
+
+    The mean alone is what the parent node used, and it is a poor summary of an
+    early layer: at stage 1 the discriminating content is texture -- leaf
+    surface, vein density, indumentum -- which shows up as how strongly a
+    channel *varies* across the sheet, not as its average level. Averaging
+    removes exactly that. Returning both lets the analysis separate "there is no
+    taxonomic structure here" from "the mean threw it away".
+    """
     if hs.dim() == 4:        # (B, C, H, W) -- reshaped_hidden_states
-        return hs.mean(dim=(2, 3))
+        return hs.mean(dim=(2, 3)), hs.flatten(2).std(dim=2)
     if hs.dim() == 3:        # (B, L, C) -- token sequence
-        return hs.mean(dim=1)
+        return hs.mean(dim=1), hs.std(dim=1)
     raise ValueError(f"unexpected hidden-state rank {hs.dim()}")
 
 
@@ -53,7 +61,7 @@ def build_depth_cache(paths, cfg, device):
     ck = cfg["model"]["checkpoint"]
     mode = cfg["extract"]["preprocess"]
     cdir = os.path.join(cfg["extract"]["cache_root"],
-                        os.path.basename(ck.rstrip("/")) + "__" + mode + "__depth")
+                        os.path.basename(ck.rstrip("/")) + "__" + mode + "__depth_meanstd")
     os.makedirs(cdir, exist_ok=True)
     n = len(paths)
     n_shards = (n + SHARD - 1) // SHARD
@@ -67,8 +75,8 @@ def build_depth_cache(paths, cfg, device):
             names = meta["stages"]
 
     have = names is not None and all(
-        os.path.exists(os.path.join(cdir, f"{s}_{i:05d}.npy"))
-        for s in names for i in range(n_shards))
+        os.path.exists(os.path.join(cdir, f"{s}_{d}_{i:05d}.npy"))
+        for s in names for d in ("mean", "std") for i in range(n_shards))
 
     if not have:
         from transformers import AutoImageProcessor, SwinModel
@@ -99,12 +107,15 @@ def build_depth_cache(paths, cfg, device):
                         print("__RG__: depth taps -> " + "  ".join(
                             f"{nm}:{tuple(h.shape[1:])}" for nm, h in zip(names, hs)), flush=True)
                     if buf is None:
-                        buf = {nm: [] for nm in names}
+                        buf = {(nm, d): [] for nm in names for d in ("mean", "std")}
                     for nm, h in zip(names, hs):
-                        buf[nm].append(_pool(h.float()).cpu().numpy().astype(np.float16))
+                        mu, sd = _pool(h.float())
+                        buf[(nm, "mean")].append(mu.cpu().numpy().astype(np.float16))
+                        buf[(nm, "std")].append(sd.cpu().numpy().astype(np.float16))
             for nm in names:
-                extract._save_atomic(os.path.join(cdir, f"{nm}_{s:05d}.npy"),
-                                     np.concatenate(buf[nm]))
+                for d in ("mean", "std"):
+                    extract._save_atomic(os.path.join(cdir, f"{nm}_{d}_{s:05d}.npy"),
+                                         np.concatenate(buf[(nm, d)]))
             seen = hi
             rate = seen / max(1e-9, time.time() - t0)
             print(f"__RG__: depth shard {s + 1}/{n_shards}  {hi:,}/{n:,}  {rate:.0f} img/s  "
@@ -116,11 +127,14 @@ def build_depth_cache(paths, cfg, device):
         with open(meta_file, "w") as fh:
             json.dump({"n_images": n, "checkpoint": ck, "preprocess": mode, "stages": names}, fh)
 
-    feats = {nm: np.concatenate([np.load(os.path.join(cdir, f"{nm}_{i:05d}.npy"))
-                                 for i in range(n_shards)]) for nm in names}
+    feats = {}
     for nm in names:
-        print(f"__RG__: {nm:8s} pooled {feats[nm].shape}")
-    return feats
+        for d in ("mean", "std"):
+            feats[(nm, d)] = np.concatenate(
+                [np.load(os.path.join(cdir, f"{nm}_{d}_{i:05d}.npy")) for i in range(n_shards)])
+        print(f"__RG__: {nm:8s} mean {feats[(nm, 'mean')].shape}  "
+              f"std {feats[(nm, 'std')].shape}")
+    return feats, names
 
 
 def cosine_concentration(X, device, n_sample=2000, seed=0):
