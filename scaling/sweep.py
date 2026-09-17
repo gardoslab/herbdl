@@ -174,6 +174,13 @@ def main():
     print(yaml.safe_dump(cfg, sort_keys=False).rstrip())
     print("=" * 72, flush=True)
 
+    # Survey mode: read-only inventory of the data pools, no GPU, no training.
+    # It shares this entry point so the node's fixed run command stays intact.
+    if cfg.get("mode") == "survey":
+        import survey as survey_mod
+        survey_mod.run(cfg)
+        return
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log(f"device={device} torch={torch.__version__}")
     if device == "cuda":

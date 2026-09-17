@@ -1,3 +1,23 @@
+# POOL SURVEY -- read-only inventory, no GPU, no training.
+#
+# Prerequisite for scaling the ladder past 15k labels. The agent driving these
+# experiments cannot get a shell on SCC (login needs interactive 2FA), so the
+# data has to describe itself through a job. `mode: survey` short-circuits
+# sweep.py before any model work, which keeps the node's fixed run command
+# (`cd scaling && bash run_scaling.sh`) intact.
+mode: survey
+
+survey:
+  roots:
+    - "/projectnb/herbdl/data/kaggle-herbaria"
+  # Candidate prefixes for resolving relative image paths found in manifests.
+  image_roots:
+    - "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/"
+    - "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train_images/"
+    - "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/"
+    - "/projectnb/herbdl/data/kaggle-herbaria/"
+  tree_depth: 3
+
 # Label-cardinality sweep -- balanced regime, FINE-TUNED SWIN representation.
 #
 # This is the config the fixed run command reads. Child experiment nodes edit
