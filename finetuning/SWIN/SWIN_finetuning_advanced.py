@@ -15,9 +15,11 @@
 
 import argparse
 import inspect
+import json
 import logging
 import os
 import re
+import shutil
 import sys
 import yaml
 from dataclasses import dataclass, field
@@ -299,6 +301,15 @@ class SubCenterArcMarginProduct(nn.Module):
         self.th = math.cos(math.pi - m)
         self.mm = math.sin(math.pi - m) * m
 
+    def set_margin(self, m):
+        """Update the margin (and its derived cos/sin/threshold terms) in place — used by
+        MarginWarmupCallback to ramp m from 0 to its target over the first few epochs."""
+        self.m = m
+        self.cos_m = math.cos(m)
+        self.sin_m = math.sin(m)
+        self.th = math.cos(math.pi - m)
+        self.mm = math.sin(math.pi - m) * m
+
     def forward(self, embeddings, labels=None):
         embeddings = F.normalize(embeddings, p=2, dim=1)
         weight = F.normalize(self.weight, p=2, dim=1)
@@ -339,9 +350,20 @@ class SwinWithArcFace(nn.Module):
         self.genus_weight = genus_weight
         self.hybrid_ce_weight = hybrid_ce_weight
 
-        self.embedding = nn.Linear(hidden_size, embedding_size)
-        self.bn = nn.BatchNorm1d(embedding_size)
-        self.arcface = SubCenterArcMarginProduct(embedding_size, num_species, k=num_subcenters, s=scale, m=margin)
+        # embedding_size=None (config: `arcface.embedding_size: null`) skips the
+        # bottleneck+BatchNorm entirely and runs ArcFace directly on the backbone's
+        # pooled feature — for controlled ablations where the bottleneck/BN would be a
+        # confounding second intervention. Otherwise, a Linear+BN bottleneck to
+        # embedding_size (the original recipe) is used.
+        self.no_bottleneck = embedding_size is None
+        arc_in_features = hidden_size if self.no_bottleneck else embedding_size
+        if self.no_bottleneck:
+            self.embedding = None
+            self.bn = None
+        else:
+            self.embedding = nn.Linear(hidden_size, embedding_size)
+            self.bn = nn.BatchNorm1d(embedding_size)
+        self.arcface = SubCenterArcMarginProduct(arc_in_features, num_species, k=num_subcenters, s=scale, m=margin)
 
         if hybrid_ce_weight > 0:
             self.ce_classifier = nn.Linear(hidden_size, num_species)
@@ -360,7 +382,7 @@ class SwinWithArcFace(nn.Module):
 
     def forward(self, pixel_values, labels=None, family_labels=None, genus_labels=None, species_labels=None, **kwargs):
         pooled = self.swin(pixel_values).pooler_output
-        embeddings = self.bn(self.embedding(pooled))
+        embeddings = pooled if self.no_bottleneck else self.bn(self.embedding(pooled))
         arc_labels = species_labels if species_labels is not None else labels
 
         if arc_labels is not None:
@@ -576,6 +598,18 @@ class MixupTrainer(Trainer):
             else:
                 outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a)
             loss = outputs.get("loss")
+            # NaN-safety: a prior 100-epoch ArcFace run (SWIN_L_384_ARCFACE_SEED0) trained
+            # healthily to epoch 77 (acc 0.804) then hit a single-step gradient explosion
+            # (loss 9->1277, grad_norm->nan) at epoch 78 and never recovered — a NaN loss
+            # backpropagates NaN grads that permanently corrupt the weights on the very next
+            # optimizer step, with no way to recover for the rest of training. Replace a
+            # non-finite loss with a disconnected zero (no graph to the model), so that
+            # step's backward pass contributes exactly zero gradient instead of NaN, and
+            # training continues rather than collapsing for good.
+            if loss is not None and not torch.isfinite(loss):
+                print(f"__CUSTOM__: WARNING non-finite ArcFace loss ({loss.item()}) at step "
+                      f"{self.state.global_step} — skipping this batch's gradient contribution")
+                loss = torch.zeros((), device=loss.device, dtype=loss.dtype, requires_grad=True)
             return (loss, outputs) if return_outputs else loss
 
         # Handle multi-task learning
@@ -834,6 +868,63 @@ class EMACallback(TrainerCallback):
         self.copy_to_model(model)
 
 
+class MarginWarmupCallback(TrainerCallback):
+    """
+    Ramps SwinWithArcFace's ArcFace margin `m` linearly from 0 to `target_margin` over
+    the first `warmup_epochs` epochs, then holds it at `target_margin`.
+
+    ArcFace's angular margin is applied to features that start out effectively random
+    (an untrained backbone), and training from scratch at full margin is a documented
+    source of non-convergence/instability. Recomputed from `state.epoch` on every step
+    (not a persisted counter), so it is resume-safe: resuming mid-warmup naturally
+    continues the ramp from the correct point.
+    """
+    def __init__(self, target_margin, warmup_epochs):
+        self.target_margin = target_margin
+        self.warmup_epochs = warmup_epochs
+
+    def _set(self, model, m):
+        arcface = getattr(model, 'arcface', None)
+        if arcface is not None:
+            arcface.set_margin(m)
+
+    def on_step_begin(self, args, state, control, model=None, **kwargs):
+        if self.warmup_epochs <= 0:
+            return
+        frac = min(1.0, (state.epoch or 0.0) / self.warmup_epochs)
+        self._set(model, frac * self.target_margin)
+
+    def on_train_begin(self, args, state, control, model=None, **kwargs):
+        frac = min(1.0, (state.epoch or 0.0) / self.warmup_epochs) if self.warmup_epochs > 0 else 1.0
+        self._set(model, frac * self.target_margin)
+        print(f"__CUSTOM__: ArcFace margin warmup enabled — 0 -> {self.target_margin} over "
+              f"{self.warmup_epochs} epochs (starting at m={frac * self.target_margin:.4f})")
+
+
+class ConfigAndLabelMapSaveCallback(TrainerCallback):
+    """
+    Copies config.json (and label_mapping.json, if present) into every epoch checkpoint
+    directory, not just the final output_dir.
+
+    Trainer's built-in checkpointing calls `model.save_pretrained` for real
+    PreTrainedModel instances (which writes config.json alongside the weights at every
+    checkpoint), but the custom nn.Module wrappers here are not PreTrainedModel, so
+    Trainer's checkpoint path only writes raw weights — config.json previously only
+    existed at the top-level output_dir, written once after training finished. That
+    made intermediate checkpoints unloadable via AutoConfig.from_pretrained, which
+    blocks any training-dynamics analysis across epochs.
+    """
+    def on_save(self, args, state, control, model=None, **kwargs):
+        ckpt_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+        if not os.path.isdir(ckpt_dir):
+            return
+        if hasattr(model, 'config') and not isinstance(model, transformers.PreTrainedModel):
+            model.config.save_pretrained(ckpt_dir)
+        label_map_path = os.path.join(args.output_dir, "label_mapping.json")
+        if os.path.isfile(label_map_path):
+            shutil.copyfile(label_map_path, os.path.join(ckpt_dir, "label_mapping.json"))
+
+
 def load_config_from_yaml(config_path):
     """Load configuration from YAML file."""
     with open(config_path, 'r') as f:
@@ -1015,6 +1106,9 @@ def main():
     arcface_margin = arcface_config.get('margin', 0.50)
     arcface_num_subcenters = arcface_config.get('num_subcenters', 3)
     arcface_hybrid_ce_weight = arcface_config.get('hybrid_ce_weight', 0.0)
+    # Ramp the margin 0 -> target over this many epochs (0 = disabled, use the target
+    # margin from step 0, the original behavior). See MarginWarmupCallback.
+    arcface_margin_warmup_epochs = arcface_config.get('margin_warmup_epochs', 0)
 
     print(f"__CUSTOM__: Learning rate type: {learning_rate_type}")
     print(f"__CUSTOM__: Frozen: {frozen}")
@@ -1092,6 +1186,7 @@ def main():
         num_train_epochs=config['training']['num_train_epochs'],
         warmup_steps=_warmup_steps,
         weight_decay=config['training']['weight_decay'],
+        optim=config['training'].get('optim', 'adamw_torch'),
         gradient_accumulation_steps=config['training']['gradient_accumulation_steps'],
         lr_scheduler_type=config['training']['lr_scheduler_type'],
         logging_strategy=config['training']['logging_strategy'],
@@ -1356,6 +1451,21 @@ def main():
     num_labels = len(labels)
     id2label = {i: str(i) for i in range(num_labels)}
     label2id = {str(i): i for i in range(num_labels)}
+
+    # Single-head (non-multi-task) runs: save encoded-id -> "Family Genus species" so
+    # downstream analysis can turn predictions back into species names. Multi-task runs
+    # already get their own hierarchical id2X mappings below, so this only applies to
+    # the plain (CE or ArcFace) single-species-head path.
+    if not use_multi_task and 'scientificName' in dataset_column_names \
+            and data_args.label_column_name == 'scientificNameEncoded':
+        print("__CUSTOM__: Building label_mapping.json (encoded id -> scientificName)")
+        _ids = dataset["train"]["scientificNameEncoded"]
+        _names = dataset["train"]["scientificName"]
+        label_mapping = {str(i): n for i, n in zip(_ids, _names)}
+        os.makedirs(training_args.output_dir, exist_ok=True)
+        with open(os.path.join(training_args.output_dir, "label_mapping.json"), "w") as f:
+            json.dump(label_mapping, f, indent=2)
+        print(f"__CUSTOM__: Saved label_mapping.json with {len(label_mapping)} entries to {training_args.output_dir}")
 
     # For multi-task learning, create hierarchical label mappings
     if use_multi_task:
@@ -1862,6 +1972,18 @@ def main():
     # so the final evaluate()/save_model() below reflect the EMA weights.
     if use_ema:
         trainer.add_callback(EMACallback(decay=ema_decay))
+
+    # ArcFace margin warmup: ramp m from 0 to its target over the first few epochs.
+    if use_arcface and arcface_margin_warmup_epochs > 0:
+        trainer.add_callback(MarginWarmupCallback(
+            target_margin=arcface_margin, warmup_epochs=arcface_margin_warmup_epochs
+        ))
+
+    # Propagate config.json (+ label_mapping.json) into every epoch checkpoint, not just
+    # the final output_dir, so intermediate checkpoints are independently loadable for
+    # training-dynamics analysis.
+    if hasattr(model, 'config') and not isinstance(model, transformers.PreTrainedModel):
+        trainer.add_callback(ConfigAndLabelMapSaveCallback())
 
     # Training
     if training_args.do_train:
