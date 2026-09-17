@@ -35,7 +35,6 @@ import csv
 import json
 import os
 import random
-import sys
 from collections import defaultdict
 
 # Deliberately no numpy import. SCC's system python3 ships a numpy too old for
@@ -162,10 +161,8 @@ def main():
             cw.writerow(["scientificNameEncoded", "scientificName", "n_train", "n_val"])
             for new_id, sp in enumerate(chosen):
                 imgs = bucket[sp]
-                # Seeded by (seed, species) ONLY -- never by n -- so this
-                # species carries the same images at every rung.
-                # Integer seed from (seed, species position). Never from n, so
-                # a species keeps the same images at every rung.
+                # Integer seed from (seed, species position) -- never from n,
+                # so a species keeps the same images at every rung.
                 sel = list(imgs)
                 random.Random(args.seed * 1000003 + sp_index[sp]).shuffle(sel)
                 tr, ev = sel[:args.k_train], sel[args.k_train:need]

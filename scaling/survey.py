@@ -21,7 +21,6 @@ which hold millions of files.
 
 import json
 import os
-import sys
 
 import numpy as np
 import pandas as pd
@@ -37,7 +36,6 @@ LABEL_COLS = ["scientificNameEncoded", "category_id", "species", "label",
 # it recurs across genera -- so `species` is a last resort, and genus+species
 # is composed in preference to it when both are present.
 NAME_COLS = ["scientificName", "scientific_name", "name", "species"]
-FILE_COLS_EXTRA = ["file_name"]  # COCO images[] uses file_name
 
 
 def _h(size):
