@@ -26,8 +26,14 @@ extract:
   topk: 5
 
 analysis:
+  # geometry  = the parent node's final-layer regression (not used here).
+  # capacity  = this node: singular-value spectrum of the classifier weight
+  #             matrix and the class centroids, against a random-matrix null.
+  mode: capacity
   # Score this many sampled val images under every candidate preprocessing and
-  # print the comparison. 0 disables the probe.
-  preprocess_probe_n: 20000
+  # print the comparison. 0 disables the probe. Irrelevant in capacity mode,
+  # which returns before this code runs; left at 0 rather than deleted so the
+  # key stays self-documenting if mode is ever switched back.
+  preprocess_probe_n: 0
   # Per-class recall on fewer than this many val images is too noisy to regress on.
   min_val_per_class: 5

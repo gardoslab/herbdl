@@ -15,6 +15,7 @@ import pandas as pd
 import torch
 import yaml
 
+import capacity
 import extract
 import geometry
 import spatial
@@ -94,6 +95,66 @@ def train_counts(path, label_key, n_classes):
     return counts
 
 
+def run_capacity(cfg, df, n_classes, device):
+    """How many of the classifier's 1024 dimensions carry independent weight."""
+    section("CAPACITY: LOAD CLASSIFIER")
+    from transformers import SwinForImageClassification
+    model = SwinForImageClassification.from_pretrained(cfg["model"]["checkpoint"])
+    W = model.classifier.weight.detach().cpu().numpy()   # (K, C)
+    del model
+    print(f"__RG__: classifier weight matrix W: {W.shape}")
+
+    section("CAPACITY: CLASS CENTROIDS (reuses the geometry node's cached val "
+            "features; no forward pass if that cache is already complete)")
+    cache = extract.build_cache(df["path"].tolist(), df["label"].to_numpy(), cfg, device)
+    ok = cache["valid"]
+    y = df["label"].to_numpy()[ok]
+    feat = cache["feat"][ok]
+    mu, _, _mu_g, present = geometry.class_centroids(feat, y, n_classes, device)
+    mu_present = mu.cpu().numpy()[present]
+    print(f"__RG__: class-centroid matrix (classes with >=1 val image): {mu_present.shape}")
+
+    section("CAPACITY: SINGULAR VALUE SPECTRA")
+    spectra = {
+        "classifier_W": capacity.singular_values(W),
+        "class_centroids": capacity.singular_values(mu_present),
+        # The honest null: 15,501 rows into 1024 columns cannot be fully
+        # decorrelated even with zero structure, so "1024" itself is not the
+        # right ceiling to compare the trained matrix against -- this is.
+        "random_baseline": capacity.random_baseline(W.shape, seed=0),
+    }
+    shapes = {"classifier_W": W.shape, "class_centroids": mu_present.shape,
+              "random_baseline": W.shape}
+
+    results = {}
+    print(f"__RG__: {'matrix':18s} {'shape':>16s} {'entropy-erank':>14s} "
+          f"{'particip.ratio':>15s} {'dims@90%':>9s} {'dims@99%':>9s} {'cond#':>10s}")
+    for name, s in spectra.items():
+        st = capacity.effective_rank(s)
+        results[name] = {**st, "shape": list(shapes[name])}
+        print(f"__RG__: {name:18s} {str(shapes[name]):>16s} {st['erank_entropy']:14.1f} "
+              f"{st['participation_ratio']:15.1f} {st['dims_for_energy'][0.90]:9d} "
+              f"{st['dims_for_energy'][0.99]:9d} {st['condition_number']:10.1f}")
+
+    section("CAPACITY: VERDICT")
+    d = W.shape[1]
+    ceiling = results["random_baseline"]["erank_entropy"]
+    actual = results["classifier_W"]["erank_entropy"]
+    print(f"__RG__: classifier effective rank  = {actual:.1f} of {d} raw dimensions ({actual / d:.1%})")
+    print(f"__RG__: random-matrix ceiling      = {ceiling:.1f} of {d} raw dimensions ({ceiling / d:.1%})")
+    print(f"__RG__: classifier / ceiling       = {actual / ceiling:.1%}")
+
+    section("ARTIFACTS")
+    outdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
+    os.makedirs(outdir, exist_ok=True)
+    for name, s in spectra.items():
+        np.save(os.path.join(outdir, f"singular_values_{name}.npy"), s)
+    with open(os.path.join(outdir, "capacity_summary.json"), "w") as fh:
+        json.dump(results, fh, indent=2)
+    print(f"__RG__: wrote {os.path.join(outdir, 'capacity_summary.json')}")
+    section("DONE")
+
+
 def section(title):
     print(f"\n__RG__ ===== {title} " + "=" * max(0, 58 - len(title)), flush=True)
 
@@ -128,6 +189,10 @@ def main():
     n_tr = train_counts(cfg["data"]["train_manifest"], cfg["data"]["label_column"], n_classes)
     print(f"__RG__: train images     {n_tr.sum():,}  "
           f"(classes with 0 train images: {(n_tr == 0).sum():,})")
+
+    if cfg["analysis"].get("mode", "geometry") == "capacity":
+        run_capacity(cfg, df, n_classes, device)
+        return
 
     # --- preprocessing fidelity ------------------------------------------
     # The reported accuracy of a checkpoint is only reproducible under the
