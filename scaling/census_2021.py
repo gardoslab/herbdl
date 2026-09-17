@@ -49,62 +49,141 @@ def human(n):
 # 1. Filesystem discovery
 # --------------------------------------------------------------------------
 
-def scan_tree(root, max_depth=3):
-    """Shallow, non-recursive-into-image-dirs listing.
+IMAGE_DIR_NAMES = {"images", "train_images", "test_images"}
 
-    A directory holding >2000 entries is almost certainly an image shard; we
-    report its count and stop descending, otherwise this alone would take
-    longer than the rest of the job.
+
+def scan_tree(root, max_depth=3, line_budget=400):
+    """Shallow listing that deliberately stops at the image shards.
+
+    The first version of this guarded on ">2000 entries" and descended anyway:
+    the 2021 shards hold exactly 1,000 files each, so it walked the whole
+    2.5M-image tree and produced a 15MB log. The shard *names* are the reliable
+    signal, not their size, so we stop at them by name and keep a hard line
+    budget as a backstop.
     """
     hr("filesystem tree")
     if not os.path.isdir(root):
         print(f"__K21__ FATAL: {root} is not a directory", flush=True)
         return
 
+    printed = [0]
+
+    def emit(line):
+        if printed[0] >= line_budget:
+            return False
+        printed[0] += 1
+        print(line, flush=True)
+        return True
+
     def walk(path, depth, prefix=""):
         try:
             entries = sorted(os.scandir(path), key=lambda e: e.name)
-        except PermissionError as exc:
-            print(f"{prefix}  <unreadable: {exc}>", flush=True)
+        except OSError as exc:
+            emit(f"{prefix}  <unreadable: {exc}>")
             return
         dirs = [e for e in entries if e.is_dir()]
         files = [e for e in entries if e.is_file()]
 
-        for e in files:
-            try:
-                size = e.stat().st_size
-            except OSError:
-                size = -1
-            mark = "  <-- manifest?" if e.name.lower().endswith(MANIFEST_EXT) else ""
-            print(f"{prefix}  {e.name:<45s} {human(size):>10s}{mark}", flush=True)
+        # Summarise rather than list when a directory is mostly data files.
+        if len(files) > 40:
+            ext_counts = {}
+            total = 0
+            for e in files:
+                ext_counts[os.path.splitext(e.name)[1].lower()] = \
+                    ext_counts.get(os.path.splitext(e.name)[1].lower(), 0) + 1
+                try:
+                    total += e.stat().st_size
+                except OSError:
+                    pass
+            emit(f"{prefix}  <{len(files):,} files, {human(total)}, by ext: "
+                 f"{dict(sorted(ext_counts.items(), key=lambda t: -t[1]))}>")
+        else:
+            for e in files:
+                try:
+                    size = e.stat().st_size
+                except OSError:
+                    size = -1
+                mark = "  <-- manifest?" if e.name.lower().endswith(MANIFEST_EXT) else ""
+                emit(f"{prefix}  {e.name:<45s} {human(size):>10s}{mark}")
 
         for e in dirs:
             try:
                 n = sum(1 for _ in os.scandir(e.path))
             except OSError as exc:
-                print(f"{prefix}  {e.name}/  <unreadable: {exc}>", flush=True)
+                emit(f"{prefix}  {e.name}/  <unreadable: {exc}>")
                 continue
-            print(f"{prefix}  {e.name}/  ({n:,} entries)", flush=True)
-            if depth < max_depth and n <= 2000:
+            if e.name in IMAGE_DIR_NAMES:
+                emit(f"{prefix}  {e.name}/  ({n:,} shard dirs)  <-- image root, not descending")
+                shard_stats(e.path, prefix + "      ")
+                continue
+            emit(f"{prefix}  {e.name}/  ({n:,} entries)")
+            if depth < max_depth:
                 walk(e.path, depth + 1, prefix + "    ")
-            elif depth < max_depth:
-                print(f"{prefix}      <{n:,} entries -- not descending, looks like an image shard>",
-                      flush=True)
+
+    def shard_stats(image_root, prefix):
+        """Estimate the image count without stat-ing 2.5M files: count every
+        shard's entries for a sample of shards and extrapolate, then report the
+        exact total only if the shard count is small enough to be cheap."""
+        try:
+            shards = [e for e in os.scandir(image_root) if e.is_dir()]
+        except OSError as exc:
+            print(f"{prefix}<unreadable: {exc}>", flush=True)
+            return
+        if not shards:
+            return
+        rng = random.Random(0)
+        sample = rng.sample(shards, min(12, len(shards)))
+        t0 = time.time()
+        per = []
+        for sh in sample:
+            try:
+                sub = [e for e in os.scandir(sh.path) if e.is_dir()]
+            except OSError:
+                continue
+            if sub:  # two-level shards (2021: images/NNN/MM/*.jpg)
+                inner = rng.sample(sub, min(6, len(sub)))
+                counts = []
+                for d in inner:
+                    try:
+                        counts.append(sum(1 for _ in os.scandir(d.path)))
+                    except OSError:
+                        pass
+                if counts:
+                    per.append(len(sub) * (sum(counts) / len(counts)))
+            else:
+                try:
+                    per.append(sum(1 for _ in os.scandir(sh.path)))
+                except OSError:
+                    pass
+        if per:
+            est = len(shards) * (sum(per) / len(per))
+            print(f"{prefix}~{est:,.0f} image files estimated "
+                  f"({len(shards):,} shards x ~{sum(per) / len(per):,.0f} each, "
+                  f"sampled in {time.time() - t0:.1f}s)", flush=True)
 
     print(root, flush=True)
     walk(root, 0)
+    if printed[0] >= line_budget:
+        print(f"  <line budget of {line_budget} reached; tree truncated>", flush=True)
 
 
 def find_manifests(root):
-    """Collect candidate manifest files from the top two levels only."""
+    """Candidate manifests from the top two levels only.
+
+    os.walk is pruned in place: without `dirnames[:] = ...` it still descends
+    into every image shard even though we skip those levels, which is minutes
+    of pointless metadata traffic on a shared filesystem.
+    """
     found = []
-    for depth_root, _, files in os.walk(root):
-        rel_depth = depth_root[len(root):].count(os.sep)
-        if rel_depth > 1:
-            continue
+    for cur, dirnames, files in os.walk(root, topdown=True):
+        rel_depth = cur[len(root):].strip(os.sep).count(os.sep) if cur != root else -1
+        if rel_depth >= 1:
+            dirnames[:] = []
+        else:
+            dirnames[:] = [d for d in dirnames if d not in IMAGE_DIR_NAMES]
         for f in files:
             if f.lower().endswith(MANIFEST_EXT):
-                p = os.path.join(depth_root, f)
+                p = os.path.join(cur, f)
                 try:
                     found.append((p, os.path.getsize(p)))
                 except OSError:
@@ -240,10 +319,27 @@ def path_check(name, df, image_col, image_root, n=300, seed=0):
             print(f"        e.g. MISSING {fn(sample[0])}", flush=True)
 
 
+WANTED_COLS = set(IMAGE_COLS) | set(LABEL_COLS) | {
+    "family", "genus", "species", "image_id", "category_id", "caption", "institution"}
+
+
 def load_any(path):
+    """Load a manifest, keeping only columns we actually use.
+
+    index.csv alone is 842MB on disk; read in full with object dtypes it is
+    several GB in memory for no benefit, so we read the header first and
+    restrict with usecols.
+    """
     ext = os.path.splitext(path)[1].lower()
     if ext == ".csv":
-        return pd.read_csv(path, low_memory=False)
+        cols = list(pd.read_csv(path, nrows=0).columns)
+        keep = [c for c in cols if c in WANTED_COLS]
+        if not keep:
+            keep = cols
+        dropped = [c for c in cols if c not in keep]
+        if dropped:
+            print(f"    (ignoring columns: {dropped})", flush=True)
+        return pd.read_csv(path, usecols=keep, low_memory=False)
     if ext in (".json", ".jsonl"):
         try:
             return pd.read_json(path, lines=True)
@@ -255,7 +351,113 @@ def load_any(path):
     raise ValueError(f"unsupported {ext}")
 
 
-# --------------------------------------------------------------------------
+def report_label_mappings(root):
+    """Someone has already built label mappings here -- read them rather than
+    re-deriving, and check whether the 64k one matches the 2021 pool."""
+    hr("existing label mappings")
+    for fn in ("label_mapping_15k.json", "label_mapping_64k.json",
+               "label_mapping_merged.json"):
+        p = os.path.join(root, fn)
+        if not os.path.exists(p):
+            print(f"    MISSING  {fn}", flush=True)
+            continue
+        try:
+            with open(p) as fh:
+                obj = json.load(fh)
+        except Exception as exc:
+            print(f"    {fn}: <unreadable: {type(exc).__name__}: {exc}>", flush=True)
+            continue
+        if isinstance(obj, dict):
+            items = list(obj.items())
+            print(f"    {fn}: dict with {len(obj):,} entries; "
+                  f"first 3 = {items[:3]}", flush=True)
+        elif isinstance(obj, list):
+            print(f"    {fn}: list of {len(obj):,}; first 3 = {obj[:3]}", flush=True)
+
+
+
+def coco_categories(path, max_array_bytes=64 * 1024 ** 2):
+    """Pull just the "categories" array out of a COCO-style metadata.json.
+
+    The 2021 train metadata is 398MB and the 2022 one 636MB, so json.load is
+    out. The categories array is the authoritative taxon list -- the CSVs are
+    derived from it and may have been filtered -- and it is only a few MB, so
+    we stream to the key and bracket-match the array.
+
+    Wrapped by the caller in try/except: this is a cross-check, and a parse
+    failure must not cost us the census that already printed above.
+    """
+    key = b'"categories"'
+    buf = b""
+    found_at = None
+    with open(path, "rb") as fh:
+        # Locate the key, keeping a small overlap so it cannot straddle reads.
+        while True:
+            chunk = fh.read(4 * 1024 ** 2)
+            if not chunk:
+                break
+            buf += chunk
+            idx = buf.find(key)
+            if idx != -1:
+                found_at = idx
+                break
+            buf = buf[-len(key):]
+        if found_at is None:
+            return None
+
+        # Advance to the opening bracket, then bracket-match to the close.
+        rest = buf[found_at + len(key):]
+        while b"[" not in rest:
+            more = fh.read(4 * 1024 ** 2)
+            if not more:
+                return None
+            rest += more
+        rest = rest[rest.index(b"["):]
+
+        depth, out, i = 0, bytearray(), 0
+        while True:
+            while i < len(rest):
+                c = rest[i]
+                out.append(c)
+                if c == 0x5B:      # [
+                    depth += 1
+                elif c == 0x5D:    # ]
+                    depth -= 1
+                    if depth == 0:
+                        return json.loads(bytes(out).decode("utf-8"))
+                i += 1
+                if len(out) > max_array_bytes:
+                    raise ValueError(f"categories array exceeded {human(max_array_bytes)}")
+            more = fh.read(4 * 1024 ** 2)
+            if not more:
+                return None
+            rest, i = more, 0
+
+
+def report_coco(name, path):
+    hr(f"authoritative taxon list: {name}")
+    if not os.path.exists(path):
+        print(f"    MISSING {path}", flush=True)
+        return
+    t0 = time.time()
+    try:
+        cats = coco_categories(path)
+    except Exception as exc:
+        print(f"    <parse failed: {type(exc).__name__}: {exc}>", flush=True)
+        return
+    if cats is None:
+        print("    <no \"categories\" array found>", flush=True)
+        return
+    print(f"    categories in metadata.json : {len(cats):,}  "
+          f"(read in {time.time() - t0:.1f}s)", flush=True)
+    print(f"    example entry               : {cats[0]}", flush=True)
+    keys = sorted({k for c in cats[:5000] for k in c})
+    print(f"    category fields             : {keys}", flush=True)
+    for level in ("family", "genus", "species", "name", "scientificName"):
+        if level in keys:
+            vals = {str(c.get(level)) for c in cats}
+            print(f"    unique {level:<16s}     : {len(vals):,}", flush=True)
+
 
 def main():
     print(f"__K21__ host={os.uname().nodename}  python={sys.version.split()[0]}", flush=True)
@@ -263,6 +465,8 @@ def main():
     t0 = time.time()
 
     scan_tree(ROOT)
+
+    report_label_mappings(ROOT)
 
     hr("manifest inventory")
     manifests = find_manifests(ROOT)
@@ -342,6 +546,11 @@ def main():
         print(f"    union (pooled label set): {len(a | b):,}", flush=True)
     else:
         print("    <one or both pools unavailable>", flush=True)
+
+    # Cross-check the CSVs against the raw Kaggle metadata, last: if this is
+    # slow or fails, the decision-relevant census above has already printed.
+    report_coco("kaggle21 train", f"{ROOT}/herbarium-2021/train/metadata.json")
+    report_coco("kaggle22 train", f"{ROOT}/herbarium-2022/train_metadata.json")
 
     print(f"\n__K21__ done in {time.time() - t0:.1f}s", flush=True)
 
