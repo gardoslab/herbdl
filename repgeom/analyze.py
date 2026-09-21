@@ -178,12 +178,20 @@ def main():
     cen_sim, cen_idx = geometry.nearest_neighbour(mu, present, device, k=2)
     nn_cos, nn_class = cen_sim[:, 0], cen_idx[:, 0]
 
-    from transformers import SwinForImageClassification
-    model = SwinForImageClassification.from_pretrained(cfg["model"]["checkpoint"])
-    W = model.classifier.weight.detach().to(device)
-    b = model.classifier.bias.detach().cpu().numpy()
-    del model
+    # Read the head by name, never via from_pretrained -- an ArcFace checkpoint
+    # has no classifier.* and would silently yield a random matrix here.
+    W_cpu, b_cpu, head = extract.load_head(cfg["model"]["checkpoint"], cfg)
+    W = W_cpu.to(device)
+    b = b_cpu.numpy() if b_cpu is not None else np.zeros(n_classes, dtype=np.float32)
     w_norm = W.norm(dim=1).cpu().numpy()
+    if head == "arcface":
+        # ArcFace L2-normalises its rows at inference, so row length plays no
+        # part in the decision. Equinorm/row-norm statistics are reported for
+        # completeness but are not comparable to the linear-head baseline.
+        print("__RG__: NOTE head=arcface -- classifier row norms are not used at "
+              "inference; row-norm and equinorm figures are not comparable to the "
+              "linear baseline. Direction-based measures (alignment, nearest-row "
+              "cosine) are comparable.")
     w_sim, _ = geometry.nearest_neighbour(W, np.ones(n_classes, dtype=bool), device, k=2)
 
     coll, dual_present = geometry.collapse_metrics(feat, y, mu, mu_g, W, present, device)

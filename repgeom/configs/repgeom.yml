@@ -1,10 +1,17 @@
-# SWIN_BASE_BASELINE: microsoft/swin-base-patch4-window7-224-in22k fine-tuned to
-# 15,501 Kaggle-Herbarium-2022 species. Reported val accuracy 0.7797, F1 0.7455
-# (finetuning/output/SWIN/SWIN_BASE_BASELINE/all_results.json).
+# SWIN_BASE_ARCFACE_ABLATION: microsoft/swin-base-patch4-window7-224-in22k
+# fine-tuned to 15,501 Kaggle-Herbarium-2022 species with an ArcFace head
+# (s=30, m=0.3, k=1, 5-epoch margin warmup, no bottleneck/BN/hybrid/multi-task).
+# Reported val accuracy 0.7971, F1 0.7605.
 model:
-  checkpoint: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_BASELINE
-  # label_mapping.json ships next to the checkpoint: encoded id -> "Family Genus species"
-  label_mapping: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_BASELINE/label_mapping.json
+  # Controlled ArcFace counterpart to SWIN_BASE_BASELINE: identical backbone,
+  # resolution, data, split, seed and schedule; only the head differs.
+  # Reported 0.7971 / 0.7605 vs the baseline's 0.7797 / 0.7455.
+  checkpoint: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_ARCFACE_ABLATION
+  label_mapping: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_ARCFACE_ABLATION/label_mapping.json
+  # linear -> classifier.weight ; arcface -> arcface.weight (read by name, since
+  # from_pretrained would silently substitute a random classifier here).
+  head: arcface
+  arcface_scale: 30.0
 
 data:
   # The exact split the checkpoint was evaluated on: the config that trained it
@@ -17,8 +24,8 @@ data:
 
 extract:
   # Which val-time pipeline to cache features under. `eval_protocol` mirrors
-  # SWIN_finetuning.py's _val_transforms, which is what produced the reported
-  # 0.7797; see the PREPROCESSING PROBE block in the run log.
+  # SWIN_finetuning.py's _val_transforms. The probe below re-verifies that it
+  # reproduces THIS checkpoint's reported accuracy, not just the baseline's.
   preprocess: eval_protocol
   cache_root: /projectnb/herbdl/workspaces/faridkar/herbdl/repgeom/cache
   batch_size: 128
