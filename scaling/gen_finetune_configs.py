@@ -8,10 +8,19 @@ weights carry over.
 
 Budget note, learned the hard way from the probe sweep: fixing EPOCHS gives the
 big rungs far more gradient steps than the small ones (more classes at 10
-images each = a bigger dataset), and fixing STEPS does the reverse. Here we fix
-max_steps so every rung gets identical optimisation compute, and record the
-resulting epoch count per rung in a comment so the imbalance is visible rather
-than hidden.
+images each = a bigger dataset), and fixing STEPS does the reverse. We want
+identical optimisation compute at every rung.
+
+SWIN_finetuning_advanced.py builds TrainingArguments from a fixed key list in
+which `num_train_epochs` is mandatory and a step cap is never read. An earlier
+version of this generator set a step cap instead, and all five jobs died with
+KeyError: 'num_train_epochs' before a single batch trained. So the equal-step
+budget is expressed THROUGH the epoch knob: num_train_epochs is computed per
+rung as TARGET_STEPS * BATCH / n_train_images, landing every rung on the same
+~TARGET_STEPS optimiser steps while using the key the trainer accepts.
+
+Keys the trainer does not read are omitted rather than left in to look
+meaningful (step caps, save/logging step intervals, overwrite_output_dir).
 """
 import json, os, sys
 
@@ -19,7 +28,7 @@ MAN = sys.argv[1]
 OUT = sys.argv[2]
 CKPT = "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_BASELINE"
 OUTROOT = "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/LADDER"
-MAX_STEPS = 20000
+TARGET_STEPS = 20000   # identical optimiser steps at every rung
 BATCH = 128
 MIN_N = 1000   # below this, 10 images/class makes full fine-tuning pure overfitting
 
@@ -31,11 +40,11 @@ for e in man["rungs"]:
     if n < MIN_N:
         print(f"skip N={n}: below {MIN_N}, full fine-tuning would just memorise")
         continue
-    epochs = MAX_STEPS * BATCH / e["n_train_images"]
+    epochs = TARGET_STEPS * BATCH / e["n_train_images"]
     name = f"ladder_n{n}"
     cfg = f"""# SWIN fine-tune, ladder rung N={n:,}
 # Resumes from the SAME checkpoint as the 15k arm; only the label space changes.
-# {MAX_STEPS:,} steps x batch {BATCH} = {MAX_STEPS*BATCH:,} samples seen
+# {TARGET_STEPS:,} steps x batch {BATCH} = {TARGET_STEPS*BATCH:,} samples seen
 #   = {epochs:.1f} epochs over this rung's {e['n_train_images']:,} train images.
 model:
   model_name_or_path: "{CKPT}"
@@ -71,7 +80,7 @@ training:
   per_device_train_batch_size: {BATCH}
   per_device_eval_batch_size: 64
   learning_rate: 0.0002
-  max_steps: {MAX_STEPS}
+  num_train_epochs: {epochs:.4f}   # = {TARGET_STEPS:,} steps at batch {BATCH}
   warmup_steps: 0.05
   weight_decay: 0.01
   gradient_accumulation_steps: 1
@@ -79,9 +88,7 @@ training:
   lr_scheduler_kwargs:
     eta_min: 0.000001
   logging_strategy: "steps"
-  logging_steps: 200
   save_strategy: "steps"
-  save_steps: 5000
   save_total_limit: 2
   eval_strategy: "steps"
   eval_steps: 5000
@@ -89,7 +96,6 @@ training:
   bf16: true
   dataloader_num_workers: 16
   remove_unused_columns: false
-  overwrite_output_dir: false
   seed: 42
 
 custom:
@@ -99,6 +105,13 @@ custom:
   run_group: "LabelLadder"
   run_name: "ladder_N{n}"
   run_id: "ladder_n{n}_from_swin_base_baseline"
+  run_notes: "Label-cardinality ladder rung N={n}. Resumed from SWIN_BASE_BASELINE; only the label space differs across rungs. {TARGET_STEPS:,} optimiser steps at batch {BATCH}."
+
+# Only consulted when advanced augmentation is enabled (it is not), but the
+# trainer subscripts this section directly, so omitting it risks a KeyError.
+randaugment:
+  num_ops: 2
+  magnitude: 9
 
 wandb:
   entity: "gardoslab"
@@ -112,4 +125,38 @@ wandb:
 print("\n{:>8} {:>12} {:>9}  {}".format("N", "train imgs", "epochs", "config"))
 for n, p, ni, ep in made:
     print("{:>8,} {:>12,} {:>9.1f}  {}".format(n, ni, ep, p))
+
+# --- self-check -----------------------------------------------------------
+# Five jobs were once lost because this generator emitted a key the trainer
+# never reads (max_steps) and omitted ones it subscripts directly
+# (num_train_epochs, run_notes). Rather than trust a hand-kept list, derive the
+# requirement from the trainer source and fail loudly before anything is queued.
+TRAINER = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                       "..", "finetuning", "SWIN", "SWIN_finetuning_advanced.py")
+TRAINER = os.environ.get("LADDER_TRAINER_SRC", TRAINER)
+if os.path.exists(TRAINER):
+    import re, collections, yaml
+    src = open(TRAINER).read()
+    hard = collections.defaultdict(set)
+    for a, b in re.findall(r"""config\[['\"](\w+)['\"]\]\[['\"](\w+)['\"]\]""", src):
+        hard[a].add(b)
+    soft = collections.defaultdict(set)
+    for a, b in re.findall(r"""config\[['\"](\w+)['\"]\]\.get\(['\"](\w+)['\"]""", src):
+        soft[a].add(b)
+    problems = []
+    for _, path, _, _ in made:
+        cfg = yaml.safe_load(open(path))
+        for sec in hard:
+            for key in sorted(hard[sec] - soft[sec]):
+                if key not in (cfg.get(sec) or {}):
+                    problems.append(f"{os.path.basename(path)}: missing {sec}.{key}")
+    if problems:
+        print("\nCONFIG VALIDATION FAILED -- these would KeyError at startup:")
+        for q in problems:
+            print("  " + q)
+        sys.exit(1)
+    print(f"\nvalidated against {TRAINER}: all required keys present")
+else:
+    print(f"\nWARNING: trainer source not found at {TRAINER}; skipped validation")
+
 print(f"\n{len(made)} configs written to {OUT}")
