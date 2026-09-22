@@ -134,12 +134,26 @@ def load_small_subset(train_manifest, n_species, images_per_species, seed=0):
             class_counts, len(species2id))
 
 
+def processor_size(proc):
+    """transformers >=4.57 returns a SizeDict here: mapping-like, not a dict
+    subclass, so `isinstance(proc.size, dict)` is False and `int(proc.size)`
+    raises. Same fix as repgeom/extract.py's processor_size() -- reused here
+    rather than re-derived, since it is the identical incompatibility."""
+    raw = getattr(proc, "size", None)
+    if raw is None:
+        return 384
+    try:
+        return int(raw["height"])
+    except Exception:
+        return int(getattr(raw, "height", 384) or 384)
+
+
 def run_one_config(cfg_name, build_kwargs, backbone_ckpt, train_rows, val_rows,
                     tree, class_counts, n_species, device, steps, batch_size, lr):
     section(f"CONFIG: {cfg_name}")
     t0 = time.time()
     proc = AutoImageProcessor.from_pretrained(backbone_ckpt)
-    size = proc.size.get("height", 384) if isinstance(proc.size, dict) else int(proc.size)
+    size = processor_size(proc)
 
     base = SwinForImageClassification.from_pretrained(
         backbone_ckpt, num_labels=n_species, ignore_mismatched_sizes=True)
