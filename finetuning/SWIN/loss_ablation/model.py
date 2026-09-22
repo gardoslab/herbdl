@@ -23,7 +23,7 @@ import torch.nn.functional as F
 
 from .aux import AUX_REGISTRY
 from .hierarchy import HACEHead, TaxonomyTree
-from .losses import build_head
+from .losses import ArcMarginHead, SoftmaxHead, build_head
 
 
 class SwinWithLoss(nn.Module):
@@ -75,6 +75,66 @@ class SwinWithLoss(nn.Module):
         """The (n_species, C) matrix repgeom's geometry analysis reads,
         regardless of which head/hierarchy is active."""
         return self.hace.class_directions() if self.hace is not None else self.head.class_directions()
+
+    def head_inference_info(self):
+        """(W, bias_or_None, kind, scale, sub_centers) -- everything a reader
+        needs to reproduce this model's exact inference-time (labels=None)
+        logits without any head-specific Python code of its own, because every
+        head in this registry reduces to exactly one of two formulas once no
+        margin/aux loss is applied:
+
+            "linear"  logit_c = w_c . x + b_c
+                      -- SoftmaxHead's own forward, and HACE's leaf rows
+                      (leaves have no descendants, so aggregation is the
+                      identity there -- see hierarchy.py's HACEHead docstring
+                      -- and argmax over softmax is argmax over the raw
+                      linear logit, softmax being monotonic). W is
+                      (n_species, C), sub_centers is always 1.
+            "cosine"  logit_c = scale * max_j cosine(w_c_j, x)   j in [0, sub_centers)
+                      -- every margin head (ArcMarginHead, KappaFaceHead,
+                      X2SoftmaxHead, DBMHead). Confirmed directly from each
+                      head's own forward(), not assumed: every one of their
+                      `if labels is None:` branches returns exactly
+                      `cosine * self.s` -- margin, per-class adaptation, and
+                      the quadratic term only ever apply when labels is given.
+                      W is (n_species, sub_centers, C).
+
+        The max-over-sub_centers is NOT optional bookkeeping: sub-center
+        ArcFace's whole mechanism is that max, and `class_directions()`
+        deliberately exposes only sub-center 0 (a representative direction
+        for geometry comparisons between CLASSES, not a claim that it alone
+        determines the logit) -- reusing it here for k>1 silently reproduces
+        the WRONG logit whenever a different sub-center wins for a given
+        image. Caught by testing against a live model's own forward(), not by
+        inspection: for k=1 heads the two are identical by construction, so
+        only a real k>1 case (subcenter_arcface, k=3) exposed the gap.
+
+        sub_centers is read from the head's TYPE, not a generic `.k`
+        attribute: X2SoftmaxHead also has a `self.k`, but it is an unrelated
+        formula hyperparameter (Eq. 4's constant term), not a sub-center
+        count, and happens to default to 1.0 -- a `getattr(head, 'k', 1)`
+        check would silently work by coincidence at the default and silently
+        break the moment that hyperparameter were tuned to anything else.
+
+        ECC/TARA never change any of this: they are training-time-only
+        additive losses on top of whichever base head is active, and never
+        touch that head's own forward path.
+        """
+        if self.hace is not None:
+            n = self.hace.tree.n_species
+            W = self.hace.linear.weight.detach()[:n]
+            b = self.hace.linear.bias.detach()[:n]
+            return W, b, "linear", 1.0, 1
+        h = self.head
+        if isinstance(h, SoftmaxHead):
+            return h.class_directions(), h.linear.bias.detach(), "linear", 1.0, 1
+        if isinstance(h, ArcMarginHead):
+            W = h.weight.detach().view(h.num_classes, h.k, h.in_features)
+            return W, None, "cosine", float(h.s), h.k
+        # KappaFaceHead, X2SoftmaxHead, DBMHead: single center, unsqueezed to
+        # the same (n_species, sub_centers, C) shape so the reader's formula
+        # never has to branch on which of these three it is.
+        return h.class_directions().unsqueeze(1), None, "cosine", float(h.s), 1
 
     def forward(self, pixel_values, labels=None, bioclip_pixel_values=None, **kwargs):
         pooled = self.swin(pixel_values).pooler_output

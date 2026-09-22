@@ -295,6 +295,7 @@ def run_one_config(cfg_name, build_kwargs, backbone_ckpt, train_rows, val_rows,
     export_dir = os.path.join(export_root, cfg_name) if export_root else None
     if export_dir:
         from loss_ablation.checkpoint_io import (load_geometry_export,
+                                                  load_inference_weights,
                                                   save_geometry_export)
         save_geometry_export(model, export_dir, backbone_ckpt,
                              meta_extra={"config": cfg_name})
@@ -304,6 +305,62 @@ def run_one_config(cfg_name, build_kwargs, backbone_ckpt, train_rows, val_rows,
             RESULTS.append(result)
             log(f"FAIL [{cfg_name}]: {result['reason']}")
             return result
+
+        live_W, live_bias, live_kind, live_scale, live_k = model.head_inference_info()
+        W_loaded, bias_loaded, kind_loaded, scale_loaded, k_loaded = \
+            load_inference_weights(export_dir, meta=meta)
+        if not torch.equal(W_loaded, live_W.detach().cpu()):
+            result["reason"] = "geometry export: head_inference_weight.pt does not match the live model"
+            RESULTS.append(result)
+            log(f"FAIL [{cfg_name}]: {result['reason']}")
+            return result
+        if (live_bias is None) != (bias_loaded is None):
+            result["reason"] = (f"geometry export: bias presence mismatch -- live "
+                                f"has_bias={live_bias is not None}, exported "
+                                f"has_bias={bias_loaded is not None}")
+            RESULTS.append(result)
+            log(f"FAIL [{cfg_name}]: {result['reason']}")
+            return result
+        if live_bias is not None and not torch.equal(bias_loaded, live_bias.detach().cpu()):
+            result["reason"] = "geometry export: head_bias.pt does not match the live model"
+            RESULTS.append(result)
+            log(f"FAIL [{cfg_name}]: {result['reason']}")
+            return result
+        if kind_loaded != live_kind or abs(scale_loaded - live_scale) > 1e-9 or k_loaded != live_k:
+            result["reason"] = (f"geometry export: head_kind/scale/sub_centers mismatch -- live "
+                                f"({live_kind}, {live_scale}, {live_k}) vs exported "
+                                f"({kind_loaded}, {scale_loaded}, {k_loaded})")
+            RESULTS.append(result)
+            log(f"FAIL [{cfg_name}]: {result['reason']}")
+            return result
+
+        # The actual point of all this: does the exported (W, bias, kind,
+        # scale) formula reproduce the live model's OWN forward(labels=None)
+        # logits exactly, on real images -- not just round-trip cleanly.
+        with torch.no_grad():
+            live_logits = model(px_check, labels=None)["logits"]
+            live_pooled_check = model.swin(px_check).pooler_output
+            if kind_loaded == "linear":
+                formula_logits = live_pooled_check @ live_W.T + live_bias
+            else:
+                en = F.normalize(live_pooled_check, dim=1)
+                wn = F.normalize(live_W, dim=2)
+                formula_logits = live_scale * torch.einsum("bc,nkc->bnk", en, wn).max(dim=2).values
+        # HACE compares by argmax only: model's own logits there are
+        # post-softmax/aggregated probabilities, the formula gives raw
+        # linear logits -- numerically different, argmax-identical by
+        # construction (see head_inference_info()'s docstring).
+        formula_ok = (torch.equal(live_logits.argmax(1), formula_logits.argmax(1))
+                     if build_kwargs.get("hierarchy") == "hace"
+                     else torch.allclose(live_logits, formula_logits, atol=1e-4))
+        if not formula_ok:
+            result["reason"] = (f"geometry export: exported inference formula does not "
+                                f"reproduce the live model's own logits/predictions")
+            RESULTS.append(result)
+            log(f"FAIL [{cfg_name}]: {result['reason']}")
+            return result
+        log(f"  inference-formula check OK: exported (kind={kind_loaded}, "
+            f"scale={scale_loaded}, sub_centers={k_loaded}) reproduces the live model")
 
         from transformers import SwinModel
         plain_backbone = SwinModel.from_pretrained(backbone_ckpt)
