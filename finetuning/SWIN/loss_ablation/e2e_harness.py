@@ -32,6 +32,7 @@ combination in the registry runs in this one job rather than needing nine.
 
 import argparse
 import json
+import os
 import sys
 import time
 
@@ -320,9 +321,15 @@ def main():
         extra = f"acc={r.get('accuracy', float('nan')):.4f}" if r["ok"] else r.get("reason", "?")
         log(f"  {status:5s} {r['config']:20s} {extra}")
     log(f"{n_pass}/{len(RESULTS)} configurations passed")
-    with open("e2e_harness_results.json", "w") as fh:
+    # Path relative to THIS file, not the process cwd -- run_e2e_harness.sh
+    # cd's to finetuning/SWIN before invoking `python loss_ablation/e2e_harness.py`,
+    # so a bare relative path here landed one directory up from where anyone
+    # would look for it (caught after run 064677df: the log said PASS 8/8 but
+    # the file was in finetuning/SWIN/, not finetuning/SWIN/loss_ablation/).
+    out_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "e2e_harness_results.json")
+    with open(out_path, "w") as fh:
         json.dump(RESULTS, fh, indent=2)
-    log("wrote e2e_harness_results.json")
+    log(f"wrote {out_path}")
 
     if n_pass < len(RESULTS):
         sys.exit(1)
