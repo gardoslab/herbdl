@@ -76,7 +76,7 @@ class SwinWithLoss(nn.Module):
         regardless of which head/hierarchy is active."""
         return self.hace.class_directions() if self.hace is not None else self.head.class_directions()
 
-    def forward(self, pixel_values, labels=None, **kwargs):
+    def forward(self, pixel_values, labels=None, bioclip_pixel_values=None, **kwargs):
         pooled = self.swin(pixel_values).pooler_output
 
         if self.hace is not None:
@@ -92,7 +92,22 @@ class SwinWithLoss(nn.Module):
         if labels is not None:
             for name, mod in self.aux_modules.items():
                 if name == "tara":
-                    loss = loss + mod(pooled, pixel_values)
+                    # NEVER pixel_values here: BioCLIP needs its own 224px
+                    # CLIP-normalised preprocessing, not the SWIN backbone's
+                    # 384px ImageNet-normalised input -- see aux.py's
+                    # TARAAux docstring and bioclip_teacher.py. Reusing
+                    # pixel_values would silently train against a
+                    # meaningless (but finite, unit-norm) teacher signal, so
+                    # this fails loudly instead of falling back to it.
+                    if bioclip_pixel_values is None:
+                        raise ValueError(
+                            "aux='tara' is active but bioclip_pixel_values was not "
+                            "provided. It must be a SEPARATE tensor from pixel_values, "
+                            "preprocessed with the BioCLIP teacher's own transform "
+                            "(see bioclip_teacher.BioCLIPTeacher.transform) -- passing "
+                            "the SWIN pixel_values here would silently corrupt the "
+                            "teacher signal rather than raise, which is worse than this.")
+                    loss = loss + mod(pooled, bioclip_pixel_values)
                 else:  # ecc
                     loss = loss + mod(pooled, labels)
 

@@ -137,21 +137,32 @@ class TARAAux(nn.Module):
 
     L_TARA = -cos( projector(pooled_features), bioclip_embedding(image) )
 
-    `bioclip_embed_fn` is injected rather than owned here, so this module has
-    no opinion on how the teacher embedding is produced or cached -- the
-    project already has a BioCLIP integration (finetuning/BioCLIP/) and
-    running a second full forward pass through it every step is a real cost
-    worth deciding deliberately, not one this module should hide.
+    `bioclip_embed_fn` is injected rather than owned here (see
+    bioclip_teacher.py for the concrete BioCLIP wrapper this project uses), so
+    this module has no opinion on how the teacher embedding is produced or
+    cached -- running a second full forward pass through it every step is a
+    real cost worth deciding deliberately, not one this module should hide.
+
+    CRITICAL: `bioclip_pixel_values` must NOT be the same tensor as the
+    backbone's `pixel_values`. Confirmed by loading the real model
+    (hf-hub:imageomics/bioclip): it expects 224x224 CLIP-normalised input
+    (mean [0.4815,0.4578,0.4082], std [0.2686,0.2613,0.2758]), while this
+    project's SWIN backbone takes 384x384 ImageNet-normalised input (mean
+    [0.485,0.456,0.406]). Reusing one tensor for both would silently feed
+    BioCLIP a wrong-resolution, wrong-normalisation image and produce a
+    teacher signal that looks fine (finite, unit-norm after F.normalize) but
+    means nothing -- the caller must run the image through BOTH
+    preprocessing pipelines and pass both tensors in.
     """
 
     def __init__(self, in_features, bioclip_dim, bioclip_embed_fn):
         super().__init__()
         self.projector = nn.Linear(in_features, bioclip_dim)
-        self.bioclip_embed_fn = bioclip_embed_fn  # callable: pixel_values -> (B, bioclip_dim), no_grad
+        self.bioclip_embed_fn = bioclip_embed_fn  # callable: bioclip_pixel_values -> (B, bioclip_dim), no_grad
 
-    def forward(self, pooled_features, pixel_values):
+    def forward(self, pooled_features, bioclip_pixel_values):
         with torch.no_grad():
-            teacher = self.bioclip_embed_fn(pixel_values)
+            teacher = self.bioclip_embed_fn(bioclip_pixel_values)
             teacher = F.normalize(teacher, p=2, dim=1)
         student = F.normalize(self.projector(pooled_features), p=2, dim=1)
         return -(student * teacher).sum(dim=1).mean()

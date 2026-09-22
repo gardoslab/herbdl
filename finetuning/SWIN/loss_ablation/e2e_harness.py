@@ -58,10 +58,15 @@ def section(title):
 
 
 class SmallHerbariumSubset(Dataset):
-    def __init__(self, rows, image_processor, size):
+    def __init__(self, rows, image_processor, size, bioclip_transform=None):
         self.rows = rows
         self.proc = image_processor
         self.size = size
+        # Separate transform for TARA's BioCLIP teacher -- NOT the same
+        # pipeline as `proc` (see bioclip_teacher.py: 224px CLIP-normalised
+        # vs 384px ImageNet-normalised). None unless a config actually uses
+        # aux='tara', so the other 8 configs pay nothing for this.
+        self.bioclip_transform = bioclip_transform
 
     def __len__(self):
         return len(self.rows)
@@ -71,9 +76,12 @@ class SmallHerbariumSubset(Dataset):
         try:
             img = Image.open(row["filename"]).convert("RGB")
             px = self.proc(images=img, return_tensors="pt").pixel_values[0]
+            bpx = self.bioclip_transform(img) if self.bioclip_transform is not None \
+                else torch.zeros(1)  # placeholder, unused when tara is off
         except Exception:
             px = torch.zeros(3, self.size, self.size)
-        return px, row["species_id"], row["genus_id"], row["family_id"]
+            bpx = torch.zeros(3, 224, 224) if self.bioclip_transform is not None else torch.zeros(1)
+        return px, bpx, row["species_id"], row["genus_id"], row["family_id"]
 
 
 def load_small_subset(train_manifest, n_species, images_per_species, seed=0):
@@ -150,7 +158,8 @@ def processor_size(proc):
 
 
 def run_one_config(cfg_name, build_kwargs, backbone_ckpt, train_rows, val_rows,
-                    tree, class_counts, n_species, device, steps, batch_size, lr):
+                    tree, class_counts, n_species, device, steps, batch_size, lr,
+                    bioclip_teacher=None, export_root=None):
     section(f"CONFIG: {cfg_name}")
     t0 = time.time()
     proc = AutoImageProcessor.from_pretrained(backbone_ckpt)
@@ -158,10 +167,15 @@ def run_one_config(cfg_name, build_kwargs, backbone_ckpt, train_rows, val_rows,
 
     base = SwinForImageClassification.from_pretrained(
         backbone_ckpt, num_labels=n_species, ignore_mismatched_sizes=True)
-    model = SwinWithLoss(base, n_species, tree=tree, **build_kwargs).to(device)
+    model = SwinWithLoss(base, n_species, tree=tree,
+                         aux_kwargs=(dict(tara=dict(bioclip_dim=bioclip_teacher.embed_dim,
+                                                    bioclip_embed_fn=bioclip_teacher.as_embed_fn()))
+                                     if bioclip_teacher is not None else None),
+                         **build_kwargs).to(device)
 
-    train_ds = SmallHerbariumSubset(train_rows, proc, size)
-    val_ds = SmallHerbariumSubset(val_rows, proc, size)
+    bc_transform = bioclip_teacher.transform if bioclip_teacher is not None else None
+    train_ds = SmallHerbariumSubset(train_rows, proc, size, bioclip_transform=bc_transform)
+    val_ds = SmallHerbariumSubset(val_rows, proc, size, bioclip_transform=bc_transform)
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
 
@@ -176,12 +190,15 @@ def run_one_config(cfg_name, build_kwargs, backbone_ckpt, train_rows, val_rows,
     loss_history = []
     try:
         while step < steps:
-            for px, sp, ge, fa in train_loader:
+            for px, bpx, sp, ge, fa in train_loader:
                 if step >= steps:
                     break
                 px, sp = px.to(device), sp.to(device)
+                fwd_kwargs = {}
+                if bioclip_teacher is not None:
+                    fwd_kwargs["bioclip_pixel_values"] = bpx.to(device)
                 with torch.autocast(device_type=device, dtype=autocast_dtype, enabled=(device == "cuda")):
-                    out = model(px, labels=sp)
+                    out = model(px, labels=sp, **fwd_kwargs)
                 loss = out["loss"]
                 if not torch.isfinite(loss):
                     result["reason"] = f"non-finite loss at step {step}: {loss.item()}"
@@ -209,9 +226,9 @@ def run_one_config(cfg_name, build_kwargs, backbone_ckpt, train_rows, val_rows,
     model.eval()
     correct, total = 0, 0
     with torch.no_grad():
-        for px, sp, ge, fa in val_loader:
+        for px, bpx, sp, ge, fa in val_loader:
             px, sp = px.to(device), sp.to(device)
-            out = model(px, labels=None)
+            out = model(px, labels=None)  # TARA never runs at labels=None; bpx unused here
             pred = out["logits"].argmax(dim=1)
             correct += (pred == sp).sum().item()
             total += sp.numel()
@@ -234,7 +251,11 @@ def run_one_config(cfg_name, build_kwargs, backbone_ckpt, train_rows, val_rows,
     buf.seek(0)
     fresh_base = SwinForImageClassification.from_pretrained(
         backbone_ckpt, num_labels=n_species, ignore_mismatched_sizes=True)
-    fresh_model = SwinWithLoss(fresh_base, n_species, tree=tree, **build_kwargs).to(device)
+    fresh_model = SwinWithLoss(fresh_base, n_species, tree=tree,
+                               aux_kwargs=(dict(tara=dict(bioclip_dim=bioclip_teacher.embed_dim,
+                                                          bioclip_embed_fn=bioclip_teacher.as_embed_fn()))
+                                           if bioclip_teacher is not None else None),
+                               **build_kwargs).to(device)
     fresh_model.load_state_dict(torch.load(buf, map_location=device))
     fresh_model.eval()
     px_check = next(iter(val_loader))[0].to(device)
@@ -263,6 +284,51 @@ def run_one_config(cfg_name, build_kwargs, backbone_ckpt, train_rows, val_rows,
     log(f"  class_directions() OK: shape={tuple(cd.shape)}, "
         f"mean off-diagonal cosine={mean_offdiag_cos:.4f}")
 
+    # --- 5. geometry-export round-trip: the repgeom-facing contract -----
+    # This is the fixture repgeom (a different git branch, see
+    # checkpoint_io.py's module docstring) will read: a plain backbone
+    # state_dict + the class-direction matrix, no loss_ablation import
+    # required on the reading side. Verified here by doing exactly what
+    # repgeom's reader will do -- reload a PLAIN SwinModel from the exported
+    # state_dict and confirm its pooled-feature output matches the trained
+    # model's, without going through SwinWithLoss at all.
+    export_dir = os.path.join(export_root, cfg_name) if export_root else None
+    if export_dir:
+        from loss_ablation.checkpoint_io import (load_geometry_export,
+                                                  save_geometry_export)
+        save_geometry_export(model, export_dir, backbone_ckpt,
+                             meta_extra={"config": cfg_name})
+        swin_sd, cd_loaded, meta = load_geometry_export(export_dir)
+        if not torch.equal(cd_loaded, cd.cpu()):
+            result["reason"] = "geometry export: class_directions.pt does not match the live model"
+            RESULTS.append(result)
+            log(f"FAIL [{cfg_name}]: {result['reason']}")
+            return result
+
+        from transformers import SwinModel
+        plain_backbone = SwinModel.from_pretrained(backbone_ckpt)
+        load_report = plain_backbone.load_state_dict(swin_sd, strict=False)
+        if load_report.missing_keys or load_report.unexpected_keys:
+            result["reason"] = (f"geometry export: state_dict mismatch on reload -- "
+                                f"missing={load_report.missing_keys[:3]} "
+                                f"unexpected={load_report.unexpected_keys[:3]}")
+            RESULTS.append(result)
+            log(f"FAIL [{cfg_name}]: {result['reason']}")
+            return result
+        plain_backbone = plain_backbone.to(device).eval()
+        with torch.no_grad():
+            live_pooled = model.swin(px_check).pooler_output
+            reloaded_pooled = plain_backbone(px_check).pooler_output
+        if not torch.allclose(live_pooled, reloaded_pooled, atol=1e-4):
+            result["reason"] = (f"geometry export: reloaded backbone's pooled features don't "
+                                f"match the live model's, max diff "
+                                f"{(live_pooled - reloaded_pooled).abs().max().item()}")
+            RESULTS.append(result)
+            log(f"FAIL [{cfg_name}]: {result['reason']}")
+            return result
+        log(f"  geometry export round-trip OK: {export_dir} "
+            f"(backbone reload matches, class_directions matches)")
+
     result["ok"] = True
     result["wall_s"] = time.time() - t0
     result["mean_offdiag_cos"] = mean_offdiag_cos
@@ -282,6 +348,11 @@ def main():
     ap.add_argument("--batch_size", type=int, default=8)
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--export_root",
+                    default="/projectnb/herbdl/workspaces/faridkar/herbdl/loss_ablation_geometry_exports",
+                    help="Where to write checkpoint_io geometry exports for repgeom to read later "
+                         "(a persistent SCC path, not inside this git-tracked run directory, since "
+                         "repgeom lives on a different branch -- see checkpoint_io.py). Pass '' to skip.")
     args = ap.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -294,6 +365,26 @@ def main():
     log(f"tree: {tree.n_species} species / {tree.n_genera} genera / "
         f"{tree.n_families} families / {tree.n_nodes} nodes")
 
+    # Written once, alongside the exports, so a repgeom-side reader (a
+    # different git branch, see checkpoint_io.py) can rebuild the EXACT same
+    # small image set each export's backbone was trained on -- rederiving it
+    # independently would risk a different subset entirely, since
+    # load_small_subset's sampling depends on dict/set iteration order as
+    # well as the seed.
+    if args.export_root:
+        os.makedirs(args.export_root, exist_ok=True)
+        id2species = {r["species_id"]: r["species"] for r in train_rows + val_rows}
+        id2genus = {r["genus_id"]: r["genus"] for r in train_rows + val_rows}
+        id2family = {r["family_id"]: r["family"] for r in train_rows + val_rows}
+        with open(os.path.join(args.export_root, "subset_manifest.json"), "w") as fh:
+            json.dump({
+                "train_rows": train_rows, "val_rows": val_rows,
+                "id2species": id2species, "id2genus": id2genus, "id2family": id2family,
+                "n_species": n_species, "seed": args.seed,
+            }, fh, indent=2)
+        log(f"wrote subset manifest to {args.export_root}/subset_manifest.json "
+            f"({len(train_rows)} train + {len(val_rows)} val rows)")
+
     configs = [
         ("softmax", dict(head_name="softmax")),
         ("arcface", dict(head_name="arcface", head_kwargs=dict(s=30.0, m=0.30))),
@@ -303,16 +394,26 @@ def main():
         ("dbm", dict(head_name="dbm", head_kwargs=dict(class_counts=class_counts, s=30.0))),
         ("hace", dict(hierarchy="hace")),
         ("arcface+ecc", dict(head_name="arcface", head_kwargs=dict(s=30.0, m=0.30), aux_names=["ecc"])),
+        ("arcface+tara", dict(head_name="arcface", head_kwargs=dict(s=30.0, m=0.30), aux_names=["tara"])),
     ]
-    # TARA is excluded from this harness run: it needs a real frozen BioCLIP
-    # encoder, and standing one up is Phase 3 wiring, not a Phase 0 gate.
-    # Its forward/backward contract was smoke-tested against a stub teacher
-    # (see the decision log) -- that is what is claimed done, nothing more.
+    needs_bioclip = any("tara" in kw.get("aux_names", []) for _, kw in configs)
+    bioclip_teacher = None
+    if needs_bioclip:
+        section("LOAD BIOCLIP TEACHER")
+        from loss_ablation.bioclip_teacher import BioCLIPTeacher
+        bioclip_teacher = BioCLIPTeacher(device=device)
+        log(f"BioCLIP teacher loaded, embed_dim={bioclip_teacher.embed_dim}")
+
+    export_root = args.export_root or None
+    if export_root:
+        log(f"geometry exports will be written under {export_root}")
 
     section("RUN ALL CONFIGS")
     for name, kwargs in configs:
+        cfg_bioclip = bioclip_teacher if "tara" in kwargs.get("aux_names", []) else None
         run_one_config(name, kwargs, args.backbone, train_rows, val_rows, tree,
-                       class_counts, n_species, device, args.steps, args.batch_size, args.lr)
+                       class_counts, n_species, device, args.steps, args.batch_size, args.lr,
+                       bioclip_teacher=cfg_bioclip, export_root=export_root)
 
     section("SUMMARY")
     n_pass = sum(1 for r in RESULTS if r["ok"])
