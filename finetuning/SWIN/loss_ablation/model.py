@@ -88,8 +88,8 @@ class SwinWithLoss(nn.Module):
                       (leaves have no descendants, so aggregation is the
                       identity there -- see hierarchy.py's HACEHead docstring
                       -- and argmax over softmax is argmax over the raw
-                      linear logit, softmax being monotonic). W is
-                      (n_species, C), sub_centers is always 1.
+                      linear logit, softmax being monotonic). sub_centers is
+                      always 1.
             "cosine"  logit_c = scale * max_j cosine(w_c_j, x)   j in [0, sub_centers)
                       -- every margin head (ArcMarginHead, KappaFaceHead,
                       X2SoftmaxHead, DBMHead). Confirmed directly from each
@@ -97,7 +97,15 @@ class SwinWithLoss(nn.Module):
                       `if labels is None:` branches returns exactly
                       `cosine * self.s` -- margin, per-class adaptation, and
                       the quadratic term only ever apply when labels is given.
-                      W is (n_species, sub_centers, C).
+
+        W is ALWAYS (n_species, sub_centers, C), for both kinds -- the
+        checkpoint_io.py contract on the other end enforces this shape
+        unconditionally (it has no way to know which kind a given export is
+        until it reads the same meta this function's caller writes), so a
+        2D W for "linear" heads is not a harmless shorthand, it is a shape
+        mismatch that fails the export. sub_centers is 1 for every head
+        except subcenter_arcface, where it's still just a size-1 middle
+        dimension for the linear/single-center cases.
 
         The max-over-sub_centers is NOT optional bookkeeping: sub-center
         ArcFace's whole mechanism is that max, and `class_directions()`
@@ -122,12 +130,13 @@ class SwinWithLoss(nn.Module):
         """
         if self.hace is not None:
             n = self.hace.tree.n_species
-            W = self.hace.linear.weight.detach()[:n]
+            W = self.hace.linear.weight.detach()[:n].unsqueeze(1)
             b = self.hace.linear.bias.detach()[:n]
             return W, b, "linear", 1.0, 1
         h = self.head
         if isinstance(h, SoftmaxHead):
-            return h.class_directions(), h.linear.bias.detach(), "linear", 1.0, 1
+            W = h.class_directions().unsqueeze(1)
+            return W, h.linear.bias.detach(), "linear", 1.0, 1
         if isinstance(h, ArcMarginHead):
             W = h.weight.detach().view(h.num_classes, h.k, h.in_features)
             return W, None, "cosine", float(h.s), h.k

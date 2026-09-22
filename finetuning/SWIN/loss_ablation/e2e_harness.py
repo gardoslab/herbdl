@@ -341,7 +341,10 @@ def run_one_config(cfg_name, build_kwargs, backbone_ckpt, train_rows, val_rows,
             live_logits = model(px_check, labels=None)["logits"]
             live_pooled_check = model.swin(px_check).pooler_output
             if kind_loaded == "linear":
-                formula_logits = live_pooled_check @ live_W.T + live_bias
+                # live_W is (n_species, sub_centers=1, C); drop the size-1
+                # middle dim before the 2D matmul (a bare `.T` on the 3D
+                # tensor would reverse ALL dims, not transpose the last two).
+                formula_logits = live_pooled_check @ live_W[:, 0, :].T + live_bias
             else:
                 en = F.normalize(live_pooled_check, dim=1)
                 wn = F.normalize(live_W, dim=2)

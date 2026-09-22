@@ -140,7 +140,7 @@ def load_inference_weights(checkpoint_dir, meta=None):
     logit reconstruction:
 
         if head_kind == "linear":
-            logit = pooled @ W.T + bias                         # W: (n_species, C)
+            logit = pooled @ W[:, 0, :].T + bias                 # W: (n_species, 1, C)
         else:  # "cosine"
             en = normalize(pooled, dim=1)                        # (B, C)
             wn = normalize(W, dim=2)                              # (n_species, sub_centers, C)
