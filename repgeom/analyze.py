@@ -102,9 +102,20 @@ def run_loss_ablation_geometry(cfg, device):
     """mode: loss_ablation_geometry. Reads checkpoints exported by
     finetuning/SWIN/loss_ablation/checkpoint_io.py (a different branch, see
     loss_ablation_geometry.py's module docstring for why this is a file
-    contract rather than a Python import) and compares within-class
-    tightness, nearest-class distance, and detector alignment across every
-    loss found under `export_root`.
+    contract rather than a Python import) and compares, across every loss
+    found under `export_root`:
+
+        geometry           within-class tightness, nearest-class distance,
+                            detector alignment -- needs only pooled features
+                            and class_directions.pt, head-agnostic
+        recall + spatial   top-1 accuracy, macro recall, and where on the
+                            sheet the evidence comes from -- needs real
+                            logits, computed from head_inference_weight.pt
+                            via the two-formula scheme (see
+                            loss_ablation_geometry.py's module docstring).
+                            Only present for exports that carry that
+                            metadata; older geometry-only exports are
+                            reported as geometry-only, not silently skipped.
 
     Deliberately NOT the same shape as the rest of this file's `main()`: no
     val_manifest, no `config.json`, no full-corpus forward pass -- those are
@@ -117,19 +128,31 @@ def run_loss_ablation_geometry(cfg, device):
     print(f"__RG__: export_root = {export_root}")
     results = lag.compare_configs(export_root, device)
 
-    section("COMPARISON TABLE")
+    section("COMPARISON TABLE: GEOMETRY")
     if not results:
         print("__RG__: no exports found -- nothing to compare")
         return
-    cols = ["config", "n_images", "intra_class_cos", "nearest_class_cos",
-            "self_duality_cos", "nc1_tr_sw_pinv_sb_over_k", "equinorm_cv_classifier"]
-    print("__RG__: " + "  ".join(f"{c:>22s}" for c in cols))
-    for r in results:
-        cells = []
-        for c in cols:
-            v = r.get(c, "")
-            cells.append(f"{v:>22.4f}" if isinstance(v, float) else f"{v!s:>22}")
-        print("__RG__: " + "  ".join(cells))
+
+    def print_table(cols):
+        print("__RG__: " + "  ".join(f"{c:>22s}" for c in cols))
+        for r in results:
+            cells = []
+            for c in cols:
+                v = r.get(c, "")
+                cells.append(f"{v:>22.4f}" if isinstance(v, float) else f"{v!s:>22}")
+            print("__RG__: " + "  ".join(cells))
+
+    print_table(["config", "n_images", "intra_class_cos", "nearest_class_cos",
+                "self_duality_cos", "nc1_tr_sw_pinv_sb_over_k", "equinorm_cv_classifier"])
+
+    if any("top1_accuracy" in r for r in results):
+        section("COMPARISON TABLE: RECALL + SPATIAL EVIDENCE")
+        print_table(["config", "top1_accuracy", "macro_recall", "mean_true_rank",
+                    "evidence_diffuseness", "border_ring_mass", "bottom_right_2x2_mass"])
+    else:
+        section("COMPARISON TABLE: RECALL + SPATIAL EVIDENCE")
+        print("__RG__: no export had head_inference_weight.pt metadata -- "
+              "geometry-only exports, nothing to show here")
 
     outdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
     os.makedirs(outdir, exist_ok=True)
