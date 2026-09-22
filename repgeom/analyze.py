@@ -98,6 +98,48 @@ def section(title):
     print(f"\n__RG__ ===== {title} " + "=" * max(0, 58 - len(title)), flush=True)
 
 
+def run_loss_ablation_geometry(cfg, device):
+    """mode: loss_ablation_geometry. Reads checkpoints exported by
+    finetuning/SWIN/loss_ablation/checkpoint_io.py (a different branch, see
+    loss_ablation_geometry.py's module docstring for why this is a file
+    contract rather than a Python import) and compares within-class
+    tightness, nearest-class distance, and detector alignment across every
+    loss found under `export_root`.
+
+    Deliberately NOT the same shape as the rest of this file's `main()`: no
+    val_manifest, no `config.json`, no full-corpus forward pass -- those are
+    specific to analyzing one 15.5k-class HF checkpoint over the full val
+    split, which does not apply here at all.
+    """
+    import loss_ablation_geometry as lag
+    export_root = cfg["loss_ablation"]["export_root"]
+    section("LOSS-ABLATION GEOMETRY EXPORTS")
+    print(f"__RG__: export_root = {export_root}")
+    results = lag.compare_configs(export_root, device)
+
+    section("COMPARISON TABLE")
+    if not results:
+        print("__RG__: no exports found -- nothing to compare")
+        return
+    cols = ["config", "n_images", "intra_class_cos", "nearest_class_cos",
+            "self_duality_cos", "nc1_tr_sw_pinv_sb_over_k", "equinorm_cv_classifier"]
+    print("__RG__: " + "  ".join(f"{c:>22s}" for c in cols))
+    for r in results:
+        cells = []
+        for c in cols:
+            v = r.get(c, "")
+            cells.append(f"{v:>22.4f}" if isinstance(v, float) else f"{v!s:>22}")
+        print("__RG__: " + "  ".join(cells))
+
+    outdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
+    os.makedirs(outdir, exist_ok=True)
+    df_out = pd.DataFrame(results)
+    p = os.path.join(outdir, "loss_ablation_geometry.csv")
+    df_out.to_csv(p, index=False)
+    print(f"__RG__: wrote {p}  ({len(df_out)} configs)")
+    section("DONE")
+
+
 # ---------------------------------------------------------------- main
 
 def main():
@@ -106,6 +148,14 @@ def main():
     args = ap.parse_args()
     with open(args.config) as fh:
         cfg = yaml.safe_load(fh)
+
+    if cfg.get("analysis", {}).get("mode") == "loss_ablation_geometry":
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        section("CONFIG")
+        print(json.dumps(cfg, indent=2))
+        print(f"__RG__: device={device} torch={torch.__version__}")
+        run_loss_ablation_geometry(cfg, device)
+        return
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     section("CONFIG")

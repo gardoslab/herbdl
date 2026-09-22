@@ -1,33 +1,15 @@
-# SWIN_BASE_BASELINE: microsoft/swin-base-patch4-window7-224-in22k fine-tuned to
-# 15,501 Kaggle-Herbarium-2022 species. Reported val accuracy 0.7797, F1 0.7455
-# (finetuning/output/SWIN/SWIN_BASE_BASELINE/all_results.json).
-model:
-  checkpoint: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_BASELINE
-  # label_mapping.json ships next to the checkpoint: encoded id -> "Family Genus species"
-  label_mapping: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_BASELINE/label_mapping.json
-
-data:
-  # The exact split the checkpoint was evaluated on: the config that trained it
-  # passes validation_file, so HF never re-splits and val == this file.
-  val_manifest: /projectnb/herbdl/data/kaggle-herbaria/val_2022.json
-  # Only used for the per-class training-frequency covariate.
-  train_manifest: /projectnb/herbdl/data/kaggle-herbaria/train_2022.json
-  image_column: filename
-  label_column: scientificNameEncoded
-
-extract:
-  # Which val-time pipeline to cache features under. `eval_protocol` mirrors
-  # SWIN_finetuning.py's _val_transforms, which is what produced the reported
-  # 0.7797; see the PREPROCESSING PROBE block in the run log.
-  preprocess: eval_protocol
-  cache_root: /projectnb/herbdl/workspaces/faridkar/herbdl/repgeom/cache
-  batch_size: 128
-  num_workers: 16
-  topk: 5
-
+# mode: loss_ablation_geometry -- compares within-class tightness,
+# nearest-class distance and detector alignment across every loss in
+# finetuning/SWIN/loss_ablation's registry, reading the exports its E2E
+# harness writes (see checkpoint_io.py there and loss_ablation_geometry.py
+# here for why this is a file contract, not a Python import).
+#
+# First target: run ec8d0dcf's exports -- a toy 40-species/9-images-per-class
+# subset. This proves the mechanism works; it is NOT a Phase-2-scale
+# comparison, and the numbers should be read as noisy given how few images
+# per class this small-scale harness uses.
 analysis:
-  # Score this many sampled val images under every candidate preprocessing and
-  # print the comparison. 0 disables the probe.
-  preprocess_probe_n: 20000
-  # Per-class recall on fewer than this many val images is too noisy to regress on.
-  min_val_per_class: 5
+  mode: loss_ablation_geometry
+
+loss_ablation:
+  export_root: /projectnb/herbdl/workspaces/faridkar/herbdl/loss_ablation_geometry_exports
