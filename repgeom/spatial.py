@@ -4,6 +4,16 @@ Swin-base at 224px ends on a 7x7 grid of 1024-d tokens which the pooler averages
 so the class logit is *exactly* the mean of 49 per-position terms w_c . h_p (see
 extract.py). This module turns those terms into a spatial evidence distribution.
 
+The grid size is NOT assumed to always be 7x7: it is read off each `share`
+array's own width (`P = share.shape[1]`, `grid = sqrt(P)`), because the
+loss-ablation pipeline (loss_ablation_geometry.py) runs a *different* SWIN
+config -- `microsoft/swin-base-patch4-window12-384-in22k` at 384px ends on a
+12x12=144 grid, not 49 -- through this same module. A hardcoded GRID=7
+constant here silently produced an out-of-range boolean index the first time
+that path was exercised (`share` had 144 columns, the region masks were sized
+for 49), so region masks are computed per-call and cached by grid size
+instead.
+
 Negative contributions are real -- a position can argue against a class -- so a
 position's "share" is taken after shifting the map to be non-negative. That
 keeps the result a probability distribution over the grid without discarding the
@@ -15,23 +25,39 @@ in between. If the evidence mass sits on the border ring rather than on the
 pressed plant, the model may be reading the institution's stationery.
 """
 
+import functools
+import math
+
 import numpy as np
 
-GRID = 7
-ROW = np.arange(GRID * GRID) // GRID
-COL = np.arange(GRID * GRID) % GRID
-BORDER = (ROW == 0) | (ROW == GRID - 1) | (COL == 0) | (COL == GRID - 1)
-INTERIOR = ~BORDER
-CORNERS = {
-    "top_left": (ROW <= 1) & (COL <= 1),
-    "top_right": (ROW <= 1) & (COL >= GRID - 2),
-    "bottom_left": (ROW >= GRID - 2) & (COL <= 1),
-    "bottom_right": (ROW >= GRID - 2) & (COL >= GRID - 2),
-}
+
+def _grid_size(n_positions):
+    grid = round(math.sqrt(n_positions))
+    if grid * grid != n_positions:
+        raise ValueError(
+            f"{n_positions} positions is not a perfect square -- spatial.py "
+            "assumes a square pooled token grid (e.g. 49 = 7x7, 144 = 12x12)")
+    return grid
+
+
+@functools.lru_cache(maxsize=None)
+def _regions(grid):
+    row = np.arange(grid * grid) // grid
+    col = np.arange(grid * grid) % grid
+    border = (row == 0) | (row == grid - 1) | (col == 0) | (col == grid - 1)
+    interior = ~border
+    corners = {
+        "top_left": (row <= 1) & (col <= 1),
+        "top_right": (row <= 1) & (col >= grid - 2),
+        "bottom_left": (row >= grid - 2) & (col <= 1),
+        "bottom_right": (row >= grid - 2) & (col >= grid - 2),
+    }
+    return border, interior, corners
 
 
 def evidence_share(spat):
-    """(N, 49) raw contributions -> (N, 49) non-negative shares summing to 1."""
+    """(N, P) raw contributions -> (N, P) non-negative shares summing to 1."""
+    n_positions = spat.shape[1]
     s = spat.astype(np.float32)
     s = s - s.min(axis=1, keepdims=True)
     tot = s.sum(axis=1, keepdims=True)
@@ -39,7 +65,7 @@ def evidence_share(spat):
     # call it uniform rather than dividing by zero.
     flat = tot[:, 0] <= 0
     s[flat] = 1.0
-    tot[flat] = GRID * GRID
+    tot[flat] = n_positions
     return s / tot
 
 
@@ -50,30 +76,34 @@ def concentration(share):
     per-class regression without a sign convention to remember.
     """
     p = np.clip(share, 1e-12, None)
-    return (-(p * np.log(p)).sum(axis=1) / np.log(GRID * GRID)).astype(np.float32)
+    return (-(p * np.log(p)).sum(axis=1) / np.log(share.shape[1])).astype(np.float32)
 
 
 def region_mass(share):
+    grid = _grid_size(share.shape[1])
+    border, interior, corners = _regions(grid)
     out = {
-        "border_ring": float(share[:, BORDER].sum(axis=1).mean()),
-        "interior_5x5": float(share[:, INTERIOR].sum(axis=1).mean()),
+        "border_ring": float(share[:, border].sum(axis=1).mean()),
+        "interior_5x5": float(share[:, interior].sum(axis=1).mean()),
     }
-    for name, mask in CORNERS.items():
+    for name, mask in corners.items():
         out[name + "_2x2"] = float(share[:, mask].sum(axis=1).mean())
     # What a model with no spatial preference would score, for reference.
-    out["uniform_border_ring"] = float(BORDER.sum() / (GRID * GRID))
-    out["uniform_corner_2x2"] = float(4 / (GRID * GRID))
+    out["uniform_border_ring"] = float(border.sum() / (grid * grid))
+    out["uniform_corner_2x2"] = float(4 / (grid * grid))
     return out
 
 
 def mean_map(share):
-    return share.mean(axis=0).reshape(GRID, GRID)
+    grid = _grid_size(share.shape[1])
+    return share.mean(axis=0).reshape(grid, grid)
 
 
 def format_map(m, title):
+    grid = m.shape[0]
     lines = [f"  {title}"]
-    for r in range(GRID):
-        lines.append("    " + " ".join(f"{v * GRID * GRID:5.2f}" for v in m[r]))
+    for r in range(grid):
+        lines.append("    " + " ".join(f"{v * grid * grid:5.2f}" for v in m[r]))
     lines.append("    (values are x uniform: 1.00 = exactly the uniform share)")
     return "\n".join(lines)
 
