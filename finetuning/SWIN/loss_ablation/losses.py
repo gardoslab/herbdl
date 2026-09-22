@@ -253,8 +253,14 @@ class KappaFaceHead(nn.Module):
         phi = torch.where(target_cos > th, phi, target_cos - mm) if not self.easy_margin \
             else torch.where(target_cos > 0, phi, target_cos)
         one_hot = torch.zeros_like(cosine).scatter_(1, labels.view(-1, 1), 1)
-        logits = cosine.clone()
-        logits.scatter_(1, labels.view(-1, 1), phi.unsqueeze(1))
+        # Elementwise blend, not clone()+scatter_(tensor): under bf16 autocast
+        # cosine (from an autocast-eligible matmul) and phi (built from
+        # torch.cos/sin, which autocast forces to fp32) can end up different
+        # dtypes, and scatter_ demands an exact match while ordinary
+        # arithmetic promotes automatically. Same fix as ArcMarginHead, which
+        # already uses this pattern and was unaffected by the bug this caused
+        # in KappaFaceHead/X2SoftmaxHead/DBMHead (run ba07694e).
+        logits = one_hot * phi.unsqueeze(1) + (1.0 - one_hot) * cosine
         return logits * self.s
 
     def class_directions(self):
@@ -305,8 +311,12 @@ class X2SoftmaxHead(nn.Module):
             return cosine * self.s
         f_theta = self.a * (theta - self.h).pow(2) + self.k  # Eq. 4
         target_f = f_theta.gather(1, labels.view(-1, 1)).squeeze(1)
-        logits = cosine.clone()
-        logits.scatter_(1, labels.view(-1, 1), target_f.unsqueeze(1))
+        one_hot = torch.zeros_like(cosine).scatter_(1, labels.view(-1, 1), 1)
+        # Elementwise blend, not clone()+scatter_(tensor) -- see
+        # KappaFaceHead.forward's comment; theta comes from torch.acos, which
+        # autocast forces to fp32 while cosine (an autocast-eligible matmul)
+        # stays bf16, and scatter_ demands an exact dtype match.
+        logits = one_hot * target_f.unsqueeze(1) + (1.0 - one_hot) * cosine
         return logits * self.s
 
     def class_directions(self):
@@ -372,8 +382,12 @@ class DBMHead(nn.Module):
         m_total = m_C + hard * m_I
 
         target_phi = torch.cos(target_theta + m_total)  # Eq. 9
-        logits = cosine.clone()
-        logits.scatter_(1, labels.view(-1, 1), target_phi.unsqueeze(1))
+        one_hot = torch.zeros_like(cosine).scatter_(1, labels.view(-1, 1), 1)
+        # Elementwise blend, not clone()+scatter_(tensor) -- see
+        # KappaFaceHead.forward's comment; target_phi comes from torch.cos,
+        # which autocast forces to fp32 while cosine (an autocast-eligible
+        # matmul) stays bf16, and scatter_ demands an exact dtype match.
+        logits = one_hot * target_phi.unsqueeze(1) + (1.0 - one_hot) * cosine
         return logits * self.s
 
     def class_directions(self):
