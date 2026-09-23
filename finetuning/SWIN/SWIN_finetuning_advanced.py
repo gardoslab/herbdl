@@ -543,12 +543,17 @@ class MixupTrainer(Trainer):
     """
     Custom Trainer that handles Mixup/Cutmix loss computation and batch-wise evaluation.
     """
-    def __init__(self, *args, multi_task=False, arcface=False,
+    def __init__(self, *args, multi_task=False, arcface=False, hace=False,
                  logit_adjustment=False, log_prior=None, logit_adjustment_tau=1.0,
                  family_weight=0.2, genus_weight=0.3, species_weight=1.0, **kwargs):
         super().__init__(*args, **kwargs)
         self.multi_task = multi_task
         self.arcface = arcface
+        # HACE gets the exact same treatment as (non-multi-task) ArcFace below: the model
+        # computes its own loss internally from a single `labels` tensor, no mixup/cutmix,
+        # no separate per-level heads. Kept as its own flag (not folded into `arcface`)
+        # purely so logs/errors say what's actually running.
+        self.hace = hace
         # Multi-task loss weights (used when recomputing the mixed/adjusted loss here;
         # kept in sync with MultiTaskSwinModel's internal weighting).
         self.family_weight = family_weight
@@ -575,13 +580,15 @@ class MixupTrainer(Trainer):
 
         smoothing = getattr(self.data_collator, 'label_smoothing', 0.0)
 
-        # ArcFace: model computes its own loss internally (no mixup/cutmix with ArcFace).
+        # ArcFace and HACE: the model computes its own loss internally (no mixup/cutmix),
+        # from a single `labels` tensor -- identical Trainer-side contract for both, since
+        # both wrap `forward(pixel_values, labels) -> {"loss", "logits"}` the same way.
         # NOTE: logit_adjustment (balanced softmax) is intentionally NOT applied here —
-        # the ArcFace margin already provides a form of class separation, and adding
-        # log_prior on top of scaled cosine logits is not well-defined. If you enable
-        # both arcface and long_tail.logit_adjustment in the config, logit_adjustment
-        # has no effect during training (this early return bypasses _adjust_logits).
-        if self.arcface:
+        # ArcFace's margin (or HACE's ancestral smoothing) already provides a form of
+        # class separation, and adding log_prior on top is not well-defined for either.
+        # If you enable logit_adjustment alongside arcface/hace, it has no effect during
+        # training (this early return bypasses _adjust_logits).
+        if self.arcface or self.hace:
             if self.multi_task:
                 family_labels = inputs.pop("family_labels", None)
                 genus_labels = inputs.pop("genus_labels", None)
@@ -605,9 +612,13 @@ class MixupTrainer(Trainer):
             # optimizer step, with no way to recover for the rest of training. Replace a
             # non-finite loss with a disconnected zero (no graph to the model), so that
             # step's backward pass contributes exactly zero gradient instead of NaN, and
-            # training continues rather than collapsing for good.
+            # training continues rather than collapsing for good. Applied to HACE too, not
+            # because it has been observed to happen there yet, but because the failure mode
+            # (large output layer, softmax/log combination, bf16) is the same *class* of risk
+            # and this guard is unconditionally cheap.
             if loss is not None and not torch.isfinite(loss):
-                print(f"__CUSTOM__: WARNING non-finite ArcFace loss ({loss.item()}) at step "
+                _head_name = "ArcFace" if self.arcface else "HACE"
+                print(f"__CUSTOM__: WARNING non-finite {_head_name} loss ({loss.item()}) at step "
                       f"{self.state.global_step} — skipping this batch's gradient contribution")
                 loss = torch.zeros((), device=loss.device, dtype=loss.dtype, requires_grad=True)
             return (loss, outputs) if return_outputs else loss
@@ -744,8 +755,10 @@ class MixupTrainer(Trainer):
                 labels = labels_a
 
             with torch.no_grad():
-                if self.arcface:
-                    # ArcFace inference: no labels → cosine similarity logits (no margin)
+                if self.arcface or self.hace:
+                    # ArcFace: no labels → cosine similarity logits (no margin).
+                    # HACE: no labels → aggregated species-level probabilities (see
+                    # HACEHead.forward), argmax-equivalent to raw softmax either way.
                     outputs = model(pixel_values=inputs["pixel_values"])
                 elif self.multi_task:
                     # For multi-task, pass all labels to model
@@ -1110,6 +1123,26 @@ def main():
     # margin from step 0, the original behavior). See MarginWarmupCallback.
     arcface_margin_warmup_epochs = arcface_config.get('margin_warmup_epochs', 0)
 
+    # HACE (Hierarchy-Aware Cross-Entropy): a single head like ArcFace's, but its output
+    # layer spans the whole species/genus/family/root tree rather than species alone, and
+    # it needs no margin/subcenter/hybrid-CE knobs of its own. Reuses
+    # loss_ablation/hierarchy.py's HACEHead/TaxonomyTree directly (imported lazily, only
+    # when enabled, in the tree-building and model-construction blocks below) rather than
+    # reimplementing the reachability-matrix math a second time in this script.
+    hace_config = config.get('hace', {})
+    use_hace = hace_config.get('enabled', False)
+    hace_dilution = hace_config.get('dilution', 0.6)
+    hace_label_smoothing = hace_config.get('label_smoothing', 0.0)
+    if use_hace and use_arcface:
+        raise ValueError("config sets both arcface.enabled and hace.enabled -- HACE is its "
+                          "own head (own output layer), not a modifier on top of ArcFace; "
+                          "enable exactly one")
+    if use_hace and use_multi_task:
+        raise ValueError("config sets both multi_task.enabled and hace.enabled -- HACE "
+                          "already produces its own family/genus/species structure via tree "
+                          "aggregation over ONE head, it does not use MultiTaskSwinModel's "
+                          "separate per-level heads; enable exactly one")
+
     print(f"__CUSTOM__: Learning rate type: {learning_rate_type}")
     print(f"__CUSTOM__: Frozen: {frozen}")
     print(f"__CUSTOM__: Frozen type: {frozen_type}")
@@ -1124,6 +1157,9 @@ def main():
         print(f"__CUSTOM__: Loss weights - Family: {family_weight}, Genus: {genus_weight}, Species: {species_weight}")
     if use_arcface:
         print(f"__CUSTOM__: ArcFace embedding_size={arcface_embedding_size}, scale={arcface_scale}, margin={arcface_margin}, k={arcface_num_subcenters}, hybrid_ce_weight={arcface_hybrid_ce_weight}")
+    print(f"__CUSTOM__: HACE: {use_hace}")
+    if use_hace:
+        print(f"__CUSTOM__: HACE dilution={hace_dilution}, label_smoothing={hace_label_smoothing}")
 
     # Create ModelArguments from config
     model_args = ModelArguments(
@@ -1452,6 +1488,53 @@ def main():
     id2label = {i: str(i) for i in range(num_labels)}
     label2id = {str(i): i for i in range(num_labels)}
 
+    # HACE: build the species -> genus -> family taxonomy tree once, from the same
+    # training rows every other path uses (not a subsample), so the tree is exhaustive
+    # over the real label space. TaxonomyTree/HACEHead come from loss_ablation/ (imported
+    # lazily here, not at module level, so a problem in that side-experiment package can
+    # never break the other config paths that don't use it).
+    hace_tree = None
+    if use_hace:
+        from loss_ablation.hierarchy import TaxonomyTree
+
+        print("__CUSTOM__: Building HACE taxonomy tree from training data")
+        if 'genus' not in dataset_column_names or 'family' not in dataset_column_names:
+            raise ValueError("hace.enabled requires 'genus' and 'family' columns in the "
+                              f"dataset; found columns: {dataset_column_names}")
+        _sp_col = dataset["train"][data_args.label_column_name]
+        _genus_col = dataset["train"]["genus"]
+        _family_col = dataset["train"]["family"]
+
+        _unique_genera = sorted(set(_genus_col))
+        _genus2id = {g: i for i, g in enumerate(_unique_genera)}
+        _unique_families = sorted(set(_family_col))
+        _family2id = {f: i for i, f in enumerate(_unique_families)}
+
+        _species_to_genus = [None] * num_labels
+        _genus_to_family = [None] * len(_unique_genera)
+        for _sp, _g, _f in zip(_sp_col, _genus_col, _family_col):
+            _gid, _fid = _genus2id[_g], _family2id[_f]
+            # Sanity check, not an assumption: every occurrence of a species must name
+            # the same genus, and every occurrence of a genus the same family, or the
+            # tree structure this loss depends on is ambiguous in the raw data.
+            if _species_to_genus[_sp] is not None and _species_to_genus[_sp] != _gid:
+                raise ValueError(f"species id {_sp} maps to more than one genus in the "
+                                  "training data -- HACE's tree assumes a strict hierarchy")
+            if _genus_to_family[_gid] is not None and _genus_to_family[_gid] != _fid:
+                raise ValueError(f"genus {_g!r} maps to more than one family in the "
+                                  "training data -- HACE's tree assumes a strict hierarchy")
+            _species_to_genus[_sp] = _gid
+            _genus_to_family[_gid] = _fid
+        if any(g is None for g in _species_to_genus):
+            _missing = [i for i, g in enumerate(_species_to_genus) if g is None]
+            raise ValueError(f"{len(_missing)} species id(s) never appeared with a genus in "
+                              f"the training data (e.g. {_missing[:5]}) -- cannot build a "
+                              "complete tree")
+
+        hace_tree = TaxonomyTree(_species_to_genus, _genus_to_family)
+        print(f"__CUSTOM__: HACE tree: {hace_tree.n_species} species / {hace_tree.n_genera} "
+              f"genera / {hace_tree.n_families} families / {hace_tree.n_nodes} total nodes")
+
     # Single-head (non-multi-task) runs: save encoded-id -> "Family Genus species" so
     # downstream analysis can turn predictions back into species names. Multi-task runs
     # already get their own hierarchical id2X mappings below, so this only applies to
@@ -1673,6 +1756,38 @@ def main():
                 except Exception as _e:
                     print(f"__CUSTOM__: Could not overlay non-backbone weights: {_e}")
 
+    elif use_hace:
+        print("__CUSTOM__: Creating SwinWithLoss(hierarchy='hace') model")
+        from loss_ablation.model import SwinWithLoss
+
+        config_obj = AutoConfig.from_pretrained(
+            model_args.config_name or model_args.model_name_or_path,
+            num_labels=num_labels,
+            finetuning_task="image-classification",
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            token=model_args.token,
+            trust_remote_code=model_args.trust_remote_code,
+        )
+        base_model = AutoModelForImageClassification.from_pretrained(
+            model_args.model_name_or_path,
+            from_tf=bool(".ckpt" in model_args.model_name_or_path),
+            config=config_obj,
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            token=model_args.token,
+            trust_remote_code=model_args.trust_remote_code,
+            ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
+        )
+        model = SwinWithLoss(
+            base_model,
+            num_species=num_labels,
+            hierarchy="hace",
+            tree=hace_tree,
+            hace_kwargs=dict(dilution=hace_dilution, label_smoothing=hace_label_smoothing),
+        )
+        print(f"__CUSTOM__: SwinWithLoss(hace) created — num_species={num_labels}, "
+              f"tree nodes={hace_tree.n_nodes}")
     elif use_multi_task:
         print("__CUSTOM__: Creating multi-task SWIN model")
 
@@ -1905,14 +2020,16 @@ def main():
     else:
         collator_num_classes = num_labels
 
-    if use_mixup_cutmix or use_multi_task or use_arcface or use_logit_adjustment:
-        # Use mixup collator (can handle mixup/cutmix, multi-task, and arcface).
+    if use_mixup_cutmix or use_multi_task or use_arcface or use_hace or use_logit_adjustment:
+        # Use mixup collator (can handle mixup/cutmix, multi-task, arcface, and HACE).
         # Also used for plain single-task + balanced softmax (mixup disabled), since
         # the logit adjustment lives in MixupTrainer.compute_loss.
         if use_mixup_cutmix:
             print("__CUSTOM__: Using Mixup/CutMix data collator" + (" with multi-task support" if use_multi_task else ""))
         elif use_arcface:
             print("__CUSTOM__: Using ArcFace data collator" + (" with multi-task support" if use_multi_task else ""))
+        elif use_hace:
+            print("__CUSTOM__: Using HACE data collator (plain species labels, no mixup)")
         elif use_multi_task:
             print("__CUSTOM__: Using multi-task data collator")
         else:
@@ -1939,6 +2056,7 @@ def main():
             data_collator=data_collator,
             multi_task=use_multi_task,
             arcface=use_arcface,
+            hace=use_hace,
             logit_adjustment=use_logit_adjustment,
             log_prior=log_prior,
             logit_adjustment_tau=logit_adjustment_tau,

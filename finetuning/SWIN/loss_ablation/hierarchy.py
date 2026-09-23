@@ -135,7 +135,13 @@ class HACEHead(nn.Module):
         self.d = dilution  # Sec 4.2 Step 2, ancestral dilution parameter, 0 < d <= 1
         if not (0.0 < dilution <= 1.0):
             raise ValueError(f"dilution must be in (0, 1], got {dilution}")
-        self.register_buffer("R", tree.reachability_matrix())
+        # persistent=False: R is fully determined by `tree` alone (rebuilt identically
+        # by any code that constructs this head with the same tree), so it doesn't need
+        # to round-trip through a checkpoint. At the real project's scale (18,338 tree
+        # nodes) R is ~1.3GB in fp32 -- persistent=True would silently add that to EVERY
+        # saved checkpoint (50 epochs x 1.3GB = 65GB of pure dead weight for one run),
+        # never caught by the small-scale E2E harness's toy 105-node tree (~44KB there).
+        self.register_buffer("R", tree.reachability_matrix(), persistent=False)
         self._target_cache = {}  # leaf_id -> precomputed sparse ancestral target
 
     def _ancestral_target_row(self, leaf_id):
