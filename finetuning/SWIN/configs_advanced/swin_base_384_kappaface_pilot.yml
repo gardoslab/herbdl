@@ -67,7 +67,12 @@ training:
   bf16: true
   dataloader_num_workers: 16
   remove_unused_columns: false
-  overwrite_output_dir: false
+  # true, not the usual false: the first launch (77d7b249) trained under the wrong
+  # effective batch size (see the batch-size fix commit) and its checkpoints carry
+  # that history. Resuming from them would mix two different effective batch sizes
+  # in one run's trajectory -- a genuinely fresh start is correct, not a default left
+  # on by habit. Set this BEFORE relaunching, same reasoning as arcface+ecc's fix.
+  overwrite_output_dir: true
   seed: 42
 
 custom:
