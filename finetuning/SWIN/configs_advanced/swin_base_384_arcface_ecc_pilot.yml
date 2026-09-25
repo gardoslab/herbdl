@@ -57,7 +57,8 @@ training:
   warmup_steps: 500
   weight_decay: 0.01
   optim: "adamw_torch_fused"
-  gradient_accumulation_steps: 2   # 64 * 2 * 2 GPUs = effective batch 256
+  gradient_accumulation_steps: 4   # 64 * 4 * 1 GPU (arcface+ecc is 1-GPU only, see decision
+                                    # log) = effective batch 256, matching every other pilot
   lr_scheduler_type: "cosine"
   logging_strategy: "epoch"
   save_strategy: "epoch"
