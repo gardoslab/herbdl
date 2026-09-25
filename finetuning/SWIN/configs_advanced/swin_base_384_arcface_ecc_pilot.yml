@@ -69,7 +69,13 @@ training:
   bf16: true
   dataloader_num_workers: 16
   remove_unused_columns: false
-  overwrite_output_dir: false
+  # true, not the usual false: the first launch (39c25019) crashed before completing
+  # epoch 1's checkpoint save (the ECCEpochUpdateCallback ModuleDict bug fired right at
+  # the epoch boundary), so its output_dir has stray files (wandb logs, config.json) but
+  # no real checkpoint to resume from -- and resuming would carry over the wrong
+  # effective-batch-size history anyway (see the batch-size fix commit). A genuinely
+  # fresh start is correct here, not a default left on by habit.
+  overwrite_output_dir: true
   seed: 42
 
 custom:
