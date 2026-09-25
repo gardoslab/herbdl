@@ -104,6 +104,31 @@ def main():
     head = build_head("arcface", IN_FEATURES, num_labels, s=30.0, m=0.30)
     check_head("arcface", head)
 
+    log("=== ECCEpochUpdateCallback (the actual production callback, not just recompute_similarity() directly) ===")
+    # Regression check for the exact bug the first real ArcFace+ECC run hit: 2h19m
+    # of healthy training, then AttributeError: 'ModuleDict' object has no
+    # attribute 'get' the instant epoch 1 ended and this callback fired for the
+    # first time. loss_registry_smoke.py's own earlier ecc checks below call
+    # recompute_similarity() directly on a bare ECCAux, which never exercised the
+    # callback's aux_modules access pattern at all -- that gap is exactly why this
+    # bug shipped past the smoke test the first time. Import and run the REAL
+    # production callback class against a REAL nn.ModuleDict this time.
+    sys.path.insert(0, ".")
+    from SWIN_finetuning_advanced import ECCEpochUpdateCallback
+    import torch.nn as nn
+
+    class _FakeModelWithAux(nn.Module):
+        def __init__(self, ecc_module):
+            super().__init__()
+            self.aux_modules = nn.ModuleDict({"ecc": ecc_module})
+
+    class _FakeState:
+        epoch = 1.0
+
+    _fake_model = _FakeModelWithAux(AUX_REGISTRY["ecc"](in_features=IN_FEATURES, num_classes=num_labels))
+    ECCEpochUpdateCallback().on_epoch_end(args=None, state=_FakeState(), control=None, model=_fake_model)
+    log("ECCEpochUpdateCallback.on_epoch_end() OK against a real nn.ModuleDict")
+
     log("=== ecc aux (on top of a pooled feature + labels) ===")
     ecc = AUX_REGISTRY["ecc"](in_features=IN_FEATURES, num_classes=num_labels)
     x = torch.randn(8, IN_FEATURES, requires_grad=True)
