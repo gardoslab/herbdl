@@ -67,12 +67,14 @@ training:
   bf16: true
   dataloader_num_workers: 16
   remove_unused_columns: false
-  # true, not the usual false: the first launch (77d7b249) trained under the wrong
-  # effective batch size (see the batch-size fix commit) and its checkpoints carry
-  # that history. Resuming from them would mix two different effective batch sizes
-  # in one run's trajectory -- a genuinely fresh start is correct, not a default left
-  # on by habit. Set this BEFORE relaunching, same reasoning as arcface+ecc's fix.
-  overwrite_output_dir: true
+  # Set back to false after the one deliberate fresh start this needed (2nd launch,
+  # after the batch-size fix). Real bug caught here: this flag makes the script SKIP
+  # checkpoint detection entirely (`if ... and not overwrite_output_dir:` in main()),
+  # not just permit overwriting -- left at true, EVERY subsequent relaunch silently
+  # restarts from step 0 instead of resuming, no error or warning. Confirmed this
+  # actually happened to the currently-running 3rd launch (363f82a6): no "Checkpoint
+  # detected" log line at all, same bug as arcface+ecc's identical mistake.
+  overwrite_output_dir: false
   seed: 42
 
 custom:
