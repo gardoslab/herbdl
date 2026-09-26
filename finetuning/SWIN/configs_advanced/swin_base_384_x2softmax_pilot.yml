@@ -60,7 +60,12 @@ training:
   bf16: true
   dataloader_num_workers: 16
   remove_unused_columns: false
-  overwrite_output_dir: false
+  # true, not the usual false: the first launch (af6979c9) went NaN at step 2889/131250
+  # (2.2% in) via the acos(>1)=NaN bug (see losses.py's fix commit) and stayed NaN for
+  # the rest of that 12h job -- its checkpoints reflect a model that stopped receiving
+  # real gradient updates almost immediately. Nothing worth resuming from; a genuinely
+  # fresh start with the fixed code is correct.
+  overwrite_output_dir: true
   seed: 42
 
 custom:
