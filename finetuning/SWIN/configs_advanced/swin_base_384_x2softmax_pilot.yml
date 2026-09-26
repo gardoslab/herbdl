@@ -60,12 +60,17 @@ training:
   bf16: true
   dataloader_num_workers: 16
   remove_unused_columns: false
-  # true, not the usual false: the first launch (af6979c9) went NaN at step 2889/131250
-  # (2.2% in) via the acos(>1)=NaN bug (see losses.py's fix commit) and stayed NaN for
-  # the rest of that 12h job -- its checkpoints reflect a model that stopped receiving
-  # real gradient updates almost immediately. Nothing worth resuming from; a genuinely
-  # fresh start with the fixed code is correct.
-  overwrite_output_dir: true
+  # Set back to false after the one deliberate fresh start this needed (2nd launch,
+  # after the acos(>1)=NaN fix). Real bug caught here: this flag makes the script SKIP
+  # checkpoint detection entirely (`if ... and not overwrite_output_dir:` in main()),
+  # not just permit overwriting -- left at true, EVERY subsequent relaunch silently
+  # restarts from step 0 instead of resuming, no error or warning. This is why the
+  # "2nd launch" (af6979c9's successor) looked like it was converging far slower than
+  # every other pilot (17%->23% accuracy across epochs 3-14, vs. 74-83% for the
+  # others): it was NOT slow convergence, it was quietly redoing epochs 0-14 every
+  # single 12h cycle, never actually progressing past there. Confirmed by checking for
+  # the "Checkpoint detected" log line, which was absent on the most recent launch.
+  overwrite_output_dir: false
   seed: 42
 
 custom:
