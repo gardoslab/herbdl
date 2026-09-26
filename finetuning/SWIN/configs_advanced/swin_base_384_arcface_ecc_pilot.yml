@@ -69,13 +69,16 @@ training:
   bf16: true
   dataloader_num_workers: 16
   remove_unused_columns: false
-  # true, not the usual false: the first launch (39c25019) crashed before completing
-  # epoch 1's checkpoint save (the ECCEpochUpdateCallback ModuleDict bug fired right at
-  # the epoch boundary), so its output_dir has stray files (wandb logs, config.json) but
-  # no real checkpoint to resume from -- and resuming would carry over the wrong
-  # effective-batch-size history anyway (see the batch-size fix commit). A genuinely
-  # fresh start is correct here, not a default left on by habit.
-  overwrite_output_dir: true
+  # Set back to false after the one deliberate fresh start this needed (2nd launch,
+  # after the ModuleDict crash left an unusable output_dir). Real bug caught here: this
+  # flag makes the script SKIP checkpoint detection entirely
+  # (`if ... and not overwrite_output_dir:` in main()), not just permit overwriting --
+  # left at true, EVERY subsequent relaunch silently restarts from step 0 instead of
+  # resuming, with no error or warning. That's exactly what happened to the 3rd launch
+  # (572a03ec): it silently redid epochs 0-7 instead of continuing from checkpoint-18375,
+  # for the full 12h window, discovered only by checking for a "Checkpoint detected"
+  # log line that should have been there and wasn't.
+  overwrite_output_dir: false
   seed: 42
 
 custom:
