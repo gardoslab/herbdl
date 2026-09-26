@@ -962,8 +962,13 @@ class ECCEpochUpdateCallback(TrainerCallback):
     cross-rank synchronization.
     """
     def on_epoch_end(self, args, state, control, model=None, **kwargs):
+        # aux_modules is an nn.ModuleDict, not a plain dict -- it has no .get()
+        # (nn.Module's __getattr__ fallback raises AttributeError for it, which is
+        # exactly what killed the first real run of this callback: 2h19m of otherwise
+        # healthy training, then a crash the instant epoch 1 actually ended and this
+        # fired for the first time). 'in' + [] work on ModuleDict; .get() does not.
         aux_modules = getattr(model, 'aux_modules', None)
-        ecc = aux_modules.get('ecc') if aux_modules is not None else None
+        ecc = aux_modules['ecc'] if aux_modules is not None and 'ecc' in aux_modules else None
         if ecc is not None:
             ecc.recompute_similarity()
             print(f"__CUSTOM__: ECC similarity index recomputed at epoch {state.epoch:.2f} "
