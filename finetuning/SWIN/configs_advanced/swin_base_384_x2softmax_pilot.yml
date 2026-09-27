@@ -71,6 +71,16 @@ training:
   # single 12h cycle, never actually progressing past there. Confirmed by checking for
   # the "Checkpoint detected" log line, which was absent on the most recent launch.
   overwrite_output_dir: false
+  # Explicit, not auto-detected: the output_dir also contains checkpoint-102375+,
+  # saved by the FIRST (NaN'd) launch racing through no-op steps post-collapse under
+  # completely frozen weights -- a real checkpoint that trivially "wins"
+  # get_last_checkpoint()'s highest-step-number heuristic over the two later, genuinely
+  # healthy from-scratch relaunches (checkpoint-36750 and this one, checkpoint-39375).
+  # Confirmed poisoned by resuming from it once already: reproduced the exact same NaN
+  # immediately. checkpoint-39375 is the furthest REAL, non-NaN checkpoint on record
+  # (1d7875ca's own final save, epoch 15, eval_accuracy 0.2209 there) -- force it
+  # explicitly rather than trust auto-detection again.
+  resume_from_checkpoint: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_X2SOFTMAX_384_PILOT/checkpoint-39375"
   seed: 42
 
 custom:
