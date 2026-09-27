@@ -75,6 +75,33 @@ def check_head(name, head, B=8):
     log(f"{name}: forward+backward OK, loss={loss.item():.4f}, inference OK")
 
 
+def check_parallel_embedding_no_nan(name, head):
+    """Regression check for the exact bug that collapsed the first real X2Softmax
+    pilot run: NaN from step 2889 of 131250 onward (the rest of that 12h job was a
+    silent no-op). Root cause: X2SoftmaxHead/DBMHead's _cosine_and_theta clamped
+    cosine to [-1+1e-7, 1-1e-7] before acos, but under bf16 that margin rounds to
+    exactly 1.0 (bf16's epsilon near 1.0 is ~0.0078) -- a cosine measurably >1.0 from
+    ordinary matmul rounding then hits acos(>1)=NaN. Forcing an embedding EXACTLY
+    parallel to a class weight (guaranteed cosine==1.0 up to floating-point rounding,
+    the actual failure trigger, not a hypothetical one) and checking forward() stays
+    finite is a direct test of the fix, not just of ordinary random inputs (which may
+    or may not land on the failure case by chance)."""
+    with torch.no_grad():
+        w0 = head.weight[0].clone()
+    x = w0.unsqueeze(0).repeat(4, 1).clone().requires_grad_(True)
+    y = torch.zeros(4, dtype=torch.long)  # class 0, exactly parallel to its own weight
+    logits = head(x, y)
+    assert torch.isfinite(logits).all(), (
+        f"{name}: non-finite logits with an embedding exactly parallel to its class "
+        "weight (cosine==1.0) -- the acos-domain fix did not take effect")
+    loss = F.cross_entropy(logits, y)
+    assert torch.isfinite(loss), f"{name}: non-finite loss on the parallel-embedding case"
+    loss.backward()
+    assert x.grad is not None and torch.isfinite(x.grad).all(), (
+        f"{name}: non-finite/missing gradient on the parallel-embedding case")
+    log(f"{name}: parallel-embedding (cosine==1.0) case OK, no acos NaN")
+
+
 def main():
     num_labels, counts = real_class_counts()
 
@@ -95,10 +122,12 @@ def main():
     log("=== x2softmax ===")
     head = build_head("x2softmax", IN_FEATURES, num_labels, s=30.0)
     check_head("x2softmax", head)
+    check_parallel_embedding_no_nan("x2softmax", head)
 
     log("=== dbm ===")
     head = build_head("dbm", IN_FEATURES, num_labels, class_counts=counts, s=30.0)
     check_head("dbm", head)
+    check_parallel_embedding_no_nan("dbm", head)
 
     log("=== arcface (loss_ablation's own ArcMarginHead, not SwinWithArcFace) ===")
     head = build_head("arcface", IN_FEATURES, num_labels, s=30.0, m=0.30)
