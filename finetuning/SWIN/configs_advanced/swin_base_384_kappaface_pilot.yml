@@ -75,6 +75,19 @@ training:
   # actually happened to the currently-running 3rd launch (363f82a6): no "Checkpoint
   # detected" log line at all, same bug as arcface+ecc's identical mistake.
   overwrite_output_dir: false
+  # Explicit, not auto-detected: the output_dir also contains checkpoint-36743 from
+  # the FIRST (wrong-batch-size) launch, whose total-step schedule was 262450 (half
+  # the effective batch -> double the steps/epoch) -- that checkpoint represents only
+  # 7 real epochs (36743/5249), but its step number, read blind by
+  # get_last_checkpoint(), numerically outranks the correct-batch relaunches' own
+  # checkpoint-18375 (also 7 real epochs, 18375/2625, under the RIGHT batch size).
+  # Confirmed this is exactly what happened: the most recent relaunch resumed from
+  # checkpoint-36743 and is treating it as epoch ~14 (36743/2625) against this
+  # session's 131,250-total-step correct-batch schedule -- a real LR-schedule/epoch
+  # bookkeeping mismatch, not a crash, but still wrong. Force checkpoint-18375
+  # explicitly, the correct-batch-scheme checkpoint at the same real amount of
+  # training (7 epochs).
+  resume_from_checkpoint: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_KAPPAFACE_384_PILOT/checkpoint-18375"
   seed: 42
 
 custom:
