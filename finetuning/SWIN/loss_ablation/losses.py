@@ -301,8 +301,23 @@ class X2SoftmaxHead(nn.Module):
     def _cosine_and_theta(self, embeddings):
         emb = F.normalize(embeddings, p=2, dim=1)
         w = F.normalize(self.weight, p=2, dim=1)
-        cosine = F.linear(emb, w).clamp(-1 + 1e-7, 1 - 1e-7)
-        theta = torch.acos(cosine)
+        cosine = F.linear(emb, w)
+        # acos's domain is exactly [-1, 1]. The old code clamped `cosine` itself with a
+        # 1e-7 margin before acos -- fine in fp32, but under bf16 autocast (the matmul
+        # above is autocast-eligible, so `cosine` is bf16) that margin is a silent no-op:
+        # bf16's epsilon near 1.0 is ~0.0078, four orders of magnitude bigger than 1e-7,
+        # so `1 - 1e-7` rounds to exactly 1.0 and the clamp clamps to nothing. A cosine
+        # that's measurably >1.0 in the underlying fp32 accumulation (ordinary matmul
+        # rounding, not a bug) then hits acos(>1) = NaN, in ANY dtype -- upcasting after
+        # the fact doesn't un-domain-error a value already past 1.0. This is what
+        # collapsed the first real X2Softmax pilot run: NaN from step 2889 of 131250
+        # onward, meaning the entire rest of that 12h job was a silent no-op (the
+        # NaN-safety guard in MixupTrainer skipped every subsequent gradient, but never
+        # raised or recovered). Clamp a SEPARATE fp32 copy specifically for acos, with a
+        # margin (1e-6) that's actually representable in fp32 near 1.0 (fp32 epsilon
+        # there is ~1.2e-7); `cosine` itself stays unclamped/bf16 for the raw
+        # other-class logit path below, unaffected by this.
+        theta = torch.acos(cosine.float().clamp(-1 + 1e-6, 1 - 1e-6))
         return cosine, theta
 
     def forward(self, embeddings, labels=None):
@@ -362,8 +377,15 @@ class DBMHead(nn.Module):
     def _cosine_and_theta(self, embeddings):
         emb = F.normalize(embeddings, p=2, dim=1)
         w = F.normalize(self.weight, p=2, dim=1)
-        cosine = F.linear(emb, w).clamp(-1 + 1e-7, 1 - 1e-7)
-        theta = torch.acos(cosine)
+        cosine = F.linear(emb, w)
+        # Same fix as X2SoftmaxHead._cosine_and_theta -- see that method's comment for
+        # the full account (a bf16 clamp with a 1e-7 margin is a silent no-op, since
+        # bf16's epsilon near 1.0 is ~0.0078; a cosine measurably >1.0 in the underlying
+        # fp32 accumulation then makes acos(>1) = NaN regardless of dtype). DBM hasn't
+        # hit this yet in the real pilot (healthy through epoch 27/50 at last check) but
+        # shares the identical code and is exposed to the identical risk -- fixed
+        # proactively rather than waiting for it to actually happen here too.
+        theta = torch.acos(cosine.float().clamp(-1 + 1e-6, 1 - 1e-6))
         return cosine, theta
 
     def forward(self, embeddings, labels=None):
