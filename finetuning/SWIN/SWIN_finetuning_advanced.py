@@ -1333,6 +1333,22 @@ def main():
         gradient_checkpointing=config['training'].get('gradient_checkpointing', False),
         gradient_checkpointing_kwargs=config['training'].get('gradient_checkpointing_kwargs', None),
         load_best_model_at_end=config['training'].get('load_best_model_at_end', False),
+        # Explicit override for auto-detected `last_checkpoint` (see main()'s own
+        # `get_last_checkpoint` call below). Needed because "highest step number in
+        # output_dir" is not always "the checkpoint worth resuming from": a run whose
+        # loss went NaN and got silently guarded (see MixupTrainer's non-finite-loss
+        # skip) keeps incrementing its step counter and saving checkpoints under
+        # frozen, useless weights for the rest of its time budget -- often FASTER than
+        # healthy training, since a no-op backward pass on a disconnected zero-loss
+        # tensor skips real gradient computation entirely. That stale, high-numbered
+        # checkpoint then silently outranks a real, lower-numbered one the next time
+        # auto-detection runs. Caught for real on X2-Softmax: its first (NaN'd) launch
+        # raced to checkpoint-102375 post-collapse while two later, healthy, from-
+        # scratch relaunches only reached checkpoint-36750/39375 -- auto-detection
+        # picked the poisoned one, and resuming from it immediately reproduced the
+        # exact same NaN. Set this explicitly whenever a directory might contain a
+        # stale/poisoned high-numbered checkpoint alongside a real lower one.
+        resume_from_checkpoint=config['training'].get('resume_from_checkpoint'),
         **_targs_extra_kwargs,
     )
 
