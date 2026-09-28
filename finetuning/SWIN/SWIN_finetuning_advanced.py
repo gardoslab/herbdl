@@ -1099,6 +1099,24 @@ def _relocate_output_dir(path):
     return relocated
 
 
+def _newest_checkpoint(output_dir):
+    """The checkpoint-N subdir of output_dir whose trainer_state.json was written most
+    recently, or None. Unlike get_last_checkpoint (highest N), this ignores stale
+    higher-numbered checkpoints left behind by an older run on a different step scheme
+    or with NaN-frozen weights -- the last save always belongs to the latest run."""
+    if not os.path.isdir(output_dir):
+        return None
+    newest, newest_mtime = None, None
+    for name in os.listdir(output_dir):
+        state = os.path.join(output_dir, name, "trainer_state.json")
+        if not re.fullmatch(r"checkpoint-\d+", name) or not os.path.isfile(state):
+            continue
+        mtime = os.path.getmtime(state)
+        if newest_mtime is None or mtime > newest_mtime:
+            newest, newest_mtime = os.path.join(output_dir, name), mtime
+    return newest
+
+
 def main():
     # Parse command line arguments for config file
     arg_parser = argparse.ArgumentParser(description="SWIN Fine-tuning with advanced augmentations")
@@ -1347,7 +1365,8 @@ def main():
         # scratch relaunches only reached checkpoint-36750/39375 -- auto-detection
         # picked the poisoned one, and resuming from it immediately reproduced the
         # exact same NaN. Set this explicitly whenever a directory might contain a
-        # stale/poisoned high-numbered checkpoint alongside a real lower one.
+        # stale/poisoned high-numbered checkpoint alongside a real lower one -- either a
+        # path, or `newest` (resolved in main() by save time, so it doesn't go stale).
         resume_from_checkpoint=config['training'].get('resume_from_checkpoint'),
         **_targs_extra_kwargs,
     )
@@ -1477,6 +1496,13 @@ def main():
                 f"Checkpoint detected, resuming training at {last_checkpoint}. To avoid this behavior, change "
                 "the `output_dir` or set `overwrite_output_dir: true` in your config to train from scratch."
             )
+
+    # `resume_from_checkpoint: newest` picks the most recently saved checkpoint rather than a
+    # fixed path, so a pin never goes stale across relaunches.
+    if training_args.resume_from_checkpoint == "newest":
+        training_args.resume_from_checkpoint = (
+            None if overwrite_output_dir else _newest_checkpoint(training_args.output_dir))
+        print(f"__CUSTOM__: resume_from_checkpoint=newest -> {training_args.resume_from_checkpoint}")
 
     # Set seed before initializing model
     set_seed(training_args.seed)
