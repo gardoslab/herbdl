@@ -469,10 +469,19 @@ class MixupCutmixCollator:
 
         batch_size = pixel_values.size(0)
 
+        # TARA's second view of each image (BioCLIP-preprocessed, 224px, CLIP-normalised),
+        # present only when loss_registry.aux includes 'tara' -- see train_transforms. Never
+        # mixed: TARA is refused alongside mixup/cutmix at config time, so this only ever
+        # reaches the no-mixup branch below in practice.
+        bioclip_pixel_values = (torch.stack([example["bioclip_pixel_values"] for example in examples])
+                                if "bioclip_pixel_values" in examples[0] else None)
+
         # Decide whether to apply mixup/cutmix
         if random.random() > self.prob:
             # No mixup/cutmix
             result = {"pixel_values": pixel_values, "labels": labels}
+            if bioclip_pixel_values is not None:
+                result["bioclip_pixel_values"] = bioclip_pixel_values
             if self.multi_task:
                 result.update({
                     "family_labels": family_labels,
@@ -544,7 +553,7 @@ class MixupTrainer(Trainer):
     Custom Trainer that handles Mixup/Cutmix loss computation and batch-wise evaluation.
     """
     def __init__(self, *args, multi_task=False, arcface=False, hace=False, loss_registry=False,
-                 logit_adjustment=False, log_prior=None, logit_adjustment_tau=1.0,
+                 aux_log_steps=500, logit_adjustment=False, log_prior=None, logit_adjustment_tau=1.0,
                  family_weight=0.2, genus_weight=0.3, species_weight=1.0, **kwargs):
         super().__init__(*args, **kwargs)
         self.multi_task = multi_task
@@ -557,6 +566,7 @@ class MixupTrainer(Trainer):
         # into `arcface`) purely so logs/errors say what's actually running.
         self.hace = hace
         self.loss_registry = loss_registry
+        self.aux_log_steps = aux_log_steps  # print ECC/TARA aux-loss values every N optimizer steps
         # Multi-task loss weights (used when recomputing the mixed/adjusted loss here;
         # kept in sync with MultiTaskSwinModel's internal weighting).
         self.family_weight = family_weight
@@ -605,9 +615,26 @@ class MixupTrainer(Trainer):
                     family_labels=family_labels,
                     genus_labels=genus_labels,
                 )
+            elif "bioclip_pixel_values" in inputs:
+                # TARA: SwinWithLoss routes this second view to the BioCLIP teacher only.
+                outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a,
+                                bioclip_pixel_values=inputs["bioclip_pixel_values"])
             else:
                 outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a)
             loss = outputs.get("loss")
+            # Aux-loss visibility (ECC/TARA): the total loss alone can't show whether the aux
+            # term is doing anything. TARA's value is -cos(student, teacher), so -value is the
+            # mean student/teacher cosine alignment. Printed once per `aux_log_steps` optimizer
+            # steps (loss_registry.aux_log_steps, default 500).
+            _aux = outputs.get("aux_losses") if isinstance(outputs, dict) else None
+            _step = self.state.global_step
+            if (_aux and model.training and _step % self.aux_log_steps == 0
+                    and getattr(self, "_last_aux_log_step", -1) != _step
+                    and self.is_world_process_zero()):
+                self._last_aux_log_step = _step
+                print(f"__CUSTOM__: aux losses at step {_step}: "
+                      + ", ".join(f"{k}={v.item():.4f}" for k, v in _aux.items())
+                      + f" (total loss {loss.item():.4f})", flush=True)
             # NaN-safety: a prior 100-epoch ArcFace run (SWIN_L_384_ARCFACE_SEED0) trained
             # healthily to epoch 77 (acc 0.804) then hit a single-step gradient explosion
             # (loss 9->1277, grad_norm->nan) at epoch 78 and never recovered — a NaN loss
@@ -1226,11 +1253,10 @@ def main():
     # script's own native code (ArcFace) or by their own dedicated section (HACE) --
     # KappaFace, X2-Softmax, DBM, and any of ECC/TARA layered on top of one of the
     # registry's own heads via `aux`. Reuses SwinWithLoss exactly as the `use_hace` branch
-    # does, just without a hierarchy. TARA is deliberately NOT supported here yet: it needs
-    # a second, BioCLIP-preprocessed image tensor per batch that this script's dataset/
-    # collator pipeline has no path for -- raises below rather than silently training
-    # against a meaningless signal (see aux.py's TARAAux docstring for why that's the real
-    # risk, not a hypothetical one).
+    # does, just without a hierarchy. TARA additionally needs a second, BioCLIP-preprocessed
+    # view of every training image (224px, CLIP-normalised -- NOT the SWIN pixel_values;
+    # see aux.py's TARAAux docstring): built in train_transforms from the same random crop
+    # the SWIN view sees, stacked by the collator, passed to SwinWithLoss by compute_loss.
     loss_registry_config = config.get('loss_registry', {})
     use_loss_registry = loss_registry_config.get('enabled', False)
     loss_registry_head = loss_registry_config.get('head', 'softmax')
@@ -1241,12 +1267,16 @@ def main():
         raise ValueError("config sets loss_registry.enabled alongside arcface/hace/"
                           "multi_task -- loss_registry replaces the classifier head the "
                           "same way those do, enable exactly one")
-    if 'tara' in loss_registry_aux:
-        raise ValueError("loss_registry.aux includes 'tara', which is not wired into this "
-                          "script yet -- it needs a second BioCLIP-preprocessed image "
-                          "tensor per batch (224px, CLIP-normalised) that the dataset/"
-                          "collator pipeline here has no path for. Only the small-scale "
-                          "E2E harness exercises TARA today")
+    use_tara = use_loss_registry and 'tara' in loss_registry_aux
+    bioclip_teacher = None  # built with the model below, used by train_transforms
+    if use_tara and use_advanced_aug:
+        # The BioCLIP view is cut from the same RandomResizedCrop+flip as the SWIN view so
+        # student and teacher see the same pixels. RandAugment/ColorJitter/RandomErasing
+        # (and mixup/cutmix) would each need a deliberate decision about whether the teacher
+        # sees them too -- refuse rather than pick one silently.
+        raise ValueError("loss_registry.aux includes 'tara' with augmentation.use_advanced=true "
+                          "-- TARA currently supports only the standard RandomResizedCrop+flip "
+                          "pipeline (shared between the SWIN and BioCLIP views)")
 
     print(f"__CUSTOM__: Learning rate type: {learning_rate_type}")
     print(f"__CUSTOM__: Frozen: {frozen}")
@@ -1966,6 +1996,20 @@ def main():
         _head_kwargs = dict(loss_registry_head_kwargs)
         if loss_registry_head in ("kappaface", "dbm"):
             _head_kwargs["class_counts"] = loss_registry_class_counts
+        if use_tara:
+            # Frozen BioCLIP teacher, one copy per rank on that rank's own GPU. It is NOT an
+            # nn.Module attribute of the model (TARAAux gets a plain embed callable), so it
+            # never lands in checkpoints or optimizer groups, and DDP never touches it. It
+            # holds no cross-rank state either, so unlike KappaFace/ECC, TARA is fine on
+            # several GPUs: each rank embeds exactly its own batch.
+            from loss_ablation.bioclip_teacher import BioCLIPTeacher
+            bioclip_teacher = BioCLIPTeacher(device=training_args.device)
+            loss_registry_aux_kwargs["tara"] = dict(
+                loss_registry_aux_kwargs.get("tara", {}) or {},
+                bioclip_dim=bioclip_teacher.embed_dim,
+                bioclip_embed_fn=bioclip_teacher.as_embed_fn())
+            print(f"__CUSTOM__: TARA BioCLIP teacher loaded on {training_args.device} — "
+                  f"embed_dim={bioclip_teacher.embed_dim}, transform={bioclip_teacher.transform}")
         model = SwinWithLoss(
             base_model,
             num_species=num_labels,
@@ -2114,6 +2158,16 @@ def main():
             )
 
         _train_transforms = Compose(train_transform_list)
+    elif use_tara:
+        # Same standard pipeline, split in two so the BioCLIP view comes from the SAME random
+        # crop+flip as the SWIN view: geometry on the PIL image once, then each view gets its
+        # own tail (SWIN: ToTensor+ImageNet norm at `size`; BioCLIP: its own open_clip
+        # transform, i.e. 224px bicubic resize + CLIP norm).
+        print("__CUSTOM__: Using standard augmentation pipeline (shared crop for TARA's BioCLIP view)")
+        _train_geometry = Compose([RandomResizedCrop(size), RandomHorizontalFlip()])
+        _train_swin_tail = Compose([ToTensor(), normalize])
+        _bioclip_transform = bioclip_teacher.transform
+        _train_transforms = Compose([_train_geometry, _train_swin_tail])  # same result as below
     else:
         print("__CUSTOM__: Using standard augmentation pipeline")
         _train_transforms = Compose([
@@ -2132,9 +2186,15 @@ def main():
 
     def train_transforms(example_batch):
         """Apply _train_transforms across a batch."""
-        example_batch["pixel_values"] = [
-            _train_transforms(Image.open(pil_img).convert("RGB")) for pil_img in example_batch[data_args.image_column_name]
-        ]
+        if use_tara:
+            crops = [_train_geometry(Image.open(pil_img).convert("RGB"))
+                     for pil_img in example_batch[data_args.image_column_name]]
+            example_batch["pixel_values"] = [_train_swin_tail(c) for c in crops]
+            example_batch["bioclip_pixel_values"] = [_bioclip_transform(c) for c in crops]
+        else:
+            example_batch["pixel_values"] = [
+                _train_transforms(Image.open(pil_img).convert("RGB")) for pil_img in example_batch[data_args.image_column_name]
+            ]
         # Keep the label for mixup collator
         example_batch["label"] = example_batch[data_args.label_column_name]
 
@@ -2249,6 +2309,7 @@ def main():
             arcface=use_arcface,
             hace=use_hace,
             loss_registry=use_loss_registry,
+            aux_log_steps=int(loss_registry_config.get('aux_log_steps', 500)),
             logit_adjustment=use_logit_adjustment,
             log_prior=log_prior,
             logit_adjustment_tau=logit_adjustment_tau,

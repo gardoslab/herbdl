@@ -1,0 +1,126 @@
+# =============================================================================
+# SMOKE TEST for swin_base_384_arcface_tara_pilot.yml -- NOT a result.
+# =============================================================================
+# Identical to the pilot except: 2048 train / 512 val images, 2 epochs, logs the TARA
+# term every step, own output_dir, W&B off, fresh start every time. Runs the REAL
+# trainer end to end on 2 GPUs (DDP) to check: the BioCLIP teacher loads on each
+# rank, the second image view reaches the loss, TARA stays finite, student/teacher
+# alignment rises, and checkpoints save without the teacher in them.
+# =============================================================================
+# Same template as the other 384px pilots; enables loss_registry.head=arcface with
+# aux=[tara]. s=30.0/m=0.30 match the ArcFace+ECC pilot and e2e_harness.py's
+# already-validated arcface+tara config.
+#
+# TARA adds L = -cos(projector(pooled), BioCLIP(image)) to the ArcFace loss, weight 1,
+# no margin on it. The BioCLIP view is cut from the SAME RandomResizedCrop+flip as the
+# SWIN view, then run through BioCLIP's own transform (224px bicubic, CLIP norm) -- see
+# train_transforms in SWIN_finetuning_advanced.py. The teacher runs online, one frozen
+# copy per GPU; it has no cross-rank state, so 2 GPUs are fine (unlike KappaFace/ECC).
+#
+# Like ArcFace+ECC, this uses loss_ablation's own ArcMarginHead, not the native
+# SwinWithArcFace, so its fair ArcFace-only reference is the same head without aux.
+#
+# Same 12h-per-job-slot / multi-resume expectation as the other pilots.
+# =============================================================================
+
+model:
+  model_name_or_path: "microsoft/swin-base-patch4-window12-384-in22k"
+  config_name: null
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: 2048
+  max_eval_samples: 512
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+
+training:
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_ARCFACE_TARA_384_SMOKE"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_ARCFACE_TARA_384_SMOKE"
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 64
+  per_device_eval_batch_size: 64
+  learning_rate: 0.0001
+  num_train_epochs: 2
+  warmup_steps: 2
+  weight_decay: 0.01
+  optim: "adamw_torch_fused"
+  gradient_accumulation_steps: 2   # 64 * 2 * 2 GPUs = effective batch 256
+  lr_scheduler_type: "cosine"
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 3
+  eval_strategy: "steps"
+  eval_steps: 8
+  report_to: "none"
+  bf16: true
+  dataloader_num_workers: 16
+  remove_unused_columns: false
+  overwrite_output_dir: true   # smoke: always start clean
+  seed: 42
+
+custom:
+  lr_type: "cosine"
+  frozen: false
+  frozen_type: "none"
+  run_group: "SWIN_Base_ArcFaceTARA_384_Smoke"
+  run_name: "SWIN_Base_ArcFaceTARA_384_Smoke"
+  run_id: "swin_base_arcface_tara_384_smoke"
+  run_notes: >
+    Real-scale pilot (50 epochs, 2 GPUs) of ArcFace+TARA via loss_ablation's own
+    ArcMarginHead + TARAAux (frozen BioCLIP teacher), matched against the other
+    384px pilots on every shared hyperparameter.
+
+augmentation:
+  use_advanced: false   # required: TARA refuses advanced aug (shared-crop pipeline only)
+
+multi_task:
+  enabled: false
+
+arcface:
+  enabled: false
+
+hace:
+  enabled: false
+
+loss_registry:
+  enabled: true
+  head: arcface
+  head_kwargs:
+    s: 30.0
+    m: 0.30
+  aux: [tara]
+  aux_log_steps: 1
+
+long_tail:
+  logit_adjustment: false
+
+ema:
+  enabled: false
+
+multi_crop:
+  enabled: false
+  crop_sizes: [224]
+  target_size: 224
+
+wandb:
+  enabled: false
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"
