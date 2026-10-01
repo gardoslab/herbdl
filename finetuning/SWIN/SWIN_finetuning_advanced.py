@@ -553,7 +553,7 @@ class MixupTrainer(Trainer):
     Custom Trainer that handles Mixup/Cutmix loss computation and batch-wise evaluation.
     """
     def __init__(self, *args, multi_task=False, arcface=False, hace=False, loss_registry=False,
-                 aux_log_steps=500, logit_adjustment=False, log_prior=None, logit_adjustment_tau=1.0,
+                 aux_log_steps=500, predictions_path=None, logit_adjustment=False, log_prior=None, logit_adjustment_tau=1.0,
                  family_weight=0.2, genus_weight=0.3, species_weight=1.0, **kwargs):
         super().__init__(*args, **kwargs)
         self.multi_task = multi_task
@@ -567,6 +567,9 @@ class MixupTrainer(Trainer):
         self.hace = hace
         self.loss_registry = loss_registry
         self.aux_log_steps = aux_log_steps  # print ECC/TARA aux-loss values every N optimizer steps
+        # evaluation.predictions_path: if set, evaluation_loop also saves every image's
+        # argmax / top-5 / label as an .npz (val-set order), for per-species analysis.
+        self.predictions_path = predictions_path
         # Multi-task loss weights (used when recomputing the mixed/adjusted loss here;
         # kept in sync with MultiTaskSwinModel's internal weighting).
         self.family_weight = family_weight
@@ -828,12 +831,23 @@ class MixupTrainer(Trainer):
 
             # Move to CPU and store (batch-wise to save memory)
             all_predictions.append(predictions.cpu())
+            if self.predictions_path:
+                if step == 0:
+                    all_top5 = []
+                all_top5.append(logits.topk(5, dim=-1).indices.cpu())
             if labels is not None:
                 all_labels.append(labels.cpu())
 
         # Concatenate all predictions and labels
         all_predictions = torch.cat(all_predictions, dim=0).numpy()
         all_labels = torch.cat(all_labels, dim=0).numpy() if all_labels else None
+
+        if self.predictions_path and self.is_world_process_zero():
+            os.makedirs(os.path.dirname(self.predictions_path) or ".", exist_ok=True)
+            np.savez_compressed(self.predictions_path, predictions=all_predictions,
+                                labels=all_labels, top5=torch.cat(all_top5, dim=0).numpy())
+            print(f"__CUSTOM__: saved {len(all_predictions)} per-image predictions to "
+                  f"{self.predictions_path}")
 
         # Compute metrics
         metrics = {}
@@ -2232,6 +2246,19 @@ def main():
 
         return example_batch
 
+    # evaluation section (eval-only re-runs of finished models): init_weights loads a
+    # finished model.safetensors into the freshly built model, strictly, so a config/
+    # architecture mismatch fails loudly instead of evaluating half-random weights.
+    evaluation_config = config.get('evaluation', {}) or {}
+    if evaluation_config.get('init_weights'):
+        if training_args.do_train:
+            raise ValueError("evaluation.init_weights is for eval-only runs; set do_train: false")
+        from safetensors.torch import load_file as _load_st
+        _sd = _load_st(evaluation_config['init_weights'])
+        model.load_state_dict(_sd, strict=True)
+        print(f"__CUSTOM__: loaded finished weights from {evaluation_config['init_weights']} "
+              f"({len(_sd)} tensors, strict)")
+
     if training_args.do_train:
         if "train" not in dataset:
             raise ValueError("--do_train requires a train dataset")
@@ -2310,6 +2337,7 @@ def main():
             hace=use_hace,
             loss_registry=use_loss_registry,
             aux_log_steps=int(loss_registry_config.get('aux_log_steps', 500)),
+            predictions_path=evaluation_config.get('predictions_path'),
             logit_adjustment=use_logit_adjustment,
             log_prior=log_prior,
             logit_adjustment_tau=logit_adjustment_tau,
