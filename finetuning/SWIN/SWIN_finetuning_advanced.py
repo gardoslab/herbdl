@@ -828,13 +828,28 @@ class MixupTrainer(Trainer):
 
             # Compute predictions for this batch
             predictions = torch.argmax(logits, dim=-1)
+            top5 = logits.topk(5, dim=-1).indices if self.predictions_path else None
+
+            # Under DDP each rank only sees its own shard of the eval set (alternate
+            # batches). Gather every rank's predictions/labels so metrics cover the WHOLE
+            # validation set -- without this, 2-GPU runs silently reported metrics on rank
+            # 0's half only (found in Phase 3: their logged eval_accuracy/eval_f1 match the
+            # rank-0 alternate-batch subset, not the full set). gather_for_metrics also
+            # drops the duplicate samples the sampler pads the last batch with. Gathered
+            # order is rank-interleaved per step, i.e. the original val-set order. A no-op
+            # on 1 GPU.
+            predictions = self.accelerator.gather_for_metrics(predictions)
+            if top5 is not None:
+                top5 = self.accelerator.gather_for_metrics(top5)
+            if labels is not None:
+                labels = self.accelerator.gather_for_metrics(labels)
 
             # Move to CPU and store (batch-wise to save memory)
             all_predictions.append(predictions.cpu())
-            if self.predictions_path:
+            if top5 is not None:
                 if step == 0:
                     all_top5 = []
-                all_top5.append(logits.topk(5, dim=-1).indices.cpu())
+                all_top5.append(top5.cpu())
             if labels is not None:
                 all_labels.append(labels.cpu())
 
