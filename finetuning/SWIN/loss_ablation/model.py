@@ -158,6 +158,7 @@ class SwinWithLoss(nn.Module):
             logits = self.head(pooled, labels)
             loss = F.cross_entropy(logits, labels) if labels is not None else None
 
+        aux_losses = {}  # detached per-aux values, for logging only (never used in the graph)
         if labels is not None:
             for name, mod in self.aux_modules.items():
                 if name == "tara":
@@ -176,8 +177,10 @@ class SwinWithLoss(nn.Module):
                             "(see bioclip_teacher.BioCLIPTeacher.transform) -- passing "
                             "the SWIN pixel_values here would silently corrupt the "
                             "teacher signal rather than raise, which is worse than this.")
-                    loss = loss + mod(pooled, bioclip_pixel_values)
+                    aux_loss = mod(pooled, bioclip_pixel_values)
                 else:  # ecc
-                    loss = loss + mod(pooled, labels)
+                    aux_loss = mod(pooled, labels)
+                aux_losses[name] = aux_loss.detach()
+                loss = loss + aux_loss
 
-        return {"loss": loss, "logits": logits}
+        return {"loss": loss, "logits": logits, "aux_losses": aux_losses}
