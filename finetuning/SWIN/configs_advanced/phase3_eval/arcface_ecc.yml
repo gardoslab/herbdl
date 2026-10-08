@@ -1,0 +1,99 @@
+# GENERATED for Phase 3 eval-only re-evaluation -- do not train with this.
+# Source: orx/arcface-ecc-at-384px-real-scale-pilot-1-gpu-50-e:finetuning/SWIN/configs_advanced/swin_base_384_arcface_ecc_pilot.yml
+# Changes: do_train false, W&B off, output_dir -> PHASE3_EVAL/arcface_ecc,
+# evaluation.init_weights = that run's final model.safetensors, predictions saved as .npz.
+model:
+  model_name_or_path: microsoft/swin-base-patch4-window12-384-in22k
+  config_name: null
+  cache_dir: null
+  model_revision: main
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: /projectnb/herbdl/data/kaggle-herbaria/train_2022.json
+  validation_file: /projectnb/herbdl/data/kaggle-herbaria/val_2022.json
+  image_column_name: filename
+  label_column_name: scientificNameEncoded
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: null
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+training:
+  output_dir: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/PHASE3_EVAL/arcface_ecc
+  logging_dir: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/PHASE3_EVAL/arcface_ecc
+  do_train: false
+  do_eval: true
+  per_device_train_batch_size: 64
+  per_device_eval_batch_size: 64
+  learning_rate: 0.0001
+  num_train_epochs: 50
+  warmup_steps: 500
+  weight_decay: 0.01
+  optim: adamw_torch_fused
+  gradient_accumulation_steps: 4
+  lr_scheduler_type: cosine
+  logging_strategy: epoch
+  save_strategy: epoch
+  save_total_limit: 55
+  eval_strategy: steps
+  eval_steps: 8964
+  report_to: none
+  bf16: true
+  dataloader_num_workers: 16
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 42
+  resume_from_checkpoint: null
+custom:
+  lr_type: cosine
+  frozen: false
+  frozen_type: none
+  run_group: SWIN_Base_ArcFaceECC_384_Pilot
+  run_name: SWIN_Base_ArcFaceECC_384_Pilot
+  run_id: swin_base_arcface_ecc_384_pilot
+  run_notes: 'Real-scale pilot (50 epochs, 2 GPUs) of ArcFace+ECC via loss_ablation''s
+    own ArcMarginHead + ECCAux (not the production script''s native SwinWithArcFace),
+    matched against the other 384px pilots on every shared hyperparameter.
+
+    '
+augmentation:
+  use_advanced: false
+multi_task:
+  enabled: false
+arcface:
+  enabled: false
+hace:
+  enabled: false
+loss_registry:
+  enabled: true
+  head: arcface
+  head_kwargs:
+    s: 30.0
+    m: 0.3
+  aux:
+  - ecc
+long_tail:
+  logit_adjustment: false
+ema:
+  enabled: false
+multi_crop:
+  enabled: false
+  crop_sizes:
+  - 224
+  target_size: 224
+wandb:
+  enabled: false
+  entity: gardoslab
+  project: herbdl
+  resume: allow
+evaluation:
+  init_weights: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_ARCFACE_ECC_384_PILOT/model.safetensors
+  predictions_path: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/PHASE3_EVAL/arcface_ecc/predictions.npz

@@ -469,10 +469,19 @@ class MixupCutmixCollator:
 
         batch_size = pixel_values.size(0)
 
+        # TARA's second view of each image (BioCLIP-preprocessed, 224px, CLIP-normalised),
+        # present only when loss_registry.aux includes 'tara' -- see train_transforms. Never
+        # mixed: TARA is refused alongside mixup/cutmix at config time, so this only ever
+        # reaches the no-mixup branch below in practice.
+        bioclip_pixel_values = (torch.stack([example["bioclip_pixel_values"] for example in examples])
+                                if "bioclip_pixel_values" in examples[0] else None)
+
         # Decide whether to apply mixup/cutmix
         if random.random() > self.prob:
             # No mixup/cutmix
             result = {"pixel_values": pixel_values, "labels": labels}
+            if bioclip_pixel_values is not None:
+                result["bioclip_pixel_values"] = bioclip_pixel_values
             if self.multi_task:
                 result.update({
                     "family_labels": family_labels,
@@ -544,7 +553,7 @@ class MixupTrainer(Trainer):
     Custom Trainer that handles Mixup/Cutmix loss computation and batch-wise evaluation.
     """
     def __init__(self, *args, multi_task=False, arcface=False, hace=False, loss_registry=False,
-                 logit_adjustment=False, log_prior=None, logit_adjustment_tau=1.0,
+                 aux_log_steps=500, predictions_path=None, logit_adjustment=False, log_prior=None, logit_adjustment_tau=1.0,
                  family_weight=0.2, genus_weight=0.3, species_weight=1.0, **kwargs):
         super().__init__(*args, **kwargs)
         self.multi_task = multi_task
@@ -557,6 +566,10 @@ class MixupTrainer(Trainer):
         # into `arcface`) purely so logs/errors say what's actually running.
         self.hace = hace
         self.loss_registry = loss_registry
+        self.aux_log_steps = aux_log_steps  # print ECC/TARA aux-loss values every N optimizer steps
+        # evaluation.predictions_path: if set, evaluation_loop also saves every image's
+        # argmax / top-5 / label as an .npz (val-set order), for per-species analysis.
+        self.predictions_path = predictions_path
         # Multi-task loss weights (used when recomputing the mixed/adjusted loss here;
         # kept in sync with MultiTaskSwinModel's internal weighting).
         self.family_weight = family_weight
@@ -605,9 +618,26 @@ class MixupTrainer(Trainer):
                     family_labels=family_labels,
                     genus_labels=genus_labels,
                 )
+            elif "bioclip_pixel_values" in inputs:
+                # TARA: SwinWithLoss routes this second view to the BioCLIP teacher only.
+                outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a,
+                                bioclip_pixel_values=inputs["bioclip_pixel_values"])
             else:
                 outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a)
             loss = outputs.get("loss")
+            # Aux-loss visibility (ECC/TARA): the total loss alone can't show whether the aux
+            # term is doing anything. TARA's value is -cos(student, teacher), so -value is the
+            # mean student/teacher cosine alignment. Printed once per `aux_log_steps` optimizer
+            # steps (loss_registry.aux_log_steps, default 500).
+            _aux = outputs.get("aux_losses") if isinstance(outputs, dict) else None
+            _step = self.state.global_step
+            if (_aux and model.training and _step % self.aux_log_steps == 0
+                    and getattr(self, "_last_aux_log_step", -1) != _step
+                    and self.is_world_process_zero()):
+                self._last_aux_log_step = _step
+                print(f"__CUSTOM__: aux losses at step {_step}: "
+                      + ", ".join(f"{k}={v.item():.4f}" for k, v in _aux.items())
+                      + f" (total loss {loss.item():.4f})", flush=True)
             # NaN-safety: a prior 100-epoch ArcFace run (SWIN_L_384_ARCFACE_SEED0) trained
             # healthily to epoch 77 (acc 0.804) then hit a single-step gradient explosion
             # (loss 9->1277, grad_norm->nan) at epoch 78 and never recovered — a NaN loss
@@ -798,15 +828,41 @@ class MixupTrainer(Trainer):
 
             # Compute predictions for this batch
             predictions = torch.argmax(logits, dim=-1)
+            top5 = logits.topk(5, dim=-1).indices if self.predictions_path else None
+
+            # Under DDP each rank only sees its own shard of the eval set (alternate
+            # batches). Gather every rank's predictions/labels so metrics cover the WHOLE
+            # validation set -- without this, 2-GPU runs silently reported metrics on rank
+            # 0's half only (found in Phase 3: their logged eval_accuracy/eval_f1 match the
+            # rank-0 alternate-batch subset, not the full set). gather_for_metrics also
+            # drops the duplicate samples the sampler pads the last batch with. Gathered
+            # order is rank-interleaved per step, i.e. the original val-set order. A no-op
+            # on 1 GPU.
+            predictions = self.accelerator.gather_for_metrics(predictions)
+            if top5 is not None:
+                top5 = self.accelerator.gather_for_metrics(top5)
+            if labels is not None:
+                labels = self.accelerator.gather_for_metrics(labels)
 
             # Move to CPU and store (batch-wise to save memory)
             all_predictions.append(predictions.cpu())
+            if top5 is not None:
+                if step == 0:
+                    all_top5 = []
+                all_top5.append(top5.cpu())
             if labels is not None:
                 all_labels.append(labels.cpu())
 
         # Concatenate all predictions and labels
         all_predictions = torch.cat(all_predictions, dim=0).numpy()
         all_labels = torch.cat(all_labels, dim=0).numpy() if all_labels else None
+
+        if self.predictions_path and self.is_world_process_zero():
+            os.makedirs(os.path.dirname(self.predictions_path) or ".", exist_ok=True)
+            np.savez_compressed(self.predictions_path, predictions=all_predictions,
+                                labels=all_labels, top5=torch.cat(all_top5, dim=0).numpy())
+            print(f"__CUSTOM__: saved {len(all_predictions)} per-image predictions to "
+                  f"{self.predictions_path}")
 
         # Compute metrics
         metrics = {}
@@ -1099,6 +1155,24 @@ def _relocate_output_dir(path):
     return relocated
 
 
+def _newest_checkpoint(output_dir):
+    """The checkpoint-N subdir of output_dir whose trainer_state.json was written most
+    recently, or None. Unlike get_last_checkpoint (highest N), this ignores stale
+    higher-numbered checkpoints left behind by an older run on a different step scheme
+    or with NaN-frozen weights -- the last save always belongs to the latest run."""
+    if not os.path.isdir(output_dir):
+        return None
+    newest, newest_mtime = None, None
+    for name in os.listdir(output_dir):
+        state = os.path.join(output_dir, name, "trainer_state.json")
+        if not re.fullmatch(r"checkpoint-\d+", name) or not os.path.isfile(state):
+            continue
+        mtime = os.path.getmtime(state)
+        if newest_mtime is None or mtime > newest_mtime:
+            newest, newest_mtime = os.path.join(output_dir, name), mtime
+    return newest
+
+
 def main():
     # Parse command line arguments for config file
     arg_parser = argparse.ArgumentParser(description="SWIN Fine-tuning with advanced augmentations")
@@ -1208,11 +1282,10 @@ def main():
     # script's own native code (ArcFace) or by their own dedicated section (HACE) --
     # KappaFace, X2-Softmax, DBM, and any of ECC/TARA layered on top of one of the
     # registry's own heads via `aux`. Reuses SwinWithLoss exactly as the `use_hace` branch
-    # does, just without a hierarchy. TARA is deliberately NOT supported here yet: it needs
-    # a second, BioCLIP-preprocessed image tensor per batch that this script's dataset/
-    # collator pipeline has no path for -- raises below rather than silently training
-    # against a meaningless signal (see aux.py's TARAAux docstring for why that's the real
-    # risk, not a hypothetical one).
+    # does, just without a hierarchy. TARA additionally needs a second, BioCLIP-preprocessed
+    # view of every training image (224px, CLIP-normalised -- NOT the SWIN pixel_values;
+    # see aux.py's TARAAux docstring): built in train_transforms from the same random crop
+    # the SWIN view sees, stacked by the collator, passed to SwinWithLoss by compute_loss.
     loss_registry_config = config.get('loss_registry', {})
     use_loss_registry = loss_registry_config.get('enabled', False)
     loss_registry_head = loss_registry_config.get('head', 'softmax')
@@ -1223,12 +1296,16 @@ def main():
         raise ValueError("config sets loss_registry.enabled alongside arcface/hace/"
                           "multi_task -- loss_registry replaces the classifier head the "
                           "same way those do, enable exactly one")
-    if 'tara' in loss_registry_aux:
-        raise ValueError("loss_registry.aux includes 'tara', which is not wired into this "
-                          "script yet -- it needs a second BioCLIP-preprocessed image "
-                          "tensor per batch (224px, CLIP-normalised) that the dataset/"
-                          "collator pipeline here has no path for. Only the small-scale "
-                          "E2E harness exercises TARA today")
+    use_tara = use_loss_registry and 'tara' in loss_registry_aux
+    bioclip_teacher = None  # built with the model below, used by train_transforms
+    if use_tara and use_advanced_aug:
+        # The BioCLIP view is cut from the same RandomResizedCrop+flip as the SWIN view so
+        # student and teacher see the same pixels. RandAugment/ColorJitter/RandomErasing
+        # (and mixup/cutmix) would each need a deliberate decision about whether the teacher
+        # sees them too -- refuse rather than pick one silently.
+        raise ValueError("loss_registry.aux includes 'tara' with augmentation.use_advanced=true "
+                          "-- TARA currently supports only the standard RandomResizedCrop+flip "
+                          "pipeline (shared between the SWIN and BioCLIP views)")
 
     print(f"__CUSTOM__: Learning rate type: {learning_rate_type}")
     print(f"__CUSTOM__: Frozen: {frozen}")
@@ -1347,7 +1424,8 @@ def main():
         # scratch relaunches only reached checkpoint-36750/39375 -- auto-detection
         # picked the poisoned one, and resuming from it immediately reproduced the
         # exact same NaN. Set this explicitly whenever a directory might contain a
-        # stale/poisoned high-numbered checkpoint alongside a real lower one.
+        # stale/poisoned high-numbered checkpoint alongside a real lower one -- either a
+        # path, or `newest` (resolved in main() by save time, so it doesn't go stale).
         resume_from_checkpoint=config['training'].get('resume_from_checkpoint'),
         **_targs_extra_kwargs,
     )
@@ -1477,6 +1555,13 @@ def main():
                 f"Checkpoint detected, resuming training at {last_checkpoint}. To avoid this behavior, change "
                 "the `output_dir` or set `overwrite_output_dir: true` in your config to train from scratch."
             )
+
+    # `resume_from_checkpoint: newest` picks the most recently saved checkpoint rather than a
+    # fixed path, so a pin never goes stale across relaunches.
+    if training_args.resume_from_checkpoint == "newest":
+        training_args.resume_from_checkpoint = (
+            None if overwrite_output_dir else _newest_checkpoint(training_args.output_dir))
+        print(f"__CUSTOM__: resume_from_checkpoint=newest -> {training_args.resume_from_checkpoint}")
 
     # Set seed before initializing model
     set_seed(training_args.seed)
@@ -1940,6 +2025,20 @@ def main():
         _head_kwargs = dict(loss_registry_head_kwargs)
         if loss_registry_head in ("kappaface", "dbm"):
             _head_kwargs["class_counts"] = loss_registry_class_counts
+        if use_tara:
+            # Frozen BioCLIP teacher, one copy per rank on that rank's own GPU. It is NOT an
+            # nn.Module attribute of the model (TARAAux gets a plain embed callable), so it
+            # never lands in checkpoints or optimizer groups, and DDP never touches it. It
+            # holds no cross-rank state either, so unlike KappaFace/ECC, TARA is fine on
+            # several GPUs: each rank embeds exactly its own batch.
+            from loss_ablation.bioclip_teacher import BioCLIPTeacher
+            bioclip_teacher = BioCLIPTeacher(device=training_args.device)
+            loss_registry_aux_kwargs["tara"] = dict(
+                loss_registry_aux_kwargs.get("tara", {}) or {},
+                bioclip_dim=bioclip_teacher.embed_dim,
+                bioclip_embed_fn=bioclip_teacher.as_embed_fn())
+            print(f"__CUSTOM__: TARA BioCLIP teacher loaded on {training_args.device} — "
+                  f"embed_dim={bioclip_teacher.embed_dim}, transform={bioclip_teacher.transform}")
         model = SwinWithLoss(
             base_model,
             num_species=num_labels,
@@ -2088,6 +2187,16 @@ def main():
             )
 
         _train_transforms = Compose(train_transform_list)
+    elif use_tara:
+        # Same standard pipeline, split in two so the BioCLIP view comes from the SAME random
+        # crop+flip as the SWIN view: geometry on the PIL image once, then each view gets its
+        # own tail (SWIN: ToTensor+ImageNet norm at `size`; BioCLIP: its own open_clip
+        # transform, i.e. 224px bicubic resize + CLIP norm).
+        print("__CUSTOM__: Using standard augmentation pipeline (shared crop for TARA's BioCLIP view)")
+        _train_geometry = Compose([RandomResizedCrop(size), RandomHorizontalFlip()])
+        _train_swin_tail = Compose([ToTensor(), normalize])
+        _bioclip_transform = bioclip_teacher.transform
+        _train_transforms = Compose([_train_geometry, _train_swin_tail])  # same result as below
     else:
         print("__CUSTOM__: Using standard augmentation pipeline")
         _train_transforms = Compose([
@@ -2106,9 +2215,15 @@ def main():
 
     def train_transforms(example_batch):
         """Apply _train_transforms across a batch."""
-        example_batch["pixel_values"] = [
-            _train_transforms(Image.open(pil_img).convert("RGB")) for pil_img in example_batch[data_args.image_column_name]
-        ]
+        if use_tara:
+            crops = [_train_geometry(Image.open(pil_img).convert("RGB"))
+                     for pil_img in example_batch[data_args.image_column_name]]
+            example_batch["pixel_values"] = [_train_swin_tail(c) for c in crops]
+            example_batch["bioclip_pixel_values"] = [_bioclip_transform(c) for c in crops]
+        else:
+            example_batch["pixel_values"] = [
+                _train_transforms(Image.open(pil_img).convert("RGB")) for pil_img in example_batch[data_args.image_column_name]
+            ]
         # Keep the label for mixup collator
         example_batch["label"] = example_batch[data_args.label_column_name]
 
@@ -2145,6 +2260,19 @@ def main():
             ]
 
         return example_batch
+
+    # evaluation section (eval-only re-runs of finished models): init_weights loads a
+    # finished model.safetensors into the freshly built model, strictly, so a config/
+    # architecture mismatch fails loudly instead of evaluating half-random weights.
+    evaluation_config = config.get('evaluation', {}) or {}
+    if evaluation_config.get('init_weights'):
+        if training_args.do_train:
+            raise ValueError("evaluation.init_weights is for eval-only runs; set do_train: false")
+        from safetensors.torch import load_file as _load_st
+        _sd = _load_st(evaluation_config['init_weights'])
+        model.load_state_dict(_sd, strict=True)
+        print(f"__CUSTOM__: loaded finished weights from {evaluation_config['init_weights']} "
+              f"({len(_sd)} tensors, strict)")
 
     if training_args.do_train:
         if "train" not in dataset:
@@ -2223,6 +2351,8 @@ def main():
             arcface=use_arcface,
             hace=use_hace,
             loss_registry=use_loss_registry,
+            aux_log_steps=int(loss_registry_config.get('aux_log_steps', 500)),
+            predictions_path=evaluation_config.get('predictions_path'),
             logit_adjustment=use_logit_adjustment,
             log_prior=log_prior,
             logit_adjustment_tau=logit_adjustment_tau,
