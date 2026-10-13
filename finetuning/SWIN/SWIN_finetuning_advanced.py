@@ -895,13 +895,11 @@ class MixupTrainer(Trainer):
             # Create a mock EvalPrediction object
             from transformers.trainer_utils import EvalPrediction
 
-            # For compute_metrics, we need to pass logits in the right shape
-            # Since we've already computed predictions, we'll use one-hot encoding
-            num_labels = logits.shape[-1]
-            mock_logits = np.zeros((len(all_predictions), num_labels))
-            mock_logits[np.arange(len(all_predictions)), all_predictions] = 1.0
-
-            eval_pred = EvalPrediction(predictions=mock_logits, label_ids=all_labels)
+            # Pass the predicted class ids directly (1-D); both compute_metrics variants
+            # take them as-is (`len(shape) > 1` -> argmax, else use as predictions). The old
+            # dense one-hot (N_images x N_species float64) was 21 GB at 168k x 15.5k and
+            # would be ~290 GB at the scaling ladder's 562k x 64k.
+            eval_pred = EvalPrediction(predictions=all_predictions, label_ids=all_labels)
             metrics = self.compute_metrics(eval_pred)
 
         # Add loss to metrics
@@ -1413,6 +1411,9 @@ def main():
         per_device_eval_batch_size=config['training']['per_device_eval_batch_size'],
         learning_rate=float(config['training']['learning_rate']),
         num_train_epochs=config['training']['num_train_epochs'],
+        # Optional fixed step budget (overrides num_train_epochs when > 0). The scaling ladder
+        # uses it so every rung trains the same 131,250 optimizer steps as the 15k runs.
+        max_steps=int(config['training'].get('max_steps', -1) or -1),
         warmup_steps=_warmup_steps,
         weight_decay=config['training']['weight_decay'],
         optim=config['training'].get('optim', 'adamw_torch'),
