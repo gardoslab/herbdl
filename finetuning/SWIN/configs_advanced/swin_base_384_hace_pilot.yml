@@ -1,0 +1,127 @@
+# =============================================================================
+# HACE (Hierarchy-Aware Cross-Entropy) at 384px — real-scale pilot
+# =============================================================================
+# Cloned from the 384px ArcFace ablation (same backbone/data/optimizer/schedule/
+# seed/aug); arcface is disabled and hace is enabled instead. HACE replaces the
+# plain species classifier with a single head over the WHOLE species/genus/
+# family/root tree (15,501 + 2,564 + 272 + 1 = 18,338 nodes) — see
+# loss_ablation/hierarchy.py's module docstring for the two mechanisms
+# (prediction aggregation + ancestral label smoothing) and
+# SWIN_finetuning_advanced.py's `use_hace` branch for how the tree is built
+# from this exact dataset's genus/family columns.
+#
+# dilution=0.6, label_smoothing=0.0 match loss_ablation/e2e_harness.py's
+# already-validated `hace` smoke-test config — this is that same idea at real
+# scale and real epoch count, not a from-scratch hyperparameter choice.
+#
+# 2-GPU DDP: per_device_train_batch_size unchanged, gradient_accumulation_steps
+# halved (4 -> 2) vs a 1-GPU config, holding effective batch at 256 — same
+# convention as the sub-center ArcFace pilot config and
+# swin_large_384_concrete_2gpu.yml.
+#
+# Launch with NPROC_PER_NODE=2 (torchrun DDP via train_advanced.sh) and 2 GPUs.
+# Same 12h-per-job-slot / multi-resume expectation as the sub-center ArcFace
+# pilot — see that config's header for the full explanation.
+#
+# Before trusting this: run loss_ablation/hace_tree_smoke.py (a cheap CPU-only
+# job) to confirm the taxonomy tree built from the REAL train_2022.json has the
+# expected 15501/2564/272 shape and no genus/family inconsistency, and that
+# HACEHead's reachability buffer is correctly excluded from checkpoints.
+# =============================================================================
+
+model:
+  model_name_or_path: "microsoft/swin-base-patch4-window12-384-in22k"
+  config_name: null
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: null   # full 167,955-image val split — do not subsample
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2     # unused: validation_file is set explicitly above
+
+training:
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_HACE_384_PILOT"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_HACE_384_PILOT"
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 64
+  per_device_eval_batch_size: 64
+  learning_rate: 0.0001
+  num_train_epochs: 50
+  warmup_steps: 500
+  weight_decay: 0.01
+  optim: "adamw_torch_fused"
+  gradient_accumulation_steps: 2   # 64 * 2 * 2 GPUs = effective batch 256, matching the 1-GPU ablation
+  lr_scheduler_type: "cosine"
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 55             # every epoch — much cheaper now that R is excluded from checkpoints
+  eval_strategy: "steps"
+  eval_steps: 8964
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 16
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 42
+
+custom:
+  lr_type: "cosine"
+  frozen: false
+  frozen_type: "none"
+  run_group: "SWIN_Base_HACE_384_Pilot"
+  run_name: "SWIN_Base_HACE_384_Pilot"
+  run_id: "swin_base_hace_384_pilot"
+  run_notes: >
+    Real-scale pilot (50 epochs, 2 GPUs) of HACE, matched against the 384px
+    plain-ArcFace ablation on every hyperparameter it shares (backbone, data,
+    optimizer, schedule, seed, batch, augmentation). First real-scale use of
+    loss_ablation's HACEHead/TaxonomyTree wired into the production trainer;
+    de-risks that wiring before running all 9 losses at this scale.
+
+augmentation:
+  use_advanced: false
+
+multi_task:
+  enabled: false
+
+arcface:
+  enabled: false
+
+hace:
+  enabled: true
+  dilution: 0.6
+  label_smoothing: 0.0
+
+long_tail:
+  logit_adjustment: false
+
+ema:
+  enabled: false
+
+multi_crop:
+  enabled: false
+  crop_sizes: [224]
+  target_size: 224
+
+wandb:
+  enabled: true
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"
