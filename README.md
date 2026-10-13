@@ -24,12 +24,18 @@ Dataset management and preprocessing utilities.
 Model training and evaluation scripts for multiple architectures.
 
 #### `SWIN/`
-SWIN Transformer model training and evaluation.
+SWIN Transformer training and evaluation.
 
-- `SWIN_finetuning.py` - Primary training script using HuggingFace Trainer with WandB logging
-- `train.py` - Custom training loop with layer freezing support
-- `eval.py` - Model evaluation utilities
-- Base model: `microsoft/swin-base-patch4-window12-384`
+- `SWIN_finetuning_advanced.py` - the only training script; every technique is a YAML config section
+- `train_advanced.sh` - SCC job entry point (`CONFIG_FILE=...`); see `finetuning/CLAUDE.md`
+- `configs_advanced/` - run configs, including all loss-ablation and scaling-ladder runs
+- `loss_ablation/` - the loss functions and their analysis scripts (see below)
+
+#### Loss-function ablations
+- The losses themselves: `finetuning/SWIN/loss_ablation/losses.py` (HACE in `hierarchy.py`, ECC/TARA in `aux.py`)
+- Their run configs: `finetuning/SWIN/configs_advanced/swin_base_384_*.yml`
+- Everything else (tests, analysis scripts, trainer options): `finetuning/SWIN/loss_ablation/README.md`
+- Results write-up: the project's "Loss Function Ablations" document (kept outside this repo)
 
 #### `BioCLIP/`
 BioCLIP zero-shot evaluation for biological domain.
@@ -49,6 +55,10 @@ Hybrid model combining SWIN visual features with CLIP text-image alignment.
 - Model checkpoints saved in `output/SWIN/kaggle22/`
 - WandB integration: project `herbdl`, entity `bu-spark-ml`
 - Environment variables control freezing, learning rate schedules, and run identification
+
+### `repgeom/`
+Representation-geometry analysis of trained SWIN checkpoints (class tightness, separation,
+classifier alignment, spatial evidence). See `repgeom/README.md`.
 
 ### `CLIP/`
 Zero-shot evaluation experiments using OpenAI CLIP.
@@ -119,15 +129,12 @@ pip install -r clustering_viz/requirements.txt
 
 ```bash
 cd finetuning/SWIN
-python SWIN_finetuning.py \
-    --output_dir ../output/SWIN/kaggle22/ \
-    --model_name_or_path "microsoft/swin-base-patch4-window12-384" \
-    --train_file ../datasets/train_22_scientific.json \
-    --do_train --do_eval \
-    --per_device_train_batch_size 8 \
-    --learning_rate 1e-4 \
-    --num_train_epochs 3
+qsub -l h_rt=12:00:00 -P herbdl -l gpus=2 -l gpu_c=8.0 -l gpu_memory=48G \
+     -v NPROC_PER_NODE=2,CONFIG_FILE=configs_advanced/swin_base_384_dbm_pilot.yml train_advanced.sh
 ```
+
+Each config's batch settings assume a GPU count (noted in its `gradient_accumulation_steps`
+comment); 1-GPU configs drop `NPROC_PER_NODE`. Environment details: `finetuning/CLAUDE.md`.
 
 ### Creating Clustering Visualizations
 
