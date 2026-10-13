@@ -1,0 +1,16 @@
+{"_source": "Eval lines ({'eval_accuracy', 'eval_f1', 'epoch'}) read from the ladder runs' logs with orx logs. Every rung trains 131,250 optimizer steps (effective batch 256) and evaluates every 26,250 steps on the full validation set of its rung. Final points: runs dc59af2e, e3ecf637, ca0355e1, f30277ed, 29abd9c9, 2244e684; intermediate points come from the earlier 12-hour job segments of the same experiments (e.g. 6160a2b9, ab50dff9, 2cd92b98, da6b3f62, 97608fc0, 4266a77b, e986591c, c708b27b, 8aa11502, be07edbc, f9564e64). Single seed (42) per run.",
+ "steps": [26250, 52500, 78750, 105000, 131250],
+ "rungs": {
+  "15.5k": {"n_species": 15501, "train_images": 1366368, "val_images": 341932, "median_train_per_species": 57, "median_val_per_species": 14,
+    "epochs": [4.918, 9.835, 14.75, 19.67, 24.59],
+    "dbm":     {"acc": [0.8406, 0.8690, 0.8843, 0.8938, 0.8959], "f1": [0.7697, 0.8082, 0.8295, 0.8411, 0.8436]},
+    "arcface": {"acc": [0.8238, 0.8547, 0.8726, 0.8815, 0.8842], "f1": [0.7312, 0.7760, 0.8017, 0.8143, 0.8178]}},
+  "32k": {"n_species": 32000, "train_images": 1667994, "val_images": 417176, "median_train_per_species": 20, "median_val_per_species": 6,
+    "epochs": [4.029, 8.057, 12.09, 16.11, 20.14],
+    "dbm":     {"acc": [0.8304, 0.8597, 0.8766, 0.8853, 0.8882], "f1": [0.6832, 0.7326, 0.7596, 0.7718, 0.7754]},
+    "arcface": {"acc": [0.8072, 0.8447, 0.8628, 0.8746, 0.8777], "f1": [0.6246, 0.6916, 0.7222, 0.7398, 0.7452]}},
+  "64k": {"n_species": 64113, "train_images": 2249230, "val_images": 562308, "median_train_per_species": 10, "median_val_per_species": 3,
+    "epochs": [2.987, 5.975, 8.962, 11.95, 14.94],
+    "dbm":     {"acc": [0.7870, 0.8213, 0.8485, 0.8595, 0.8619], "f1": [0.5575, 0.6211, 0.6662, 0.6790, 0.6818]},
+    "arcface": {"acc": [0.7691, 0.8112, 0.8326, 0.8461, 0.8490], "f1": [0.5078, 0.5805, 0.6172, 0.6380, 0.6429]}}
+ }}
