@@ -146,6 +146,40 @@ jupyter notebook kaggle22_clustering.ipynb
 - Image data: `/projectnb/herbdl/data/kaggle-herbaria/`
 - Model checkpoints: `/projectnb/herbdl/workspaces/<username>/herbdl/finetuning/output/`
 
+## Loss-Ablation Report and Overleaf Sync
+
+The loss-function ablation and scaling-ladder write-up lives at the repository root:
+
+- `paper.tex` / `paper.pdf` - the report (compiles with pdfLaTeX or `tectonic paper.tex`)
+- `figs/make_figures.py` - regenerates every figure in `figs/` from the run-derived data in `figs/data/`
+  (`cd figs && python3 make_figures.py`; needs matplotlib and numpy)
+
+The report is mirrored to the Overleaf project
+<https://www.overleaf.com/project/6ace8587bc789bd8fc1aba52> through Overleaf's Git integration
+(a premium feature). Overleaf's Git has no branches (only `main`) and compiles `main.tex`, so keep
+the Overleaf copy in a separate clone rather than adding it as a remote of this repo:
+
+```bash
+# 1. Clone once, outside this repo. Username: git, password: an Overleaf Git
+#    authentication token (Overleaf Account Settings -> Git Integration).
+#    Never put the token in the URL or commit it.
+git clone https://git.overleaf.com/6ace8587bc789bd8fc1aba52 ~/overleaf/herbdl-loss-ablations
+
+# 2. Copy in only what Overleaf needs: the source as main.tex, plus the figure PDFs.
+cp paper.tex ~/overleaf/herbdl-loss-ablations/main.tex
+mkdir -p ~/overleaf/herbdl-loss-ablations/figs
+cp figs/fig_*.pdf ~/overleaf/herbdl-loss-ablations/figs/
+
+# 3. Commit and push to Overleaf's single branch.
+cd ~/overleaf/herbdl-loss-ablations
+git pull                      # pick up any edits made in the Overleaf editor first
+git add -A && git commit -m "Update report"
+git push origin main
+```
+
+If co-authors edit in Overleaf, `git pull` in the clone and copy `main.tex` back to `paper.tex`
+before regenerating. Pushing from Git can drop or move Overleaf tracked changes and comments.
+
 ## Additional Documentation
 
 - `CLAUDE.md` - Detailed project guide for Claude Code
