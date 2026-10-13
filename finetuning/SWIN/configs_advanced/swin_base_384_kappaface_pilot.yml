@@ -1,0 +1,138 @@
+# =============================================================================
+# KappaFace at 384px — real-scale pilot
+# =============================================================================
+# Same template as the sub-center ArcFace / HACE pilots (same backbone/data/
+# optimizer/schedule/seed/aug/2-GPU DDP settings); this one enables
+# loss_registry.head=kappaface instead of arcface/hace. s=30.0/m0=0.30 match
+# loss_ablation/e2e_harness.py's already-validated smoke-test config.
+# class_counts (per-class training image counts, needed for KappaFace's
+# concentration-based per-class margin adaptation) is built automatically by
+# SWIN_finetuning_advanced.py's `use_loss_registry` branch from the real
+# dataset -- not a config value.
+#
+# First real-scale use of loss_ablation's own KappaFaceHead (previously only
+# exercised in the 150-step/40-species E2E harness) and of the generic
+# `loss_registry` production wiring shared with x2softmax/dbm/arcface+ecc.
+#
+# Same 12h-per-job-slot / multi-resume expectation as the earlier pilots.
+# =============================================================================
+
+model:
+  model_name_or_path: "microsoft/swin-base-patch4-window12-384-in22k"
+  config_name: null
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: null
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+
+training:
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_KAPPAFACE_384_PILOT"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_KAPPAFACE_384_PILOT"
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 64
+  per_device_eval_batch_size: 64
+  learning_rate: 0.0001
+  num_train_epochs: 50
+  warmup_steps: 500
+  weight_decay: 0.01
+  optim: "adamw_torch_fused"
+  gradient_accumulation_steps: 4   # 64 * 4 * 1 GPU (kappaface is 1-GPU only, see decision
+                                    # log) = effective batch 256, matching every other pilot
+  lr_scheduler_type: "cosine"
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 55
+  eval_strategy: "steps"
+  eval_steps: 8964
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 16
+  remove_unused_columns: false
+  # Set back to false after the one deliberate fresh start this needed (2nd launch,
+  # after the batch-size fix). Real bug caught here: this flag makes the script SKIP
+  # checkpoint detection entirely (`if ... and not overwrite_output_dir:` in main()),
+  # not just permit overwriting -- left at true, EVERY subsequent relaunch silently
+  # restarts from step 0 instead of resuming, no error or warning. Confirmed this
+  # actually happened to the currently-running 3rd launch (363f82a6): no "Checkpoint
+  # detected" log line at all, same bug as arcface+ecc's identical mistake.
+  overwrite_output_dir: false
+  # `newest`, not auto-detected and not a fixed path: output_dir still holds
+  # checkpoints from the wrong-batch-size first launch (262,450-step schedule, e.g.
+  # checkpoint-36743) and from the run that resumed from it (checkpoint-36750..52500),
+  # which outrank real progress by step number. The previous fixed pin
+  # (checkpoint-18375) was correct once, but every later relaunch would have gone back
+  # to it. `newest` picks the most recently saved checkpoint. Caveat: it only points at
+  # the right lineage once the run launched 2026-09-28 10:51 (2f252ee0, resumed from
+  # checkpoint-18375) has saved its first checkpoint (~12:10 that day); before then it
+  # would pick checkpoint-52500 from the mismatched run.
+  resume_from_checkpoint: newest
+  seed: 42
+
+custom:
+  lr_type: "cosine"
+  frozen: false
+  frozen_type: "none"
+  run_group: "SWIN_Base_KappaFace_384_Pilot"
+  run_name: "SWIN_Base_KappaFace_384_Pilot"
+  run_id: "swin_base_kappaface_384_pilot"
+  run_notes: >
+    Real-scale pilot (50 epochs, 2 GPUs) of KappaFace, matched against the
+    384px ArcFace/sub-center-ArcFace/HACE pilots on every shared
+    hyperparameter. First real-scale use of loss_ablation's own KappaFaceHead
+    and of the generic loss_registry production wiring.
+
+augmentation:
+  use_advanced: false
+
+multi_task:
+  enabled: false
+
+arcface:
+  enabled: false
+
+hace:
+  enabled: false
+
+loss_registry:
+  enabled: true
+  head: kappaface
+  head_kwargs:
+    s: 30.0
+    m0: 0.30
+  aux: []
+
+long_tail:
+  logit_adjustment: false
+
+ema:
+  enabled: false
+
+multi_crop:
+  enabled: false
+  crop_sizes: [224]
+  target_size: 224
+
+wandb:
+  enabled: true
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"
