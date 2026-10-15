@@ -22,71 +22,98 @@
 \maketitle
 
 \begin{abstract}
-We hold one model and one training recipe fixed (SWIN-Base, 384\,px, ImageNet-22k
-initialisation, 50 epochs on Kaggle Herbarium 2022, 15{,}501 species) and change only
-the training loss. We compare eight losses against a plain ArcFace reference, all
-trained at full scale and all scored on the full 167{,}955-image validation set. Two
-losses that give each species its own margin, DBM and KappaFace, clearly win.
-They beat ArcFace by $+1.9$ and $+1.8$ points of macro-F1 and by $+1.5$ and $+1.2$
-points of top-1 accuracy. A second seed moves any of these scores by about 0.1 points
-or less. Their gains are largest for species with few training images: up to $+6$
-points of per-species F1 for species with 6--10 images, against about $+1$ point for
-species with 51--73. KappaFace is better than DBM below about 10 training images, and
-DBM is better above about 15. Sub-center ArcFace gives a small but real gain. TARA
-has no detectable effect. ECC and HACE are slightly worse than ArcFace, and X2-Softmax
-fails (its features collapse). Tidier average representation geometry does not mean
-better accuracy: the two best losses have the loosest species clusters of any working
-loss. On a scaling ladder of nested label sets with 15.5k, 32k and 64k species, at
-fixed compute, DBM beats ArcFace on every rung. Its macro-F1 lead grows with the
-number of species (from $+2.6$ to $+3.0$ to $+3.9$ points), while its accuracy lead stays
-flat ($+1.0$ to $+1.3$).
+This report asks which training loss produces the best species classifier for
+digitised herbarium sheets, and whether the answer changes as the number of species
+grows. To isolate the effect of the loss, we keep everything else fixed: the same
+SWIN-Base backbone at 384\,px with ImageNet-22k initialisation, the same 50-epoch
+training recipe, and the same Kaggle Herbarium 2022 data with 15{,}501 species. Only
+the classification head and its loss change between runs. We compare eight losses
+against a plain ArcFace reference. Every loss is trained to completion, and every model
+is scored on the full validation set of 167{,}955 images.
+
+Two losses clearly win, and both work by giving each species its own margin instead of
+one shared margin. DBM beats ArcFace by $+1.9$ points of macro-F1 and $+1.5$ points of
+top-1 accuracy, and KappaFace by $+1.8$ and $+1.2$. Retraining with a second random seed
+moves each of these scores by about 0.1 points or less, so the gains are not noise.
+Most of the improvement comes from rare species. For species with 6--10 training
+images, per-species F1 rises by up to $+6$ points, while for species with 51--73
+images it rises by only about $+1$. The two winners also split the work: KappaFace is
+better for species with fewer than about 10 training images, and DBM is better for
+species with more than about 15. Of the remaining losses, sub-center ArcFace gives a
+small but real gain, TARA has no detectable effect, ECC and HACE are slightly worse than
+ArcFace, and X2-Softmax fails because its features collapse. We also find that tidier
+average feature geometry does not mean a better classifier: the two best losses have
+looser species clusters than any loss in the ArcFace family. Finally, on a ``scaling
+ladder'' of nested label sets with 15.5k, 32k and 64k species, trained with the same
+compute at every size, DBM beats ArcFace on every rung. Its macro-F1 lead grows with the
+number of species, from $+2.6$ to $+3.0$ to $+3.9$ points, while its accuracy lead stays
+roughly flat at $+1.0$ to $+1.3$ points.
 \end{abstract}
 
 \section{Motivation}
 \label{sec:intro}
 
-Identifying the species on a digitised herbarium sheet is a fine-grained problem with
-a very long label list. Kaggle Herbarium 2022 alone has 15{,}501 species, and the merged
-Herbarium 2021 and 2022 data has 64{,}113~\citep{herb2021}. Two things make it hard.
+Identifying the species on a digitised herbarium sheet is a fine-grained classification
+problem with a very long list of possible labels. Kaggle Herbarium 2022 alone contains
+15{,}501 species, and the merged Herbarium 2021 and 2022 data contains
+64{,}113~\citep{herb2021}. Two properties of this data make the problem hard, and both
+shape how we evaluate the models in this report.
 
-\emph{The remaining mistakes are between close relatives.} For our SWIN-Base models,
-75--78\% of wrong answers still name a species in the correct genus, and 87--90\% one in
-the correct family (Section~\ref{sec:res-fine}). By chance those rates would be about
-0.3\% and 3\%. So the model already knows roughly where a specimen belongs. What it
-gets wrong is separating sister species, often from small differences in leaves,
-flowers or fruit on a pressed sheet.
+The first is that the remaining mistakes are between close relatives. When our SWIN-Base
+models get a specimen wrong, 75--78\% of the time the species they predict is in the
+correct genus, and 87--90\% of the time it is in the correct family
+(Section~\ref{sec:res-fine}). If the wrong answers were random, these rates would be
+about 0.3\% and 3\%. In other words, the model has usually already worked out roughly
+where the specimen sits in the plant tree of life. What it gets wrong is the last step:
+telling apart sister species that may differ only in small details of the leaves,
+flowers or fruit on a pressed and dried sheet.
 
-\emph{Many species have very few examples.} In Herbarium 2022 a species has between 2
-and 73 training images. In the 64k-species set the median falls to 10 training images
-and 3 validation images per species. Macro-F1 weights every species equally, so it is
-the measure most sensitive to how well these rare species are learned. We treat it as
-our primary metric and report top-1 accuracy alongside.
+The second is that many species have very few examples. In Herbarium 2022, the number
+of training images per species ranges from 2 to 73. In the largest label set we use,
+with 64k species, the median species has only 10 training images and 3 validation
+images. This matters for the choice of metric. Top-1 accuracy counts every
+\emph{image} equally, so it is dominated by the common species that contribute most of
+the images. Macro-F1 instead computes an F1 score for each species separately and then
+averages those scores, so every \emph{species} counts equally, however rare it is. That
+makes macro-F1 the measure most sensitive to how well rare species are learned. We
+treat macro-F1 as our primary metric and report top-1 accuracy alongside it.
 
-An earlier controlled experiment at 224\,px showed that replacing cross-entropy (CE)
-with ArcFace~\citep{arcface} changes the feature space much more than the accuracy. The
-separation gap between species clusters became 16 times wider
-($0.012 \to 0.196$), but top-1 rose by only 1.7 points ($0.7796 \to 0.7970$). Better
-class separation in the ArcFace sense therefore did not seem to be the binding
-constraint, which raised the question this report addresses: \emph{does any loss
-that intervenes elsewhere, through per-class margins, hierarchy, auxiliary losses or
-a teacher model, train a better fine-grained classifier? And does the answer hold as
-the label set grows?}
+This report builds on an earlier controlled experiment at 224\,px, which compared
+ordinary cross-entropy (CE) with ArcFace~\citep{arcface}. ArcFace is a loss that forces
+the classifier to separate species by a fixed angular margin (Section~\ref{sec:heads}
+explains how). Switching from CE to ArcFace changed the structure of the feature space
+far more than it changed accuracy. We measure how well separated the species clusters
+are with a ``separation gap'' (defined in Section~\ref{sec:res-geom}). That gap became
+16 times wider, from 0.012 to 0.196, yet top-1 accuracy rose by only 1.7 points, from
+0.7796 to 0.7970. So simply pushing species further apart in the ArcFace way did not seem
+to be what limits accuracy. That raised the two questions this report addresses. First,
+does a loss that intervenes somewhere else (through per-species margins, the taxonomy,
+an auxiliary loss term, or a pretrained teacher model) train a better fine-grained
+classifier? Second, does the answer still hold as the label set grows?
 
 \section{Fixed baseline: what stayed the same}
 \label{sec:baseline}
 
-Every run in the ablation uses the same backbone, data, optimiser and schedule. Only
-the classification head and loss change (Table~\ref{tab:setup}). The reference is
-ArcFace with one center per class ($s=30$, $m=0.30$), applied directly to the 1024-d
-pooled SWIN feature, with no bottleneck, no BatchNorm and no auxiliary CE head. This is
-the configuration whose 224\,px version gave 0.7971 accuracy and 0.7605 macro-F1 in the
-earlier controlled CE-vs-ArcFace comparison.
+The aim of the ablation is to attribute any difference in results to the loss and
+nothing else. Every run therefore uses the same backbone, the same data, the same
+optimiser and the same learning-rate schedule (Table~\ref{tab:setup}). The only part of
+the model that changes is the final classification head and the loss computed from it.
 
-Moving to 384\,px forced one change: Swin's attention windows are tied to the input
-size~\citep{swin}, so the 384\,px runs use the
-\nolinkurl{swin-base-patch4-window12-384-in22k} checkpoint in place of the 224\,px one.
-At 384\,px, ArcFace reaches 0.8299 / 0.7972 (accuracy / macro-F1), 3.3 and 3.7 points
-above ArcFace at 224\,px. Every comparison below is made at 384\,px.
+The reference loss is ArcFace with one weight vector per species, a scale of $s=30$ and
+a margin of $m=0.30$ (both explained in the next section). It is applied directly to
+the 1{,}024-dimensional feature that SWIN produces for each image. There is no extra
+bottleneck layer, no BatchNorm, and no auxiliary cross-entropy head. We chose this
+configuration because its 224\,px version is the one used in the earlier controlled
+CE-versus-ArcFace comparison, where it reached 0.7971 accuracy and 0.7605 macro-F1.
+
+Moving from 224\,px to 384\,px forced one other change. Swin Transformers compute
+attention inside fixed-size windows of the image, and the window size is tied to the
+input resolution~\citep{swin}. A model pretrained for 224\,px inputs therefore cannot be
+reused directly at 384\,px. The 384\,px runs use the
+\nolinkurl{swin-base-patch4-window12-384-in22k} checkpoint instead, which was pretrained
+for that resolution. At 384\,px, ArcFace reaches 0.8299 accuracy and 0.7972 macro-F1,
+which is 3.3 and 3.7 points above ArcFace at 224\,px. All comparisons between losses in
+this report are made at 384\,px.
 
 \begin{table}[t]
 \centering
@@ -112,86 +139,179 @@ Hardware & 1--2 NVIDIA L40S on BU SCC; 12\,h jobs resumed from checkpoints \\
 \end{tabular}
 \end{table}
 
-\paragraph{Evaluation note.} The training script originally scored 2-GPU runs on only
-the first GPU's half of the validation set, because predictions were never gathered
-across GPUs. This made macro-F1 about 1 point too low for those runs. We re-scored every
-finished model on the full set with one GPU. For the 1-GPU runs this reproduced the
-logged numbers exactly. All 15k numbers in this report are full-set re-scores, and the
-ladder runs use the fixed evaluation code.
+\paragraph{A correction to how 2-GPU runs were scored.} Some losses were trained on two
+GPUs. In that setting, each GPU evaluates a different half of the validation set, and
+the two halves of the predictions have to be gathered together before the score is
+computed. The original training script never did this gathering step. As a result,
+every 2-GPU run reported its score on only the first GPU's half of the validation set.
+Accuracy was barely affected, but macro-F1 came out about 1 point too low, because with
+half the images each species has fewer validation examples. To remove this problem, we
+re-scored every finished model on the full validation set using a single GPU. For the
+models that had been trained on one GPU, this reproduced their logged numbers exactly,
+which confirms that the re-scoring is correct. All 15k-species numbers in this report
+are these full-set re-scores, and the scaling-ladder runs use the corrected code.
+
+\section{Background: how a cosine classifier head turns a feature into a prediction}
+\label{sec:heads}
+
+Every loss in this study except HACE is built on the same kind of classification head,
+called a cosine head. Understanding it once makes each loss easy to describe as a small
+change to it, so we walk through it here.
+
+The SWIN backbone turns each image into a vector of 1{,}024 numbers, which we call the
+image's \emph{feature} $\mathbf{x}$. This is the model's learned summary of what it sees
+in the image. It helps to picture $\mathbf{x}$ as an arrow pointing in some direction in
+a 1{,}024-dimensional space.
+
+The classification head stores one further vector of 1{,}024 numbers for each species
+$j$. This is the species' \emph{weight vector} $\mathbf{w}_j$. It is learned during
+training, and it acts like a template for the species: an arrow pointing roughly toward
+where the features of that species' images tend to land. With 15{,}501 species, the
+head holds 15{,}501 such vectors, stacked as the rows of a $15{,}501 \times 1{,}024$
+weight matrix $W$.
+
+To score an image against species $j$, the model compares the image's feature with that
+species' template. In an ordinary linear classifier, the comparison is a dot product
+plus a bias, $\mathbf{w}_j \cdot \mathbf{x} + b_j$. Doing this for every species at
+once is the matrix product $W\mathbf{x}$ (plus the bias vector), which gives one score
+per species. These scores are the \emph{logits}, and a softmax turns them into
+probabilities.
+
+A cosine head makes two changes to this. First, it rescales both $\mathbf{x}$ and every
+$\mathbf{w}_j$ to length 1 before comparing them, and it drops the bias. For two vectors
+of length 1, the dot product is exactly the cosine of the angle between them, which we
+write $\cos\theta_j$. The angle $\theta_j$ is therefore the natural measure of how well
+an image matches species $j$. An angle of $0^\circ$ means the feature points exactly
+along the species' template, and an angle of $90^\circ$ means the two are unrelated.
+Normalising means that only the \emph{direction} of a feature matters, not its length.
+Second, because a cosine only ranges from $-1$ to $1$, a softmax over raw cosines would
+give almost the same probability to every one of the 15{,}501 species. The head
+therefore multiplies every cosine by a fixed scale $s$, which we set to 30 for every
+head. The logit for species $j$ is then $s\cos\theta_j$.
+
+The \emph{margin} losses below all keep this structure and change only one thing. During
+training, and only for the correct species $y$ of each image, they replace the logit
+$s\cos\theta_y$ by something smaller. The logits of all the wrong species are left
+alone. Lowering the correct species' logit makes the training task deliberately harder.
+To still classify the image correctly, the model has to make its feature point even more
+closely toward its own species' template than would otherwise be necessary. That pulls
+each species' images together and pushes different species apart. At test time no margin
+is applied, and every head predicts with the plain logits $s\cos\theta_j$. The losses
+therefore differ only in how they shape the features and templates during training, not
+in how they make predictions afterwards.
 
 \section{The losses we ablated}
 \label{sec:losses}
 
-The losses change training at four different points: the classifier head and its
-margin rule, the structure of the output, an extra loss term, or the gradients. We
-picked them to cover the main ideas for fine-grained, long-tailed recognition:
-fixed-margin angular losses, per-class adaptive margins, hierarchy-aware outputs,
-class-center regularisers, and alignment to a biology foundation model.
-Table~\ref{tab:losses} summarises them. FlexiGrad, the ninth planned loss, needs
-multi-task family/genus/species heads and is not yet run.
+The losses we test change training in three different places. Most replace the rule for
+the correct species' logit inside the cosine head. HACE changes the structure of the
+output, so that it predicts over the whole taxonomy rather than over species alone. ECC
+and TARA keep ArcFace's head and add an extra loss term on top of it.
+Table~\ref{tab:losses} summarises them. We chose this set to cover the main families of
+ideas for fine-grained and long-tailed recognition: fixed angular margins, margins that
+adapt per species, hierarchy-aware outputs, regularisers built on class centres, and
+alignment to a biology foundation model. A ninth planned method, FlexiGrad, changes how
+gradients from separate family, genus and species heads are combined. It needs those
+multi-task heads, which are not yet built, so it has not been run.
 
-Throughout, $\theta_j$ is the angle between an image's normalised feature and the
-normalised weight vector of species $j$, and $y$ is the true species. All margin heads
-compute logits $s\cos\theta_j$ for the wrong classes and change only the logit of the
-true class, and only during training. At test time every head predicts with plain
-$s\cos\theta_j$.
+\paragraph{ArcFace (reference)~\citep{arcface}.} ArcFace applies the same margin to every
+species. During training, the correct species' logit becomes $s\cos(\theta_y + m)$ with
+$m = 0.30$ radians (about $17^\circ$). Adding $m$ to the angle is equivalent to
+pretending that the feature points $17^\circ$ further away from its own template than it
+really does. For the image to still win, its true angle has to be small enough that
+even after this penalty the correct species beats every other species. Earlier ArcFace
+runs became numerically unstable when the full margin was applied from the start, so we
+ramp $m$ linearly from 0 up to 0.30 over the first 5 epochs. We use ArcFace as the
+reference because it is the standard angular-margin loss and the strongest single change
+we had found before this study.
 
-\paragraph{ArcFace (reference)~\citep{arcface}.} The true-class logit becomes
-$s\cos(\theta_y+m)$ with one fixed margin $m=0.30$ for every species. To count as
-correct, an image must be closer to its own species by an extra angle $m$. We use a
-5-epoch margin warmup, which stabilised earlier ArcFace runs. \emph{Why:} ArcFace is
-the standard angular-margin loss and the strongest single change found so far, so
-everything else is compared with it.
+\paragraph{Sub-center ArcFace ($k=3$)~\citep{subcenter}.} Here each species has three
+weight vectors instead of one. An image is compared with all three, and the one it is
+closest to (the largest cosine) is used as that species' score. The margin rule is the
+same as in ArcFace. The motivation is that a single herbarium species can look quite
+different from sheet to sheet, for example when flowering versus fruiting, or when
+prepared in different ways. With several templates per species, each template can
+specialise in one of these appearances. The extra templates can also absorb mislabelled
+or unusual images without pulling the main template away from the typical ones.
 
-\paragraph{Sub-center ArcFace ($k=3$)~\citep{subcenter}.} Each species gets three weight
-vectors, and an image is scored against whichever is closest. \emph{Why:} herbarium
-species can look very different across sheets (flowering versus fruiting, different
-preparation), and the extra centers can absorb mislabelled or atypical images.
+\paragraph{KappaFace~\citep{kappaface}.} KappaFace keeps ArcFace's formula but gives each
+species its own margin, between 0 and a maximum of $m_0 = 0.30$. That margin is the
+average of two scores, each between 0 and 1. The first score depends on how many
+training images the species has. It is close to 1 for the rarest species and falls
+smoothly to 0 for the most common one. The second score depends on how tightly the
+species' features cluster. To measure this, the model keeps a running average of the
+normalised features of each species, updated at every training step. If a species'
+features all point in nearly the same direction, this average is a long vector; if they
+point in many different directions, they partly cancel and the average is short. From
+the length of the average, KappaFace estimates a concentration value $\kappa$ (from the
+von Mises--Fisher distribution, a standard model for directions on a sphere), recomputed
+once per epoch. Species with a high $\kappa$, meaning a tight cluster, get a low score,
+and species with a spread-out cluster get a high one. The overall effect is that rare
+species and spread-out species receive margins close to 0.30, while common, tight
+species receive smaller margins. We included KappaFace because it targets the two
+difficulties of this data directly, few images and large variation within a species,
+without any per-species rule set by hand.
 
-\paragraph{KappaFace~\citep{kappaface}.} The margin is set per species from two
-signals: how many training images the species has, and how tightly its features
-cluster. The tightness is a von Mises--Fisher concentration estimate, recomputed once
-per epoch from a running mean direction per species. Rare species and spread-out
-species get a margin near the maximum, $m_0=0.30$. Common, tight species get a smaller
-one. \emph{Why:} it targets exactly the two difficulties of this data, few images and
-large within-species variation, without any hand-set per-class rule.
+\paragraph{DBM, Difficulty-aware Balancing Margin~\citep{dbm}.} DBM also gives each
+species its own margin, but builds it from two fixed parts. The \emph{class} part depends
+only on the number of training images of the species, $n_y$:
+$m_C = K\,(n_y/n_{\min})^{-\tau}$, where $n_{\min}$ is the smallest image count of any
+species, and $K = 0.1$, $\tau = 1$ are the paper's defaults. With $\tau = 1$ this is
+simply $0.1 \cdot n_{\min}/n_y$. The rarest species get the largest margin, 0.1, and the
+margin shrinks in proportion to $1/n_y$ as species become more common. In Herbarium 2022,
+where $n_{\min} = 2$, a species with 73 training images gets a class margin of only about
+0.003. The \emph{instance} part is added only for ``hard'' training images, meaning images
+whose closest template (the species with the smallest angle) is not their own species.
+For these, the margin grows by $m_C (1 - \cos\theta_y)/2$, a fraction of the class margin
+that is larger the further the image currently is from its own template. We included
+DBM because it was designed for long-tailed recognition, and it concentrates the
+training pressure on rare species and on images the model currently gets wrong, using
+nothing more than fixed class counts. It is worth noting that every DBM margin is far
+smaller than ArcFace's 0.30, and for common species it is close to zero.
 
-\paragraph{DBM, Difficulty-aware Balancing Margin~\citep{dbm}.} The margin has two parts.
-The class part, $m_C = K\,(n_y/n_{\min})^{-\tau}$ with $K=0.1$ and $\tau=1$, is fixed by
-the species' training-image count $n_y$. It is largest (0.1) for the rarest species and
-shrinks as $1/n_y$: for a 73-image species in Herbarium 2022 it is about 0.003. The
-instance part adds $m_C\,(1-\cos\theta_y)/2$, but only for \emph{hard} images, whose
-nearest class is not their own. \emph{Why:} it was designed for long-tailed
-recognition, and it reweights both rare classes and hard examples using only fixed
-class counts. Every DBM margin is far below ArcFace's 0.30.
+\paragraph{X2-Softmax~\citep{x2softmax}.} X2-Softmax replaces the cosine for the correct
+species with a quadratic function of the angle, $f(\theta_y) = a(\theta_y - h)^2 + k$,
+and the logit becomes $s\,f(\theta_y)$. We use the paper's values $a = -1$, $h = -0.3$,
+$k = 1$. Like a cosine, this function is largest when the angle is zero and falls as the
+angle grows, but it falls at a different rate. The effect is a margin that changes
+with the angle instead of being a fixed number, which also removes the margin as a
+setting to tune. The idea was that a margin that adapts to how far each image is from
+its template could suit species of very different difficulty.
 
-\paragraph{X2-Softmax~\citep{x2softmax}.} The true-class logit is replaced by a quadratic
-function of the angle, $s\,[a(\theta_y-h)^2+k]$, with the paper's $a=-1$, $h=-0.3$,
-$k=1$. This gives an angle-dependent margin with no margin setting. \emph{Why:} a margin
-that adapts to how far an image is from its class could suit species of very
-different difficulty, with one hyperparameter fewer.
+\paragraph{HACE, Hierarchy-Aware Cross-Entropy~\citep{hace}.} HACE does not use a margin.
+Instead, it widens the output layer to cover the whole taxonomy tree: 15{,}501 species,
+2{,}564 genera, 272 families and one root, 18{,}338 outputs in total. The probability of
+a genus, family or the root is computed as the sum of the probabilities of all the
+species beneath it, plus that node's own output. The training target is also spread up
+the tree. Instead of putting all of its weight on the correct species, the target gives
+part of it to that species' genus, a smaller part to its family, and so on, decreasing
+geometrically with a dilution factor of 0.6. The loss is cross-entropy between this
+spread target and the model's output over all nodes of the tree. Because most of our
+errors are already within the correct genus or family, we wanted to know whether a loss
+that knows about the taxonomy could make mistakes rarer, or at least milder.
 
-\paragraph{HACE, Hierarchy-Aware Cross-Entropy~\citep{hace}.} The output layer covers the
-whole taxonomy tree: 15{,}501 species, 2{,}564 genera, 272 families and a root,
-18{,}338 nodes in total. A parent node's probability is the sum over its descendants,
-and the one-hot target is spread up the ancestor path (dilution 0.6). \emph{Why:} most
-errors are within genus and family, so making the loss aware of the taxonomy could
-make mistakes milder or rarer.
+\paragraph{ArcFace + ECC, Exploration of Class Centre~\citep{ecc}.} ECC keeps ArcFace and
+adds an extra loss term. For each species, it keeps a running average of that species'
+features, its ``class centre''. The extra term does two things. It pulls each image's
+feature toward its own species' centre, and it pushes the feature away from the centre of
+the most similar other species, pushing harder when the two species are more alike. It
+also builds a soft label for each species from the running average of the model's
+predicted probabilities for that species' images, and adds a term that keeps each
+image's prediction close to this soft label. The two parts are weighted equally
+($\lambda_1 = \lambda_2 = 1$), because we could not recover the paper's own weights. We
+included ECC because it was validated on a Swin-Base backbone for fine-grained
+classification, the closest match to our setting among all the candidates.
 
-\paragraph{ArcFace + ECC, Exploration of Class Center~\citep{ecc}.} An extra loss built
-from a running per-species feature center. It pulls each image toward its own center
-and pushes it away from the most similar other species' center, more strongly when the
-two species are more similar. It also adds soft labels from the running average
-prediction of each species. Loss weights are $\lambda_1=\lambda_2=1$; the paper's
-values could not be recovered. \emph{Why:} ECC was validated on a Swin-Base backbone for
-fine-grained classification, the closest match to our setting of any candidate.
-
-\paragraph{ArcFace + TARA~\citep{tara}.} An extra loss that aligns a projection of the SWIN
-feature with the embedding of a frozen BioCLIP~\citep{bioclip} image encoder. BioCLIP
-sees the same random crop at 224\,px, and the loss is the negative cosine similarity
-between the two. This is an adaptation: TARA itself aligns a large multimodal model.
-\emph{Why:} BioCLIP was trained across the tree of life and may carry taxonomic
-structure that a classifier trained on herbarium sheets alone does not learn.
+\paragraph{ArcFace + TARA~\citep{tara}.} TARA also keeps ArcFace and adds an extra loss
+term, this time using a frozen BioCLIP model~\citep{bioclip} as a teacher. BioCLIP is a
+vision foundation model trained on images from across the tree of life. For each
+training image, BioCLIP sees the same random crop as SWIN, resized to its own 224\,px
+input. A small learnable projection layer maps SWIN's feature into BioCLIP's embedding
+space, and the extra loss rewards a high cosine similarity between the projected SWIN
+feature and BioCLIP's embedding. BioCLIP's weights never change. This is an adaptation
+of the original method, which aligns a large multimodal model rather than an image
+classifier. We included it because BioCLIP may already encode taxonomic structure that a
+classifier trained only on herbarium sheets would not learn by itself.
 
 \begin{table}[t]
 \centering
@@ -221,30 +341,36 @@ ArcFace + TARA & extra loss & cosine alignment with frozen BioCLIP \\
 \section{The scaling ladder}
 \label{sec:ladder}
 
-\paragraph{Motivation.} The 15k ablation is one label-set size, and the per-species
-analysis (Section~\ref{sec:res-fine}) suggests that DBM and KappaFace win mainly on rare
-species. Larger herbarium label sets add mostly rare species. So the question is
-whether the ranking holds, and whether the gap grows, as the number of species goes up.
+The loss ablation above uses a single label set of about 15.5k species. The per-species
+results (Section~\ref{sec:res-fine}) suggest that DBM and KappaFace win mainly on rare
+species. Larger herbarium label sets mostly add rare species, so the natural next
+question is whether the ranking of losses holds as the number of species grows, and
+whether the gap between them widens. The scaling ladder is designed to answer this.
 
-\paragraph{Construction.} We cut three nested label sets from the merged Herbarium
-2021 and 2022 manifest (Table~\ref{tab:ladder-data}). The 15.5k set is the 15{,}501
-Herbarium-2022 species. The 32k set adds 16{,}499 other species drawn at random
-(seed 0). The 64k set has all 64{,}113 species. Each larger set contains the smaller
-ones, and a species keeps the same label id on every rung. The validation set of each
-rung is restricted to that rung's species.
+\paragraph{Building the label sets.} We cut three label sets out of the merged Herbarium
+2021 and 2022 data (Table~\ref{tab:ladder-data}). The smallest, called 15.5k, contains
+the 15{,}501 Herbarium 2022 species. The middle set, 32k, contains those same species
+plus 16{,}499 other species chosen at random. The largest, 64k, contains all 64{,}113
+species. The sets are nested, so each larger set contains every species of the smaller
+ones, and each species keeps the same label number in every set it appears in. The
+validation images of each set are restricted to that set's species.
 
-The 15.5k rung is \emph{not} the same data as the 15k ablation. It has about twice the
-training images (2021 images of the same species are added), a different validation
-split, and far more imbalance (up to 1{,}717 images per species). Ladder numbers are
-therefore comparable across rungs but not with the 15k ablation tables.
+It is important to note that the 15.5k rung is not the same data as the 15k ablation,
+even though it has the same species. It includes the Herbarium 2021 images of those
+species as well, so it has about twice as many training images. It also uses a
+different validation split, and it is far more imbalanced, with up to 1{,}717 training
+images for a single species. Ladder numbers can therefore be compared with each other,
+across rungs, but not with the numbers in the 15k ablation tables.
 
-\paragraph{Protocol.} We train DBM and ArcFace on every rung, six runs in total, with the
-recipe of Table~\ref{tab:setup}. Every run gets exactly \textbf{131{,}250 optimizer
-steps at batch 256}, the same compute as one 15k ablation run. Larger rungs therefore
-see fewer passes over their data: 24.6, 20.1 and 14.9 epochs. ArcFace on the ladder
-uses the same registry code path as DBM, so only the head differs. Both are scored
-every 26{,}250 steps on the full validation set of their rung, with one seed each.
-KappaFace ladder runs are in progress and not reported here.
+\paragraph{Training protocol.} We train DBM and ArcFace on every rung, six runs in total,
+using the recipe of Table~\ref{tab:setup}. To keep the comparison across rungs fair in
+terms of compute, every run gets exactly the same budget: \textbf{131{,}250 optimizer
+steps at a batch size of 256}, which is the compute of one 15k ablation run. Because the
+larger rungs have more images, this budget covers fewer passes through their data: 24.6
+epochs at 15.5k, 20.1 at 32k and 14.9 at 64k. ArcFace on the ladder uses the same code
+path as DBM, so the only difference between the two is the head. Each run is evaluated
+every 26{,}250 steps on the full validation set of its rung, with a single random seed.
+KappaFace runs on the ladder are in progress and are not reported here.
 
 \begin{table}[t]
 \centering
@@ -270,13 +396,26 @@ Rung & Species & Train images & Val images & \multicolumn{2}{c}{Median images / 
 \section{Results}
 \label{sec:results}
 
-\subsection{Coarse results on Herbarium 2022 (15.5k species)}
+\subsection{Overall results on Herbarium 2022 (15.5k species)}
 \label{sec:res-coarse}
 
-Table~\ref{tab:main} gives the final full-set scores and Figure~\ref{fig:gaps} the gap
-of each loss to ArcFace. The intervals come from a paired bootstrap over validation
-images (1{,}000 resamples). They capture which images happened to be in the
-validation set, not seed noise.
+Table~\ref{tab:main} gives the final scores of every loss on the full validation set,
+and Figure~\ref{fig:gaps} shows how far each loss is from ArcFace. To judge whether a gap
+is real, we use two separate checks, because there are two separate sources of
+uncertainty.
+
+The first is uncertainty from which images happen to be in the validation set. We
+estimate it with a paired bootstrap. We draw a new validation set of the same size by
+sampling images with replacement, score both models on exactly the same draw, and record
+the difference between them. Repeating this 1{,}000 times gives a distribution of
+differences, and the middle 95\% of it is the interval reported in brackets. If this
+interval does not contain zero, the gap is unlikely to be an accident of the validation
+images.
+
+The second is uncertainty from training itself, since a different random seed gives a
+slightly different model. We measure it directly by retraining DBM, KappaFace and
+ArcFace with a second seed (43 instead of 42). The bootstrap interval does not include
+this seed-to-seed variation, so the two checks are complementary.
 
 \begin{table}[t]
 \centering
@@ -324,32 +463,51 @@ ArcFace, is about 0.1 points or less. X2-Softmax ($-48$ points) is off the scale
 \label{fig:gaps}
 \end{figure}
 
-\begin{itemize}
-\item \textbf{DBM and KappaFace win, and are nearly tied.} Both beat ArcFace by
-1.2--1.5 points of accuracy and 1.8--1.9 points of macro-F1, which is 20--40 times the
-seed-to-seed spread. DBM is ahead of KappaFace in both seeds, by 0.29 points of
-accuracy each time and by 0.11 and 0.14 points of macro-F1. The macro-F1 interval of
-KappaFace minus DBM, $[-0.36, +0.02]$, just includes zero. DBM also has the best top-5
-accuracy (0.962), and unlike KappaFace it can train on 2 GPUs.
-\item \textbf{Sub-center ArcFace is a small but real gain} ($+0.16$ accuracy,
-$+0.31$ macro-F1, both intervals above zero).
-\item \textbf{TARA has no detectable effect.} Both intervals include zero.
-\item \textbf{ECC and HACE are worse than ArcFace.} HACE is the odd case: its top-5
-(0.952) is higher than ArcFace's (0.947), so it gets the right species into its
-top~5 more often but ranks it first less often.
-\item \textbf{X2-Softmax fails} at 38\% accuracy. Its learning curve rises slowly the
-whole time and does not plateau. A rerun at the paper's scale $s=64$ learned even more
-slowly (accuracy 0.112 at epoch 6.8 and 0.140 at epoch 10.2) and was stopped, so the
-scale is not the cause. The geometry analysis shows feature collapse
-(Section~\ref{sec:res-geom}).
-\end{itemize}
+\paragraph{DBM and KappaFace win, and are nearly tied.} Both beat ArcFace by 1.2--1.5
+points of accuracy and 1.8--1.9 points of macro-F1. Changing the seed moves any of the
+three retrained losses by about 0.1 points or less, so these gaps are 20 to 40 times
+larger than the seed-to-seed variation. Between the two winners, DBM is ahead in both
+seeds, by 0.29 points of accuracy each time and by 0.11 and 0.14 points of macro-F1. On
+macro-F1 this difference is small: the bootstrap interval for KappaFace minus DBM,
+$[-0.36, +0.02]$, just includes zero, so we read the two as close to a tie on our main
+metric. DBM also has the best top-5 accuracy (0.962). It has a practical advantage as
+well: unlike KappaFace, whose per-species running statistics are not synchronised across
+GPUs, it can be trained on two GPUs.
 
-\subsection{Fine-grained results: per-species F1 and the role of training-set size}
+\paragraph{Sub-center ArcFace gives a small but real gain, and TARA has no detectable
+effect.} Sub-center ArcFace improves on ArcFace by 0.16 points of accuracy and 0.31
+points of macro-F1, and both intervals lie above zero. TARA's gains, 0.06 and 0.13
+points, have intervals that include zero, so we cannot distinguish TARA from plain
+ArcFace.
+
+\paragraph{ECC and HACE are worse than ArcFace.} ECC loses 0.38 points on both metrics,
+and HACE loses 0.87 points of accuracy and 0.65 of macro-F1. HACE shows an interesting
+pattern, though. Its top-5 accuracy, 0.952, is higher than ArcFace's 0.947. In other
+words, HACE more often places the correct species among its five best guesses, but less
+often ranks it first.
+
+\paragraph{X2-Softmax fails.} X2-Softmax reaches only 38\% accuracy. Its learning curve
+rose slowly throughout training and did not level off, so it was still learning, only
+far too slowly. A natural suspect was the scale: we used $s = 30$ for every head, while
+the X2-Softmax paper uses $s = 64$. A rerun at $s = 64$ learned even more slowly, reaching
+0.112 accuracy at epoch 6.8 and 0.140 at epoch 10.2, and we stopped it there. The scale
+is therefore not the cause. The geometry analysis in Section~\ref{sec:res-geom} shows
+what goes wrong instead: its features collapse.
+
+\subsection{Per-species results and the role of training-set size}
 \label{sec:res-fine}
 
-Herbarium 2022 caps species at 73 training images, but there is still a rare tail:
-1{,}060 species have 10 or fewer training images. Figure~\ref{fig:count} groups species
-by training-image count and compares mean per-species F1 across losses.
+Overall macro-F1 is an average over all species, and an average can hide where a gain
+comes from. In this section we look at the F1 score of each species separately. A
+species' F1 is the harmonic mean of its precision (of the images the model labelled as
+this species, the fraction that really were) and its recall (of this species' images,
+the fraction the model found). We then group species by how many training images they
+have. Although Herbarium 2022 caps species at 73 training images, there is still a rare
+tail: 1{,}060 species have 10 or fewer. Figure~\ref{fig:count}a shows the mean
+per-species F1 of each loss in each group. Figure~\ref{fig:count}b shows the gain over
+ArcFace, computed species by species and then averaged within each group. Its intervals
+come from a bootstrap that resamples the \emph{species} in each group (rather than the
+images), and again do not include seed variation.
 
 \begin{figure}[t]
 \centering
@@ -363,29 +521,37 @@ are excluded.}
 \label{fig:count}
 \end{figure}
 
-\begin{itemize}
-\item \textbf{The gains are concentrated in the rare tail.} For species with 6--10
-training images, KappaFace adds $+6.3$ points of per-species F1 over ArcFace and DBM
-$+4.6$. For species with 51--73 images, which are more than half of all species, both
-add only about $+1$ (KappaFace $+1.0$, DBM $+1.2$). Sub-center ArcFace adds less than
-1 point in every band.
-\item \textbf{Every loss still finds rare species much harder.} Even the best loss is
-about 24 points worse on species with 2--5 images (KappaFace 60.4) than on species
-with 51--73 (DBM 84.6).
-\item \textbf{Fewer species are never recognised.} The number of validation species
-with F1 $=0$ falls from 367 (ArcFace) to 313 (DBM) and 255 (KappaFace).
-\item \textbf{No loss changes the kind of mistake.} For every working loss, 75--78\%
-of errors are in the right genus and 87--90\% in the right family (ArcFace 75.5 /
-87.7\%, DBM 77.8 / 89.5\%). The better losses make fewer mistakes, not different
-ones. HACE, built around the taxonomy, does not shift this either.
-\end{itemize}
+\paragraph{The gains are concentrated in the rare tail.} For species with 6--10
+training images, KappaFace improves per-species F1 over ArcFace by 6.3 points and DBM by
+4.6 points. For species with 51--73 images, which make up more than half of all species,
+both add only about 1 point (KappaFace 1.0, DBM 1.2). Sub-center ArcFace adds less than
+1 point in every group. This matches what the two winning losses are designed to do,
+since both put larger margins on rare species.
 
-\paragraph{KappaFace vs.\ DBM crossover.} Figure~\ref{fig:crossover} compares the two
-winners directly, with both seed pairs. KappaFace is better below about 10 training
-images: $+3.4$ points at 2--5 images and $+2.9$ at 6--10, with pooled intervals above
-zero. The two tie at 11--15. DBM is better from 16 images upward ($-0.9$, $-0.4$ and
-$-0.2$ points), and these bands hold most species. That is why overall macro-F1 barely
-separates the two.
+\paragraph{Rare species remain much harder for every loss.} Even the best loss in each
+group is about 24 points worse on species with 2--5 training images (KappaFace, 60.4)
+than on species with 51--73 (DBM, 84.6). The better losses narrow this gap but are far
+from closing it.
+
+\paragraph{Fewer species are never recognised.} A species has an F1 of zero when the
+model never predicts it correctly for any of its validation images. The number of such
+species falls from 367 with ArcFace to 313 with DBM and 255 with KappaFace.
+
+\paragraph{No loss changes the kind of mistake.} For every loss that trained properly,
+75--78\% of wrong answers still name a species in the correct genus, and 87--90\% one in
+the correct family (for example, 75.5\% and 87.7\% for ArcFace, and 77.8\% and 89.5\% for
+DBM). The better losses therefore make fewer mistakes, but not different ones. Even
+HACE, which is built around the taxonomy, does not shift this pattern.
+
+\paragraph{KappaFace and DBM win on different species.} Figure~\ref{fig:crossover}
+compares the two winners directly, species by species, using both seed pairs. KappaFace
+is better on species with fewer than about 10 training images: by 3.4 points for
+species with 2--5 images and 2.9 points for 6--10, with intervals above zero when both
+seeds are pooled. The two tie for species with 11--15 images. From 16 images upward,
+DBM is better, by 0.9, 0.4 and 0.2 points in the three remaining groups. These groups
+contain most of the species, which is why overall macro-F1 barely separates the two
+losses: KappaFace's large gains on a few rare species are offset by DBM's small gains on
+many common ones.
 
 \begin{figure}[t]
 \centering
@@ -397,14 +563,17 @@ species; the line is the mean of both seeds.}
 \label{fig:crossover}
 \end{figure}
 
-\paragraph{Routing test, with no retraining.} Since the two losses win in different
-bands, we tested a simple combination at inference time. Use KappaFace's prediction
-when it names a species with at most $T$ training images, and DBM's otherwise. $T$ was
-chosen on a random half of the validation images ($T=12$ and $T=10$ for the two seed
-pairs) and scored on the other half (Table~\ref{tab:routing}). Routing lifts the rarest
-bands by 3--8 points and leaves common species within $\pm0.1$. Only 1.4--2.2\% of
-images take KappaFace's answer, so the overall macro-F1 gain ($+0.14$) is about the
-size of seed noise. The cost is running two models at inference time.
+\paragraph{Combining the two winners without retraining.} Because the two losses win on
+different species, we tested a simple way to combine them at prediction time. For each
+image, we look at the species KappaFace predicts. If that species has at most $T$
+training images, we keep KappaFace's answer; otherwise we use DBM's. To avoid tuning on
+the same images we report on, we chose $T$ on a random half of the validation images
+($T = 12$ for the seed-42 pair and $T = 10$ for the seed-43 pair) and scored the
+combined model on the other half (Table~\ref{tab:routing}). This routing raises F1 on the
+rarest species by 3--8 points while leaving common species within $\pm 0.1$ points. Only
+1.4--2.2\% of images end up using KappaFace's answer, so the overall macro-F1 gain is
+small, $+0.14$ points, about the size of the seed-to-seed variation. The real benefit is
+for rare species, and the cost is running two models at prediction time.
 
 \begin{table}[t]
 \centering
@@ -432,21 +601,29 @@ Seed pair & Model & Top-1 & Macro-F1 & F1, 2--5 imgs & F1, 6--10 imgs \\
 \subsection{Representation geometry}
 \label{sec:res-geom}
 
-For every model we saved the 1024-d pooled feature of each validation image. We
-computed the same geometry measures as the earlier CE-vs-ArcFace study:
-\begin{itemize}
-\item \emph{within-species cosine}: mean similarity of an image to its own species
-centroid;
-\item \emph{nearest-species cosine}: similarity of a species centroid to the closest
-other centroid;
-\item \emph{separation gap}: the first minus the second;
-\item \emph{NC1}: within-class scatter relative to between-class scatter;
-\item \emph{alignment}: cosine between each species' classifier weight vector and its
-feature centroid.
-\end{itemize}
-Higher gap and alignment and lower NC1 are ``tidier'' geometry in the usual sense.
-Results are in Table~\ref{tab:geom} and Figure~\ref{fig:geom}. The seed-43 reruns of
-DBM, KappaFace and ArcFace reproduce every value to within 0.003.
+Accuracy tells us how often a model is right, but not what its feature space looks like.
+To see whether the losses organise the feature space differently, we saved the
+1{,}024-dimensional feature of every validation image for every model and computed the
+same geometry measures as in the earlier CE-versus-ArcFace study. All of them are based
+on each species' \emph{centroid}, the average feature of its validation images.
+
+The \emph{within-species cosine} is the average cosine between an image's feature and
+its own species' centroid. Higher values mean that images of the same species point in
+more similar directions, so each species forms a tighter cluster. The
+\emph{nearest-species cosine} is the cosine between each species' centroid and the
+closest centroid of any other species, averaged over species. Lower values mean that even
+the most similar neighbouring species is further away. The \emph{separation gap} is the
+first minus the second. A large gap means clusters are tight compared with the distance
+to their nearest neighbour, while a gap near zero means a typical image is about as close
+to the neighbouring species as to its own. \emph{NC1} compares the spread of features
+within each species with the spread between species centroids, so lower values again mean
+tighter, better separated clusters. Finally, the \emph{alignment} is the cosine between
+each species' weight vector (its template in the classifier) and its feature centroid.
+High alignment means the classifier's template points straight at where that species'
+images actually land. By the usual reading, a higher gap, higher alignment and lower NC1
+all indicate ``tidier'' geometry. Results are in Table~\ref{tab:geom} and
+Figure~\ref{fig:geom}. The seed-43 retrains of DBM, KappaFace and ArcFace reproduce
+every value to within 0.003, so these measures are stable.
 
 \begin{table}[t]
 \centering
@@ -476,33 +653,45 @@ X2-Softmax         & 0.992 & 0.993 & $-$0.001 & 0.017 & 0.610 & $-$0.10 & 0.3136
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figs/fig_geometry.pdf}
-\caption{\textbf{The two best losses have the loosest geometry.} (a) Within-species
+\caption{\textbf{The two best losses have looser geometry than every ArcFace-family loss.} (a) Within-species
 against nearest-species cosine; points further below the dashed diagonal have species
-clusters that are more separated. DBM and KappaFace sit closest to the diagonal of any
-working loss. (b, c) Macro-F1 against separation gap and classifier--centroid
+clusters that are more separated. DBM and KappaFace sit closer to the diagonal than any
+ArcFace-family loss; only HACE is closer. (b, c) Macro-F1 against separation gap and classifier--centroid
 alignment. Filled markers are seed 42; open markers are the seed-43 reruns, which land
 on top of them. X2-Softmax (macro-F1 31\%, collapsed features) is off the scale.}
 \label{fig:geom}
 \end{figure}
 
-\begin{itemize}
-\item \textbf{Across losses, tidier average geometry goes with \emph{lower} macro-F1.}
-DBM and KappaFace have separation gaps of 0.055 and 0.111, against 0.242 for ArcFace,
-and lower alignment (0.69, 0.76 vs.\ 0.84). ECC has the tidiest geometry of any loss and
-the lowest macro-F1 of the ArcFace family. Together with the earlier CE$\to$ArcFace
-result, where geometry improved a lot and accuracy only a little, this means
-average geometry is not a reliable target for choosing a loss on this data.
-\item \textbf{Within any one model, geometry still predicts which species are
-recognised.} Species whose classifier direction lines up better with their cluster
-have higher recall in every model (Spearman 0.38--0.46).
-\item \textbf{X2-Softmax features have collapsed.} Every image points in almost the same
-direction (cosine 0.99 to its own species and 0.99 to the nearest other species), so
-15{,}501 species must be separated inside a tiny cone. This is consistent with its
-slow learning.
-\item \textbf{HACE has low species alignment (0.47).} Its classifier also has genus and
-family rows and its prediction is aggregated over the tree, so the species rows alone
-describe only part of the model.
-\end{itemize}
+\paragraph{Across losses, tidier average geometry goes with lower macro-F1.} This is the
+opposite of what one might expect. The two best losses, DBM and KappaFace, have the
+smallest separation gaps of any loss that trained properly apart from HACE: 0.055 and
+0.111, against 0.242 for ArcFace. Their alignment is also lower, 0.69 and 0.76 against
+0.84. In Figure~\ref{fig:geom}a, they sit closer than any ArcFace-family loss to the
+diagonal, where an image is about as similar to the neighbouring species as to its own. At the other end, ECC has
+the tidiest geometry of any loss on all three measures, yet the lowest macro-F1 of the
+ArcFace family. Combined with the earlier CE-to-ArcFace result, where geometry improved
+greatly but accuracy only a little, this tells us that average geometry is not a reliable
+target for choosing a loss on this data. One possible reading, which we have not yet
+tested, is that the averages are dominated by the many common species, whose clusters
+ArcFace-style losses make very neat, while DBM and KappaFace spend their effort on rare
+species instead.
+
+\paragraph{Within a single model, geometry still predicts which species are recognised.}
+Although geometry does not rank the losses, it remains informative inside each model.
+For every loss, species whose template is better aligned with their cluster have higher
+recall. The Spearman rank correlation between per-species alignment and per-species
+recall is 0.38--0.46 across models (last column of Table~\ref{tab:geom}).
+
+\paragraph{X2-Softmax's features have collapsed.} For X2-Softmax, the within-species and
+nearest-species cosines are both about 0.99. Almost every image's feature points in
+nearly the same direction, regardless of species, so the model has to separate 15{,}501
+species inside a very narrow cone of directions. This is consistent with how slowly and
+poorly it learned.
+
+\paragraph{HACE's species templates are poorly aligned.} HACE has the lowest alignment
+of the working losses, 0.47. This needs care in interpretation: HACE's classifier also
+has outputs for genera and families, and its prediction combines information across the
+whole tree, so its species templates alone describe only part of the model.
 
 \subsection{Scaling ladder}
 \label{sec:res-ladder}
@@ -540,55 +729,68 @@ about 0.1 points.}
 \label{fig:ladder}
 \end{figure}
 
-Table~\ref{tab:ladder} and Figure~\ref{fig:ladder} give the ladder results.
+Table~\ref{tab:ladder} and Figure~\ref{fig:ladder} give the results of the ladder.
 
-\begin{itemize}
-\item \textbf{The ranking holds at every size}: DBM beats ArcFace on both metrics on
-every rung.
-\item \textbf{DBM's macro-F1 lead grows with the number of species}, $+2.6\to+3.0\to+3.9$
-points, while the accuracy lead stays flat at $+1.0$ to $+1.3$. The larger rungs add
-mostly rare species (Table~\ref{tab:ladder-data}). Rare species count for little in
-accuracy, because they have few images, but count fully in macro-F1. This matches the
-15k per-species result, where DBM's gains were largest for rare species.
-\item \textbf{Both losses lose much more macro-F1 than accuracy as species are added}:
-DBM goes from 0.844 to 0.682 in macro-F1 but only from 0.896 to 0.862 in accuracy.
-\item \textbf{The lead appears early and narrows slowly.} At the first evaluation (20\%
-of training) DBM leads by $+3.9$, $+5.9$ and $+5.0$ points of macro-F1 on the three
-rungs. The lead shrinks during training but never closes
-(Figure~\ref{fig:ladder}c). Both losses are still improving slowly at the end,
-especially on the 64k rung, which sees fewest passes over its data.
-\end{itemize}
+\paragraph{The ranking holds at every size.} DBM beats ArcFace on both accuracy and
+macro-F1 on all three rungs.
 
-\paragraph{Caveats.} One seed per ladder run. Seed noise at 15k was about 0.1 points,
-far below these gaps, but it was measured on different data. Every rung gets the same
-compute, so the larger rungs are less trained per image, and more training might close
-part of the gap between rungs. On the 64k rung the median species has only 3
-validation images, so its per-species F1 values are individually noisy.
+\paragraph{DBM's macro-F1 lead grows with the number of species, but its accuracy lead
+does not.} DBM's macro-F1 lead increases from 2.6 points at 15.5k to 3.0 at 32k and 3.9
+at 64k, while its accuracy lead stays roughly flat at 1.0--1.3 points. The explanation
+follows from how the rungs are built and how the two metrics weight species. The larger
+rungs mostly add rare species (Table~\ref{tab:ladder-data}): the median number of
+training images per species falls from 57 to 20 to 10. Rare species contribute few
+images, so they barely affect accuracy, but each one counts as much as any other species
+in macro-F1. This matches the 15k per-species result, where DBM's gains were largest for
+rare species.
+
+\paragraph{Adding species costs much more macro-F1 than accuracy.} Going from 15.5k to
+64k species, DBM's macro-F1 drops from 0.844 to 0.682, while its accuracy drops only from
+0.896 to 0.862. ArcFace shows the same pattern. The species added at each step are hard
+to learn from so few images, but because they have few images they hardly register in
+accuracy.
+
+\paragraph{The lead appears early and narrows slowly.} At the first evaluation, after
+20\% of training, DBM already leads by 3.9, 5.9 and 5.0 points of macro-F1 on the three
+rungs. The lead shrinks during training but never closes (Figure~\ref{fig:ladder}c).
+Both losses are still improving slowly at the end of training, most visibly on the 64k
+rung, which gets the fewest passes over its data.
+
+\paragraph{Caveats.} Each ladder point comes from a single seed. The seed-to-seed
+variation we measured at 15k was about 0.1 points, far below these gaps, but it was
+measured on different data. Every rung gets the same compute, so the larger rungs are
+trained for fewer epochs, and with more training part of the gap between rungs might
+close. Finally, on the 64k rung the median species has only 3 validation images, so the
+F1 score of any individual species there is very noisy, even though the average over
+tens of thousands of species is stable.
 
 \section{Summary of findings so far}
 \label{sec:summary}
 
-\begin{enumerate}
-\item Per-class adaptive margins (DBM, KappaFace) are the only interventions that
-improve on ArcFace by more than a fraction of a point: about $+1.9$ macro-F1 and
-$+1.2$ to $+1.5$ top-1, reproducible across seeds.
-\item The gains sit in the rare tail. KappaFace is better below about 10 training
-images, DBM above about 15. A no-retraining router lifts the rarest bands by 3--8
-points.
-\item Hierarchy (HACE), class-center regularisation (ECC) and BioCLIP alignment (TARA)
-did not help as implemented. The share of within-genus errors (75--78\%) is the same
-for every working loss.
-\item Average geometry is not a reliable proxy for accuracy across losses. The best
-losses have the loosest species clusters.
-\item On the ladder, DBM beats ArcFace at 15.5k, 32k and 64k species, and its macro-F1
-lead grows with the number of species.
-\end{enumerate}
+The clearest result is that losses which give each species its own margin, DBM and
+KappaFace, are the only interventions that improve on ArcFace by more than a fraction of
+a point. They add about 1.9 points of macro-F1 and 1.2--1.5 points of accuracy, and the
+gain holds with a second seed. Looking per species shows that these gains are
+concentrated in the rare tail, and that the two losses divide it between them: KappaFace
+is better below about 10 training images and DBM above about 15. A simple rule that
+routes rare-species predictions to KappaFace, with no retraining, lifts the rarest
+species by 3--8 points.
 
-\paragraph{Not yet measured.} KappaFace on the ladder, and the routing test on the
-ladder (runs in progress). Per-species F1 by training-image count on the ladder rungs,
-which needs per-image predictions to be saved for the ladder models. Geometry split by
-rarity band. FlexiGrad and multi-task family/genus/species heads. More than one seed
-for the losses other than DBM, KappaFace and ArcFace.
+The other ideas we tested did not help as implemented. Using the taxonomy (HACE),
+pulling features toward class centres (ECC) and aligning with BioCLIP (TARA) all
+matched or fell below ArcFace, and no loss changed the share of errors that land in the
+correct genus, which stays at 75--78\%. The geometry analysis adds a caution: across
+losses, tidier average geometry did not mean higher accuracy, and the best losses have
+looser species clusters than any ArcFace-family loss. Finally, on the scaling ladder DBM beats ArcFace at 15.5k,
+32k and 64k species, and its macro-F1 lead grows as more, mostly rare, species are added.
+
+\paragraph{Not yet measured.} Several pieces are still missing. KappaFace runs on the
+ladder, and the routing test on the ladder, are in progress. Per-species F1 by
+training-image count on the ladder rungs needs the per-image predictions of the ladder
+models to be saved, which has not been done yet. Geometry has not yet been split by
+rarity group, which would test the reading offered in Section~\ref{sec:res-geom}.
+FlexiGrad and the multi-task family, genus and species heads have not been built. And
+apart from DBM, KappaFace and ArcFace, every loss has been run with only one seed.
 
 % Discussion intentionally left out of this draft.
 
