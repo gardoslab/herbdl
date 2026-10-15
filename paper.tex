@@ -455,11 +455,14 @@ ArcFace, 224\,px        & 0.7971 & 0.7605 & 0.9337 & & \\
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figs/fig_loss_gaps.pdf}
-\caption{\textbf{Only per-class-margin losses beat ArcFace by more than a fraction of a
-point.} Gap of each loss to ArcFace in (a) macro-F1 and (b) top-1 accuracy, full
-validation set, seed 42. Bars are 95\% paired bootstrap intervals over validation
-images, which do not include seed noise. Seed noise, measured for DBM, KappaFace and
-ArcFace, is about 0.1 points or less. X2-Softmax ($-48$ points) is off the scale.}
+\caption{\textbf{Only the two per-species-margin losses beat ArcFace by more than a
+fraction of a point.} Each row is one loss; the dot is its score minus ArcFace's score,
+in percentage points, for (a) macro-F1 and (b) top-1 accuracy. A dot right of the
+vertical line means the loss beats ArcFace. The horizontal bar is the 95\% interval from
+a paired bootstrap over validation images, so it reflects which images are in the
+validation set but not seed-to-seed variation; seed-to-seed variation, measured for
+DBM, KappaFace and ArcFace, is about 0.1 points or less. Full validation set, seed 42.
+X2-Softmax ($-48$ points of macro-F1, $-45$ of accuracy) is off the scale.}
 \label{fig:gaps}
 \end{figure}
 
@@ -513,11 +516,14 @@ images), and again do not include seed variation.
 \centering
 \includegraphics[width=\linewidth]{figs/fig_f1_by_count.pdf}
 \caption{\textbf{DBM and KappaFace gain most on rare species; KappaFace leads on the
-rarest.} (a) Mean per-species F1 in bands of training images per species (104 / 956 /
-937 / 1{,}554 / 3{,}710 / 8{,}073 species per band). (b) Paired per-species F1 gain
-over ArcFace; bars are 95\% bootstrap intervals over the species in each band, not
-seed noise. Seed 42, full validation set. The 167 species with no validation images
-are excluded.}
+rarest.} Species are grouped into bands by their number of training images; the bands
+hold 104 / 956 / 937 / 1{,}554 / 3{,}710 / 8{,}073 species, left to right. (a) For each
+loss, the average F1 score of the species in each band (ArcFace + TARA is omitted
+because it overlaps ArcFace). (b) For each species, the loss's F1 minus ArcFace's F1 on
+the same species, averaged within each band; above zero means the loss does better than
+ArcFace. Whiskers are 95\% intervals from resampling the species in each band, so they
+are widest for the small 2--5 band, and they do not include seed-to-seed variation.
+Seed 42, full validation set; the 167 species with no validation images are excluded.}
 \label{fig:count}
 \end{figure}
 
@@ -557,9 +563,12 @@ many common ones.
 \centering
 \includegraphics[width=3.25in]{figs/fig_crossover.pdf}
 \caption{\textbf{KappaFace beats DBM on rare species, DBM wins on common ones.}
-Per-species F1 of KappaFace minus DBM, by training-image band, for two independent
-seed pairs (filled: seed 42, open: seed 43). Bars are 95\% bootstrap intervals over
-species; the line is the mean of both seeds.}
+For each species, KappaFace's F1 minus DBM's F1, averaged within each band of training
+images; above zero means KappaFace does better. The comparison is made twice, once
+between the two seed-42 models (filled) and once between the two seed-43 models (open).
+Whiskers are 95\% intervals from resampling the species in each band; the line is the
+average of the two seed comparisons. The sign agrees across seeds in every band except
+11--15, where the two losses tie.}
 \label{fig:crossover}
 \end{figure}
 
@@ -613,9 +622,9 @@ more similar directions, so each species forms a tighter cluster. The
 \emph{nearest-species cosine} is the cosine between each species' centroid and the
 closest centroid of any other species, averaged over species. Lower values mean that even
 the most similar neighbouring species is further away. The \emph{separation gap} is the
-first minus the second. A large gap means clusters are tight compared with the distance
-to their nearest neighbour, while a gap near zero means a typical image is about as close
-to the neighbouring species as to its own. \emph{NC1} compares the spread of features
+first minus the second. A large gap means clusters are tight compared with how close
+their nearest neighbour is. A gap near zero means a typical image sits no closer to its
+own species' centre than that centre sits to the nearest other species' centre. \emph{NC1} compares the spread of features
 within each species with the spread between species centroids, so lower values again mean
 tighter, better separated clusters. Finally, the \emph{alignment} is the cosine between
 each species' weight vector (its template in the classifier) and its feature centroid.
@@ -653,12 +662,20 @@ X2-Softmax         & 0.992 & 0.993 & $-$0.001 & 0.017 & 0.610 & $-$0.10 & 0.3136
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figs/fig_geometry.pdf}
-\caption{\textbf{The two best losses have looser geometry than every ArcFace-family loss.} (a) Within-species
-against nearest-species cosine; points further below the dashed diagonal have species
-clusters that are more separated. DBM and KappaFace sit closer to the diagonal than any
-ArcFace-family loss; only HACE is closer. (b, c) Macro-F1 against separation gap and classifier--centroid
-alignment. Filled markers are seed 42; open markers are the seed-43 reruns, which land
-on top of them. X2-Softmax (macro-F1 31\%, collapsed features) is off the scale.}
+\caption{\textbf{The two best losses have looser geometry than every ArcFace-family
+loss.} Each point is one model, with every measure averaged over the 15{,}334 validation
+species. (a) Horizontal axis: how tight each species' cloud is, the average cosine
+between an image's feature and its own species' centroid (higher is tighter). Vertical
+axis: how close the nearest other species is, the cosine between each species' centroid
+and the closest other centroid (higher is closer). On the dashed diagonal the two are
+equal, meaning a typical image sits no closer to its own species' centre than that
+centre sits to its neighbour's centre. Points further below the diagonal have tighter
+clouds with more distant neighbours. DBM and KappaFace sit closer to the diagonal than
+any ArcFace-family loss; only HACE is closer. (b) Macro-F1 against the separation gap,
+the horizontal minus the vertical value in (a). (c) Macro-F1 against alignment, the
+average cosine between each species' classifier weight vector and its centroid. Filled
+markers are seed 42; open markers are the seed-43 retrains, which land on top of them.
+X2-Softmax (macro-F1 31\%, collapsed features) is off the scale.}
 \label{fig:geom}
 \end{figure}
 
@@ -667,7 +684,8 @@ opposite of what one might expect. The two best losses, DBM and KappaFace, have 
 smallest separation gaps of any loss that trained properly apart from HACE: 0.055 and
 0.111, against 0.242 for ArcFace. Their alignment is also lower, 0.69 and 0.76 against
 0.84. In Figure~\ref{fig:geom}a, they sit closer than any ArcFace-family loss to the
-diagonal, where an image is about as similar to the neighbouring species as to its own. At the other end, ECC has
+diagonal, where a typical image is no closer to its own species' centre than that centre
+is to the nearest other species' centre. At the other end, ECC has
 the tidiest geometry of any loss on all three measures, yet the lowest macro-F1 of the
 ArcFace family. Combined with the earlier CE-to-ArcFace result, where geometry improved
 greatly but accuracy only a little, this tells us that average geometry is not a reliable
@@ -721,11 +739,14 @@ Rung (epochs) & Top-1 & Macro-F1 & Top-1 & Macro-F1 & Top-1 & Macro-F1 \\
 \centering
 \includegraphics[width=\linewidth]{figs/fig_ladder.pdf}
 \caption{\textbf{DBM's macro-F1 advantage grows as rare species are added.} (a) Final
-macro-F1 (solid) and top-1 accuracy (dashed) of DBM (orange) and ArcFace (grey) on
-nested sets of 15.5k, 32k and 64k species. (b) DBM's lead over ArcFace. (c) Macro-F1
-during training at the five evaluations (every 26{,}250 steps); colors as in (a). All
-runs use the same 131{,}250-step budget. Single seed per run; seed noise at 15k was
-about 0.1 points.}
+macro-F1 (solid lines) and top-1 accuracy (dashed lines) of DBM (orange) and ArcFace
+(grey) on the three nested label sets; the horizontal axis is logarithmic in the number
+of species. (b) DBM's score minus ArcFace's score at the end of training, in percentage
+points, for macro-F1 (filled bars) and accuracy (open bars). (c) Macro-F1 at each of the
+five evaluations during training, one every 26{,}250 steps; colours as in (a), with one
+marker shape per label set, labelled at the right. Every run trains for the same
+131{,}250 steps, so larger label sets get fewer epochs. Single seed per run;
+seed-to-seed variation at 15k was about 0.1 points.}
 \label{fig:ladder}
 \end{figure}
 
