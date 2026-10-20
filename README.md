@@ -156,29 +156,27 @@ The loss-function ablation and scaling-ladder write-up lives at the repository r
 
 The report is mirrored to the Overleaf project
 <https://www.overleaf.com/project/6ace8587bc789bd8fc1aba52> through Overleaf's Git integration
-(a premium feature). Overleaf's Git has no branches (only `main`) and compiles `main.tex`, so keep
-the Overleaf copy in a separate clone rather than adding it as a remote of this repo:
+(a premium feature). Overleaf's Git has no branches (only `main`) and compiles `main.tex`, so the
+Overleaf copy lives in its own clone outside this repo, laid out as
+`~/overleaf/<project>/<paper>/` (here `~/overleaf/herbdl/loss-ablations/`). The conventions, the
+list of files to copy and the push steps are in `~/overleaf/README.md` and
+`~/overleaf/herbdl/README.md`; in short:
 
 ```bash
-# 1. Clone once, outside this repo. Username: git, password: an Overleaf Git
-#    authentication token (Overleaf Account Settings -> Git Integration).
-#    Never put the token in the URL or commit it.
-git clone https://git.overleaf.com/6ace8587bc789bd8fc1aba52 ~/overleaf/herbdl-loss-ablations
+# Once: clone the Overleaf project (username: git, password: an Overleaf Git token; never put
+# the token in the URL or commit it).
+git clone https://git.overleaf.com/6ace8587bc789bd8fc1aba52 ~/overleaf/herbdl/loss-ablations
 
-# 2. Copy in only what Overleaf needs: the source as main.tex, plus the figure PDFs.
-cp paper.tex ~/overleaf/herbdl-loss-ablations/main.tex
-mkdir -p ~/overleaf/herbdl-loss-ablations/figs
-cp figs/fig_*.pdf ~/overleaf/herbdl-loss-ablations/figs/
-
-# 3. Commit and push to Overleaf's single branch.
-cd ~/overleaf/herbdl-loss-ablations
-git pull                      # pick up any edits made in the Overleaf editor first
-git add -A && git commit -m "Update report"
-git push origin main
+# Each update: copy in only what Overleaf needs, then commit and push to its single branch.
+O=~/overleaf/herbdl/loss-ablations
+cd "$O" && git pull --ff-only && cd -   # first pick up edits made in the Overleaf editor
+cp paper.tex "$O/main.tex"
+mkdir -p "$O/figs" && cp figs/fig_*.pdf figs/near_duplicate_examples.png "$O/figs/"
+cd "$O" && git add -A && git commit -m "Update report" && git push origin main
 ```
 
-If co-authors edit in Overleaf, `git pull` in the clone and copy `main.tex` back to `paper.tex`
-before regenerating. Pushing from Git can drop or move Overleaf tracked changes and comments.
+If co-authors edit in Overleaf, copy `main.tex` back to `paper.tex` before regenerating. Pushing
+from Git can drop or move Overleaf tracked changes and comments.
 
 ## Additional Documentation
 
