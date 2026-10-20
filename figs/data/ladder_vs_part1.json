@@ -1,0 +1,81 @@
+{
+ "_source": "Runs 6c184416 (same-image comparison) and 1eb2694b / 4704f8f8 (same-specimen copies), read from their logs.",
+ "ladder_n15k_val_composition": {
+  "herbarium_2021": 197180,
+  "train_2022": 115659,
+  "val_2022": 29093,
+  "total": 341932
+ },
+ "ladder_dbm_by_val_source": {
+  "herbarium_2021": {
+   "acc": 0.9325,
+   "macro_f1": 0.8384
+  },
+  "train_2022": {
+   "acc": 0.8455,
+   "macro_f1": 0.8168
+  },
+  "val_2022": {
+   "acc": 0.8484,
+   "macro_f1": 0.7936
+  }
+ },
+ "common_subset_29093_val2022_images_12352_species": {
+  "ladder_15.5k_dbm": [
+   0.8484,
+   0.7936
+  ],
+  "part1_dbm": [
+   0.8448,
+   0.7892
+  ],
+  "part1_dbm_seed43": [
+   0.8437,
+   0.7863
+  ],
+  "part1_kappaface": [
+   0.8415,
+   0.7852
+  ],
+  "part1_arcface": [
+   0.8294,
+   0.7702
+  ]
+ },
+ "same_specimen_copy_threshold": 0.93,
+ "ladder_15.5k_val_share_with_copy_ge_0.93": {
+  "herbarium_2021": [
+   6104,
+   197180
+  ],
+  "train_2022": [
+   3317,
+   115659
+  ],
+  "val_2022": [
+   811,
+   29093
+  ]
+ },
+ "ladder_dbm_acc_with_vs_without_copy_ge_0.95": {
+  "herbarium_2021": [
+   0.9843,
+   0.9313
+  ],
+  "train_2022": [
+   0.9835,
+   0.8425
+  ],
+  "val_2022": [
+   0.9794,
+   0.8455
+  ]
+ },
+ "part1_val2022_vs_train2022": {
+  "embedded_val_images": 145344,
+  "val_images_total": 167955,
+  "with_copy_ge_0.93": 2421,
+  "dbm_acc_with": 0.9831,
+  "dbm_acc_without": 0.8381
+ }
+}

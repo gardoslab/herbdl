@@ -1,0 +1,247 @@
+{
+ "backbone": "microsoft/swin-base-patch4-window7-224-in22k",
+ "by_source": {
+  "herbarium_2021": {
+   "n": 197180,
+   "max_sim_quantiles": {
+    "0.1": 0.7904155850410461,
+    "0.25": 0.8301771879196167,
+    "0.5": 0.8624331951141357,
+    "0.75": 0.8872425556182861,
+    "0.9": 0.9064812660217285
+   },
+   "share_above": {
+    "0.9": 0.14146972309564865,
+    "0.95": 0.022928288873110863,
+    "0.98": 0.013180849984785475,
+    "0.99": 0.00684653615985394
+   },
+   "best_match_from": {
+    "herbarium_2021": 0.8857287757379044,
+    "train_2022": 0.09139872197991683,
+    "val_2022": 0.02287250228217872
+   },
+   "dbm_accuracy": 0.9324830104473071,
+   "dbm_accuracy_by_near_copy": {
+    ">= 0.9": [
+     0.9749417458325865,
+     0.9254866054287149
+    ],
+    ">= 0.95": [
+     0.9842955098429551,
+     0.9312671611500112
+    ],
+    ">= 0.98": [
+     0.9903809157368219,
+     0.9317096736063645
+    ],
+    ">= 0.99": [
+     0.9896296296296296,
+     0.93208905683501
+    ]
+   }
+  },
+  "train_2022": {
+   "n": 115659,
+   "max_sim_quantiles": {
+    "0.1": 0.7442114949226379,
+    "0.25": 0.7948182225227356,
+    "0.5": 0.8372141718864441,
+    "0.75": 0.870819628238678,
+    "0.9": 0.8965590596199036
+   },
+   "share_above": {
+    "0.9": 0.08631407845476789,
+    "0.95": 0.021952463707969116,
+    "0.98": 0.012813529427022541,
+    "0.99": 0.010332096940143006
+   },
+   "best_match_from": {
+    "herbarium_2021": 0.18856293068416638,
+    "train_2022": 0.6469189600463431,
+    "val_2022": 0.16451810926949048
+   },
+   "dbm_accuracy": 0.8455459583776447,
+   "dbm_accuracy_by_near_copy": {
+    ">= 0.9": [
+     0.9530201342281879,
+     0.8353930883076573
+    ],
+    ">= 0.95": [
+     0.9834580543521071,
+     0.842450495049505
+    ],
+    ">= 0.98": [
+     0.9925775978407557,
+     0.8436375101815602
+    ],
+    ">= 0.99": [
+     0.994979079497908,
+     0.8439858820240425
+    ]
+   }
+  },
+  "val_2022": {
+   "n": 29093,
+   "max_sim_quantiles": {
+    "0.1": 0.74545818567276,
+    "0.25": 0.7961962819099426,
+    "0.5": 0.8379768133163452,
+    "0.75": 0.8710422515869141,
+    "0.9": 0.8971783518791199
+   },
+   "share_above": {
+    "0.9": 0.08864675351459114,
+    "0.95": 0.021654693568899736,
+    "0.98": 0.012717835905544289,
+    "0.99": 0.010139896194960987
+   },
+   "best_match_from": {
+    "herbarium_2021": 0.1886364417557488,
+    "train_2022": 0.6502938851270065,
+    "val_2022": 0.1610696731172447
+   },
+   "dbm_accuracy": 0.8484171450177018,
+   "dbm_accuracy_by_near_copy": {
+    ">= 0.9": [
+     0.9569600620395502,
+     0.8378592441728898
+    ],
+    ">= 0.95": [
+     0.9793650793650793,
+     0.8455187436320838
+    ],
+    ">= 0.98": [
+     0.9864864864864865,
+     0.8466385823207883
+    ],
+    ">= 0.99": [
+     0.9898305084745763,
+     0.8469685394819084
+    ]
+   }
+  }
+ },
+ "examples": {
+  "0.99-1.01": [
+   {
+    "val": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/049/17/04917__012.jpg",
+    "train": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/049/17/04917__004.jpg",
+    "sim": 0.999800980091095,
+    "val_source": "train_2022",
+    "train_source": "train_2022"
+   },
+   {
+    "val": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train/images/573/92/845496.jpg",
+    "train": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train/images/573/92/326895.jpg",
+    "sim": 0.9998031258583069,
+    "val_source": "herbarium_2021",
+    "train_source": "herbarium_2021"
+   },
+   {
+    "val": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train/images/151/36/767734.jpg",
+    "train": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train/images/151/36/1789933.jpg",
+    "sim": 0.9993904829025269,
+    "val_source": "herbarium_2021",
+    "train_source": "herbarium_2021"
+   },
+   {
+    "val": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train/images/322/43/1197087.jpg",
+    "train": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train/images/322/43/916548.jpg",
+    "sim": 0.9956278800964355,
+    "val_source": "herbarium_2021",
+    "train_source": "herbarium_2021"
+   }
+  ],
+  "0.97-0.99": [
+   {
+    "val": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/135/41/13541__098.jpg",
+    "train": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/135/41/13541__096.jpg",
+    "sim": 0.9898272752761841,
+    "val_source": "val_2022",
+    "train_source": "train_2022"
+   },
+   {
+    "val": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/067/85/06785__028.jpg",
+    "train": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train/images/266/28/1213090.jpg",
+    "sim": 0.983360230922699,
+    "val_source": "train_2022",
+    "train_source": "herbarium_2021"
+   },
+   {
+    "val": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/036/69/03669__116.jpg",
+    "train": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train/images/132/37/1568424.jpg",
+    "sim": 0.975637674331665,
+    "val_source": "train_2022",
+    "train_source": "herbarium_2021"
+   },
+   {
+    "val": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train/images/629/07/1798044.jpg",
+    "train": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train/images/629/07/1500752.jpg",
+    "sim": 0.9801092743873596,
+    "val_source": "herbarium_2021",
+    "train_source": "herbarium_2021"
+   }
+  ],
+  "0.93-0.97": [
+   {
+    "val": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/124/57/12457__104.jpg",
+    "train": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train/images/517/22/1223437.jpg",
+    "sim": 0.9495611786842346,
+    "val_source": "train_2022",
+    "train_source": "herbarium_2021"
+   },
+   {
+    "val": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/110/57/11057__058.jpg",
+    "train": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/110/57/11057__059.jpg",
+    "sim": 0.9491438865661621,
+    "val_source": "train_2022",
+    "train_source": "train_2022"
+   },
+   {
+    "val": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/058/82/05882__097.jpg",
+    "train": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/058/82/05882__092.jpg",
+    "sim": 0.945751965045929,
+    "val_source": "val_2022",
+    "train_source": "train_2022"
+   },
+   {
+    "val": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/009/28/00928__105.jpg",
+    "train": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train/images/039/48/1288895.jpg",
+    "sim": 0.9671970009803772,
+    "val_source": "train_2022",
+    "train_source": "herbarium_2021"
+   }
+  ],
+  "0.85-0.93": [
+   {
+    "val": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/109/57/10957__030.jpg",
+    "train": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/109/57/10957__014.jpg",
+    "sim": 0.8741806149482727,
+    "val_source": "train_2022",
+    "train_source": "train_2022"
+   },
+   {
+    "val": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train/images/344/30/901970.jpg",
+    "train": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train/images/344/30/1641978.jpg",
+    "sim": 0.8518619537353516,
+    "val_source": "herbarium_2021",
+    "train_source": "herbarium_2021"
+   },
+   {
+    "val": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/120/86/12086__029.jpg",
+    "train": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2022/train_images/120/86/12086__040.jpg",
+    "sim": 0.8700580596923828,
+    "val_source": "val_2022",
+    "train_source": "train_2022"
+   },
+   {
+    "val": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train/images/214/77/1563336.jpg",
+    "train": "/projectnb/herbdl/data/kaggle-herbaria/herbarium-2021/train/images/214/77/665042.jpg",
+    "sim": 0.8590162992477417,
+    "val_source": "herbarium_2021",
+    "train_source": "herbarium_2021"
+   }
+  ]
+ }
+}

@@ -37,17 +37,33 @@ top-1 accuracy, and KappaFace by $+1.8$ and $+1.2$. Retraining with a second ran
 moves each of these scores by about 0.1 points or less, so the gains are not noise.
 Most of the improvement comes from rare species. For species with 6--10 training
 images, per-species F1 rises by up to $+6$ points, while for species with 51--73
-images it rises by only about $+1$. The two winners also split the work: KappaFace is
-better for species with fewer than about 10 training images, and DBM is better for
-species with more than about 15. Of the remaining losses, sub-center ArcFace gives a
-small but real gain, TARA has no detectable effect, ECC and HACE are slightly worse than
-ArcFace, and X2-Softmax fails because its features collapse. We also find that tidier
-average feature geometry does not mean a better classifier: the two best losses have
-looser species clusters than any loss in the ArcFace family. Finally, on a ``scaling
-ladder'' of nested label sets with 15.5k, 32k and 64k species, trained with the same
-compute at every size, DBM beats ArcFace on every rung. Its macro-F1 lead grows with the
-number of species, from $+2.6$ to $+3.0$ to $+3.9$ points, while its accuracy lead stays
-roughly flat at $+1.0$ to $+1.3$ points.
+images it rises by only about $+1$. On Herbarium 2022 the two winners also split the
+work: KappaFace is better for species with fewer than about 10 training images, and DBM
+is better for species with more than about 15. Of the remaining losses, sub-center
+ArcFace gives a small but real gain, TARA has no detectable effect, ECC and HACE are
+slightly worse than ArcFace, and X2-Softmax fails because its features collapse. We also
+find that tidier average feature geometry does not mean a better classifier: the two
+best losses have looser species clusters than any loss in the ArcFace family.
+
+We then ask whether the ranking holds as the label set grows, using a ``scaling ladder''
+of nested label sets with 15.5k, 32k and 64k species, trained with the same compute at
+every size. The order is the same at every size: DBM first, KappaFace second, ArcFace
+third. DBM's macro-F1 lead over ArcFace grows with the number of species, from $+2.6$ to
+$+3.0$ to $+3.9$ points, while KappaFace's stays near $+1.5$ points. KappaFace's advantage
+on the rarest species does not reappear on the ladder, where it trails DBM in every
+training-image group. We also test a rule that combines two models at prediction time,
+using the second model's answer whenever that answer names a rare species. On the ladder
+it raises macro-F1 over DBM alone by roughly 0.3 to 0.7 points, more at larger label
+sets. But a control that uses plain ArcFace, the weakest of the three models, as the
+second model recovers 60--80\% of that gain, so most of the benefit comes from combining
+two different models rather than from anything specific to KappaFace.
+
+Two data checks matter for interpreting all of this. Between 1.7\% and 3\% of validation
+images have a copy of the same physical specimen in the training set, which inflates
+absolute accuracy by a fraction of a point equally for every loss. And the ladder's
+validation sets contain many easier Herbarium 2021 images, so ladder scores can be
+compared between losses but not with the 15.5k-species ablation. Neither issue changes
+which loss wins.
 \end{abstract}
 
 \section{Motivation}
@@ -359,36 +375,46 @@ It is important to note that the 15.5k rung is not the same data as the 15k abla
 even though it has the same species. It includes the Herbarium 2021 images of those
 species as well, so it has about twice as many training images. It also uses a
 different validation split, and it is far more imbalanced, with up to 1{,}717 training
-images for a single species. Ladder numbers can therefore be compared with each other,
-across rungs, but not with the numbers in the 15k ablation tables.
+images for a single species. Most importantly, 58\% of its validation images come from
+Herbarium 2021, and those turn out to be easier to classify than the 2022 images
+(Section~\ref{sec:res-data}). Ladder numbers can therefore be compared between losses
+within a rung, but not with the numbers in the 15k ablation tables. Comparisons across
+rungs also mix the effect of more species with a changing mix of image sources, as we
+discuss with the ladder results.
 
-\paragraph{Training protocol.} We train DBM and ArcFace on every rung, six runs in total,
-using the recipe of Table~\ref{tab:setup}. To keep the comparison across rungs fair in
+\paragraph{Training protocol.} We train DBM, KappaFace and ArcFace on every rung, nine
+runs in total, using the recipe of Table~\ref{tab:setup}. To keep the comparison across rungs fair in
 terms of compute, every run gets exactly the same budget: \textbf{131{,}250 optimizer
 steps at a batch size of 256}, which is the compute of one 15k ablation run. Because the
 larger rungs have more images, this budget covers fewer passes through their data: 24.6
 epochs at 15.5k, 20.1 at 32k and 14.9 at 64k. ArcFace on the ladder uses the same code
-path as DBM, so the only difference between the two is the head. Each run is evaluated
-every 26{,}250 steps on the full validation set of its rung, with a single random seed.
-KappaFace runs on the ladder are in progress and are not reported here.
+path as DBM, so the only difference between the two is the head. KappaFace keeps
+per-species running statistics that are not synchronised across GPUs, so its runs use a
+single GPU, with 64 images per step and four gradient-accumulation steps to keep the
+effective batch at 256. The DBM and ArcFace runs use two GPUs, with 64 images per GPU and
+two accumulation steps. Each run is evaluated every 26{,}250 steps on the full validation
+set of its rung, with a single random seed. After training, we re-scored every ladder
+model once more and saved its per-image predictions, which the per-group and routing
+analyses below use.
 
 \begin{table}[t]
 \centering
 \small
 \caption{\textbf{Ladder label sets.} Nested sets from the merged Herbarium 2021 and 2022
 manifest. Larger sets add mostly rare species: the median training images per species
-falls from 57 to 10.}
+falls from 57 to 10. All images of the added species come from Herbarium 2021, so the
+share of validation images that come from 2021 rises with each rung.}
 \label{tab:ladder-data}
 \footnotesize
-\begin{tabular}{@{}lrrrrr@{}}
+\begin{tabular}{@{}lrrrrrr@{}}
 \toprule
-Rung & Species & Train images & Val images & \multicolumn{2}{c}{Median images / species} \\
-\cmidrule(l){5-6}
- & & & (species in val) & train & val \\
+Rung & Species & Train images & Val images & Val from & \multicolumn{2}{c}{Median images / species} \\
+\cmidrule(l){6-7}
+ & & & (species in val) & 2021 & train & val \\
 \midrule
-15.5k & 15{,}501 & 1{,}366{,}368 & 341{,}932 (15{,}501) & 57 & 14 \\
-32k   & 32{,}000 & 1{,}667{,}994 & 417{,}176 (29{,}635) & 20 & 6 \\
-64k   & 64{,}113 & 2{,}249{,}230 & 562{,}308 (57{,}094) & 10 & 3 \\
+15.5k & 15{,}501 & 1{,}366{,}368 & 341{,}932 (15{,}501) & 58\% & 57 & 14 \\
+32k   & 32{,}000 & 1{,}667{,}994 & 417{,}176 (29{,}635) & 65\% & 20 & 6 \\
+64k   & 64{,}113 & 2{,}249{,}230 & 562{,}308 (57{,}094) & 74\% & 10 & 3 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -557,7 +583,9 @@ seeds are pooled. The two tie for species with 11--15 images. From 16 images upw
 DBM is better, by 0.9, 0.4 and 0.2 points in the three remaining groups. These groups
 contain most of the species, which is why overall macro-F1 barely separates the two
 losses: KappaFace's large gains on a few rare species are offset by DBM's small gains on
-many common ones.
+many common ones. This crossover was measured on Herbarium 2022. It does not reappear on
+the larger ladder data, where KappaFace trails DBM in every group
+(Section~\ref{sec:res-ladder}).
 
 \begin{figure}[t]
 \centering
@@ -582,7 +610,9 @@ combined model on the other half (Table~\ref{tab:routing}). This routing raises 
 rarest species by 3--8 points while leaving common species within $\pm 0.1$ points. Only
 1.4--2.2\% of images end up using KappaFace's answer, so the overall macro-F1 gain is
 small, $+0.14$ points, about the size of the seed-to-seed variation. The real benefit is
-for rare species, and the cost is running two models at prediction time.
+for rare species, and the cost is running two models at prediction time. Whether this gain
+is specific to KappaFace is tested on the ladder in Section~\ref{sec:res-routing}, and
+largely it is not.
 
 \begin{table}[t]
 \centering
@@ -717,20 +747,20 @@ whole tree, so its species templates alone describe only part of the model.
 \begin{table}[t]
 \centering
 \small
-\caption{\textbf{DBM beats ArcFace on every rung, and its macro-F1 lead grows with the
-number of species.} Final scores after 131{,}250 steps, full validation set of each
-rung, one seed per run.}
+\caption{\textbf{The order is the same on every rung: DBM, then KappaFace, then
+ArcFace.} Final top-1 accuracy / macro-F1 after 131{,}250 steps, on the full validation
+set of each rung, one seed per run. The last two columns give each loss's score minus
+ArcFace's (its ``lead''), in points.}
 \label{tab:ladder}
 \footnotesize
-\begin{tabular}{@{}lcccccc@{}}
+\setlength{\tabcolsep}{2pt}
+\begin{tabular}{@{}lccccc@{}}
 \toprule
- & \multicolumn{2}{c}{DBM} & \multicolumn{2}{c}{ArcFace} & \multicolumn{2}{c}{DBM lead (points)} \\
-\cmidrule(lr){2-3}\cmidrule(lr){4-5}\cmidrule(l){6-7}
-Rung (epochs) & Top-1 & Macro-F1 & Top-1 & Macro-F1 & Top-1 & Macro-F1 \\
+Rung (epochs) & DBM & KappaFace & ArcFace & DBM lead & KappaFace lead \\
 \midrule
-15.5k (24.6) & 0.8959 & 0.8436 & 0.8842 & 0.8178 & $+1.17$ & $+2.58$ \\
-32k (20.1)   & 0.8882 & 0.7754 & 0.8777 & 0.7452 & $+1.05$ & $+3.02$ \\
-64k (14.9)   & 0.8619 & 0.6818 & 0.8490 & 0.6429 & $+1.29$ & $+3.89$ \\
+15.5k (24.6) & 0.8959 / 0.8436 & 0.8909 / 0.8329 & 0.8842 / 0.8178 & $+1.17$ / $+2.58$ & $+0.67$ / $+1.51$ \\
+32k (20.1)   & 0.8882 / 0.7754 & 0.8835 / 0.7597 & 0.8777 / 0.7452 & $+1.05$ / $+3.02$ & $+0.58$ / $+1.45$ \\
+64k (14.9)   & 0.8619 / 0.6818 & 0.8565 / 0.6592 & 0.8490 / 0.6429 & $+1.29$ / $+3.89$ & $+0.75$ / $+1.63$ \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -738,52 +768,322 @@ Rung (epochs) & Top-1 & Macro-F1 & Top-1 & Macro-F1 & Top-1 & Macro-F1 \\
 \begin{figure}[t]
 \centering
 \includegraphics[width=\linewidth]{figs/fig_ladder.pdf}
-\caption{\textbf{DBM's macro-F1 advantage grows as rare species are added.} (a) Final
-macro-F1 (solid lines) and top-1 accuracy (dashed lines) of DBM (orange) and ArcFace
-(grey) on the three nested label sets; the horizontal axis is logarithmic in the number
-of species. (b) DBM's score minus ArcFace's score at the end of training, in percentage
-points, for macro-F1 (filled bars) and accuracy (open bars). (c) Macro-F1 at each of the
-five evaluations during training, one every 26{,}250 steps; colours as in (a), with one
-marker shape per label set, labelled at the right. Every run trains for the same
-131{,}250 steps, so larger label sets get fewer epochs. Single seed per run;
-seed-to-seed variation at 15k was about 0.1 points.}
+\caption{\textbf{DBM's macro-F1 lead over ArcFace grows as rare species are added;
+KappaFace's does not.} (a) Final macro-F1 (solid lines) and top-1 accuracy (dashed lines)
+of DBM (orange), KappaFace (blue) and ArcFace (grey) on the three nested label sets; the
+horizontal axis is logarithmic in the number of species. (b) Each loss's score minus
+ArcFace's at the end of training, in percentage points, for macro-F1 (solid) and accuracy
+(dashed). (c) Macro-F1 lead over ArcFace at each of the five evaluations during training,
+one every 26{,}250 steps; colours as in (a), with one marker shape per label set (circles
+15.5k, squares 32k, triangles 64k; the orange lines are labelled at their left end). Every
+run trains for the same 131{,}250 steps, so larger label sets get fewer epochs. Single
+seed per run; seed-to-seed variation at 15k was about 0.1 points.}
 \label{fig:ladder}
 \end{figure}
 
 Table~\ref{tab:ladder} and Figure~\ref{fig:ladder} give the results of the ladder.
 
-\paragraph{The ranking holds at every size.} DBM beats ArcFace on both accuracy and
-macro-F1 on all three rungs.
+\paragraph{The ranking holds at every size.} On all three rungs, DBM is first, KappaFace
+second and ArcFace third, on both top-1 accuracy and macro-F1. This is the same order as
+on Herbarium 2022 (Table~\ref{tab:main}).
 
-\paragraph{DBM's macro-F1 lead grows with the number of species, but its accuracy lead
-does not.} DBM's macro-F1 lead increases from 2.6 points at 15.5k to 3.0 at 32k and 3.9
-at 64k, while its accuracy lead stays roughly flat at 1.0--1.3 points. The explanation
-follows from how the rungs are built and how the two metrics weight species. The larger
-rungs mostly add rare species (Table~\ref{tab:ladder-data}): the median number of
-training images per species falls from 57 to 20 to 10. Rare species contribute few
-images, so they barely affect accuracy, but each one counts as much as any other species
-in macro-F1. This matches the 15k per-species result, where DBM's gains were largest for
-rare species.
+\paragraph{DBM's macro-F1 lead grows with the number of species, but KappaFace's does
+not.} DBM's macro-F1 lead over ArcFace increases from 2.6 points at 15.5k to 3.0 at 32k
+and 3.9 at 64k, while its accuracy lead stays roughly flat at 1.0--1.3 points.
+KappaFace's macro-F1 lead is essentially flat, at about 1.5, 1.5 and 1.6 points, and its
+accuracy lead is 0.6--0.8 points. As a result, DBM's advantage over KappaFace itself
+grows, from 1.1 to 1.6 to 2.3 points of macro-F1. The difference between the two metrics
+follows from how the rungs are built and how the metrics weight species. The larger rungs
+mostly add rare species (Table~\ref{tab:ladder-data}): the median number of training
+images per species falls from 57 to 20 to 10. Rare species contribute few images, so they
+barely affect accuracy, but each one counts as much as any other species in macro-F1.
+This matches the 15k per-species result, where DBM's gains were largest for rare species.
+Why DBM's lead grows while KappaFace's does not is not something these runs explain.
 
 \paragraph{Adding species costs much more macro-F1 than accuracy.} Going from 15.5k to
-64k species, DBM's macro-F1 drops from 0.844 to 0.682, while its accuracy drops only from
-0.896 to 0.862. ArcFace shows the same pattern. The species added at each step are hard
-to learn from so few images, but because they have few images they hardly register in
-accuracy.
+64k species, DBM's macro-F1 drops from 0.844 to 0.682, KappaFace's from 0.833 to 0.659
+and ArcFace's from 0.818 to 0.643. Accuracy drops much less: from 0.896 to 0.862 for DBM,
+0.891 to 0.857 for KappaFace and 0.884 to 0.849 for ArcFace. The species added at each
+step are hard to learn from so few images, but because they have few images they hardly
+register in accuracy.
 
-\paragraph{The lead appears early and narrows slowly.} At the first evaluation, after
-20\% of training, DBM already leads by 3.9, 5.9 and 5.0 points of macro-F1 on the three
-rungs. The lead shrinks during training but never closes (Figure~\ref{fig:ladder}c).
-Both losses are still improving slowly at the end of training, most visibly on the 64k
-rung, which gets the fewest passes over its data.
+\paragraph{The lead appears early and narrows.} At the first evaluation, after 20\% of
+training, DBM already leads ArcFace by 3.9, 5.9 and 5.0 points of macro-F1 on the three
+rungs, and KappaFace leads by 2.2, 2.2 and 1.7. DBM's lead shrinks over training, though
+not steadily (at 64k it rises briefly at the third evaluation), and it never closes
+(Figure~\ref{fig:ladder}c). KappaFace's lead shrinks less. All three losses are still
+improving slowly at the end of training, most visibly on the 64k rung, which gets the
+fewest passes over its data.
+
+\paragraph{KappaFace's rare-species advantage does not appear on the ladder.}
+Figure~\ref{fig:ladder-bands} repeats, on the ladder, the species-by-species comparison of
+Figure~\ref{fig:crossover}. Here KappaFace is behind DBM in every group of training-image
+counts on every rung, and in all 21 cases (three rungs times seven groups) the 95\%
+interval lies below zero. The gap is largest for the rarest species and grows with the
+number of species: for species with 2--5 training images it is $-4.2$ points at 32k and
+$-5.7$ at 64k. At 15.5k it is $-15.1$ points, but that group holds only 31 species, so the
+estimate is very noisy (interval $-30.1$ to $-2.2$). For species with 101 or more training
+images the gap is about $-0.2$ to $-0.3$ points. Why the crossover seen on Herbarium 2022
+disappears on this data is not yet known. The ladder's training set is larger and more
+imbalanced than the ablation's, but we have not tested which difference matters.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figs/fig_ladder_bands.pdf}
+\caption{\textbf{On the ladder, KappaFace is behind DBM in every training-image group.}
+For each species, KappaFace's F1 minus DBM's F1, averaged within each group of species
+defined by their number of training images; below zero means KappaFace does worse. One
+marker shape per rung (circles 15.5k, squares 32k, triangles 64k). The 2--5 group holds
+31, 4{,}593 and 13{,}738 species on the three rungs. Whiskers are 95\% intervals from
+resampling the species in each group, and do not include seed-to-seed variation. The
+15.5k point in the 2--5 group ($-15.1$, 31 species, interval $-30.1$ to $-2.2$) is off
+the scale and is shown by the arrow. Compare Figure~\ref{fig:crossover}, where the sign is
+reversed for the rarest groups on Herbarium 2022. One seed per loss.}
+\label{fig:ladder-bands}
+\end{figure}
 
 \paragraph{Caveats.} Each ladder point comes from a single seed. The seed-to-seed
 variation we measured at 15k was about 0.1 points, far below these gaps, but it was
 measured on different data. Every rung gets the same compute, so the larger rungs are
 trained for fewer epochs, and with more training part of the gap between rungs might
-close. Finally, on the 64k rung the median species has only 3 validation images, so the
-F1 score of any individual species there is very noisy, even though the average over
-tens of thousands of species is stable.
+close. On the 64k rung the median species has only 3 validation images, so the F1 score
+of any individual species there is very noisy, even though the average over tens of
+thousands of species is stable. Finally, the validation sets change in composition from
+rung to rung. All images of the added species come from Herbarium 2021, so the share of
+2021 images in the validation set rises from 58\% to 65\% to 74\%
+(Table~\ref{tab:ladder-data}), and 2021 images are easier to classify than 2022 images
+(Section~\ref{sec:res-data}). We have not measured how much this shift affects the
+cross-rung trend in macro-F1.
+
+\subsection{Combining two models on the ladder}
+\label{sec:res-routing}
+
+Section~\ref{sec:res-fine} showed that sending KappaFace's answer to rare species helps on
+Herbarium 2022. We repeat that test on the ladder, again with no retraining. As before, for
+each image we look at the species KappaFace predicts. If that species has at most $T$
+training images, we use KappaFace's answer, and otherwise DBM's. The cutoff $T$ is chosen
+on one random half of the validation images, and the rule is scored on the other half. We
+call this \emph{routing}. Table~\ref{tab:ladder-routing} gives the result.
+
+\begin{table}[t]
+\centering
+\small
+\caption{\textbf{Routing rare-species answers to KappaFace helps on every rung, and more on
+larger label sets.} Scores on the held-out half of each rung's validation set, with the
+cutoff $T$ chosen on the other half. Top-1 accuracy / macro-F1. ``Images using KappaFace's
+answer'' counts every image where KappaFace's top answer names a species with at most $T$
+training images, including images where the two models agree.}
+\label{tab:ladder-routing}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+Rung & $T$ & Images using & DBM alone & Routed & Change (points) \\
+ & & KappaFace's answer & & & \\
+\midrule
+15.5k & 20 & 2.1\% & 0.8952 / 0.8364 & 0.8958 / 0.8402 & $+0.06$ / $+0.38$ \\
+32k   & 10 & 2.5\% & 0.8883 / 0.7879 & 0.8892 / 0.7933 & $+0.09$ / $+0.54$ \\
+64k   & 8  & 3.0\% & 0.8621 / 0.7033 & 0.8634 / 0.7100 & $+0.13$ / $+0.67$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Routing helps on every rung, and more as species are added.} Macro-F1 rises
+by 0.38, 0.54 and 0.67 points at 15.5k, 32k and 64k, and accuracy by 0.06 to 0.13 points.
+The gain is concentrated in the rare groups. At 64k, F1 for species with 2--5 training
+images rises by 1.9 points and for species with 6--10 images by 2.5 points, while for
+species with 26 or more training images it changes by at most 0.14 points. The per-species
+gain in the rare groups is actually smaller on the larger rungs (for species with 6--10
+training images it is 4.3, 3.4 and 2.5 points). The macro-F1 gain grows because rare
+species make up a growing share of all species: 7\%, 33\% and 46\% of the validation
+species on the three rungs have 10 or fewer training images. This is consistent with the
+numbers, but we have not separated the two effects.
+
+\paragraph{Why can routing help if KappaFace is worse on rare species?} The rule does not
+send all rare species to KappaFace. It switches only when KappaFace's \emph{own answer}
+names a rare species, that is, when KappaFace commits to a rare species. To see what this
+does, we counted, image by image, how the rule changes DBM's answers on the full
+validation sets of the 32k and 64k rungs. At 64k (with $T=8$), the rule changes 2{,}599 of
+562{,}308 answers. Of these, 1{,}252 become correct, 513 become wrong (DBM had been right),
+and 834 are wrong under both models, a net gain of 739 correct answers. At 32k (with
+$T=10$), it changes 1{,}481 answers: 712 become correct, 334 become wrong and 435 are wrong
+either way, a net gain of 378. Every one of the corrections at 64k is an image of a species
+with at most 10 training images (469 with 2--5 and 783 with 6--10). This is expected,
+because for KappaFace's answer to be correct it must name the true species, and the rule
+only accepts answers that name rare species.
+
+The 469 corrections for species with 2--5 training images at 64k are 469 images of 469
+different species, with one validation image each, spread over 125 plant families. Each
+family's share of these corrections is close to its share of the whole group (for example
+Fabaceae 6.8\% against 6.5\%, and Orchidaceae 6.8\% against 6.4\%), so there is no set of
+``KappaFace species''. On these images, DBM's wrong answer is in the same genus as the true
+species 61\% of the time and in the same family 80\% of the time, and the species it chose
+has a median of 27 training images, against 2--5 for the true species. Our reading, not
+tested, is that DBM sometimes leans toward a better-known sister species where KappaFace
+does not.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figs/fig_routing.pdf}
+\caption{\textbf{Most of the routing gain does not need KappaFace.} (a) Macro-F1 gain, in
+points, from using the second model's answer when it names a rare species, relative to DBM
+alone, on the held-out half of each validation set. Solid blue: KappaFace as the second
+model, first analysis. Hatched blue: KappaFace again, in a repeat analysis that drew its
+own random halves, so the difference between the two blue bars is split-to-split
+variation. Grey: plain ArcFace as the second model in the repeat analysis, on the same
+halves as the hatched bars. The cutoff $T$ is chosen separately for each bar, on the other
+half. (b) How routing changes DBM's answers on the full validation set at 32k and 64k:
+``fixed'' answers were wrong and become right, ``broken'' answers were right and become
+wrong. Answers that are wrong under both models (435 and 834) are not shown. One seed per
+model, and no uncertainty interval on the gains.}
+\label{fig:routing}
+\end{figure}
+
+\paragraph{A control: most of the gain comes from combining any two different models.}
+To test whether the gain is specific to KappaFace, we repeated the rule with plain
+ArcFace as the second model. ArcFace is the weakest of the three models on its own. This
+repeat analysis drew its own random halves, so its DBM-alone scores differ slightly from
+Table~\ref{tab:ladder-routing} (for example 0.8378 against 0.8364 macro-F1 at 15.5k);
+within it, KappaFace and ArcFace are compared on the same halves. With KappaFace as the
+second model, macro-F1 rises by 0.26, 0.56 and 0.57 points on the three rungs. With ArcFace
+it rises by 0.16, 0.37 and 0.47 points, which is 62\%, 65\% and 81\% of KappaFace's gain
+(Figure~\ref{fig:routing}a). Among the images where the rule changes the answer, the
+second model is right 37--45\% of the time with ArcFace and 40--47\% with KappaFace,
+against 22--26\% for DBM on the same images. So even a model that is worse than DBM overall
+is more often right than DBM on the answers it contributes. KappaFace adds a little more
+than ArcFace (0.10, 0.19 and 0.10 points of macro-F1), but this is about the size of the
+split-to-split variation: KappaFace's own gains differ between the two analyses by up to
+0.12 points. We therefore cannot say that KappaFace is better than ArcFace as the second
+model.
+
+\paragraph{Caveats.} One seed per model, and no uncertainty interval on the routing
+gains. Routing needs two models at prediction time. The ArcFace control was run only on
+the ladder, so we do not know how much of the Herbarium 2022 routing gain
+(Section~\ref{sec:res-fine}) is generic in the same way.
+
+\subsection{Checks on the data}
+\label{sec:res-data}
+
+Two properties of the data affect how the numbers above should be read. First, the ladder's
+15.5k set has the same species as the Herbarium 2022 ablation but much higher scores (DBM
+reaches 0.844 macro-F1 there, against 0.816 in the ablation). Second, herbarium collections
+can hold more than one image of the same physical specimen, so a validation image can have
+a near-identical twin in the training set.
+
+\paragraph{Why the ladder scores higher than the ablation.} The ladder's validation set is
+a mixture. Of its 341{,}932 images, 197{,}180 (58\%) come from Herbarium 2021, 115{,}659
+(34\%) are Herbarium 2022 training images that the merged data happened to place in
+validation, and 29{,}093 (9\%) are original Herbarium 2022 validation images. The DBM
+model scores very differently on these parts (Table~\ref{tab:datacheck}, block A): 0.933
+accuracy on the 2021 part, against about 0.85 on the two 2022 parts. A fair comparison with
+the ablation therefore uses only the 29{,}093 original 2022 validation images, which
+neither the ladder model nor the ablation models trained on (block B). On this common
+subset, ladder DBM scores 0.848 accuracy and 0.794 macro-F1, against 0.845 and 0.789 for
+the ablation's DBM. So doubling the training data helped only a little, about 0.4 points on
+both metrics, and the large headline difference comes from the easier validation images.
+Within a rung, every loss is scored on the same images, so comparisons between losses are
+fair.
+
+\begin{table}[t]
+\centering
+\small
+\caption{\textbf{The ladder's Herbarium 2021 validation images are much easier, and on the
+images the two setups share, ladder DBM is only slightly ahead of the ablation's DBM.}
+Top-1 accuracy / macro-F1. (A) Ladder 15.5k DBM on the three parts of its validation set.
+(B) The 29{,}093 images from the original 2022 validation set (12{,}352 species), which no
+model here trained on. Macro-F1 values in different rows of block A cover different sets
+of species and are not directly comparable.}
+\label{tab:datacheck}
+\footnotesize
+\begin{tabular}{@{}llrc@{}}
+\toprule
+ & Model and validation images & Images & Top-1 / macro-F1 \\
+\midrule
+A & Ladder DBM, images from Herbarium 2021 & 197{,}180 & 0.9325 / 0.8384 \\
+  & Ladder DBM, images from the 2022 training split & 115{,}659 & 0.8455 / 0.8168 \\
+  & Ladder DBM, images from the 2022 validation split & 29{,}093 & 0.8484 / 0.7936 \\
+  & Ladder DBM, all & 341{,}932 & 0.8959 / 0.8436 \\
+\midrule
+B & Ladder 15.5k DBM & 29{,}093 & 0.8484 / 0.7936 \\
+  & Ablation DBM, seed 42 & 29{,}093 & 0.8448 / 0.7892 \\
+  & Ablation DBM, seed 43 & 29{,}093 & 0.8437 / 0.7863 \\
+  & Ablation KappaFace & 29{,}093 & 0.8415 / 0.7852 \\
+  & Ablation ArcFace & 29{,}093 & 0.8294 / 0.7702 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Why are the 2021 images easier?} We do not yet know. Same-specimen copies, which
+we measure next, do not explain it: 2021 images with no copy in the training set still
+score 0.931. One untested guess is that they come mostly from species with many training
+images.
+
+\paragraph{Same-specimen copies.} To measure how often a validation image has a copy of the
+same specimen in the training set, we used a generic image model that was not trained on
+herbarium sheets (a SWIN-Base pretrained on ImageNet-22k, at 224\,px). We embedded every
+training and validation image, and for each validation image we found the most similar
+training image of the same species, measured by the cosine between the two embeddings. We
+then looked at example pairs at different similarity levels (Figure~\ref{fig:neardup}) and
+judged by eye that a similarity of about 0.93 or more means the same physical specimen:
+identical scans at 0.99 and above, and re-scans or re-crops of the same sheet below that.
+Below about 0.93 the pairs are different specimens that merely look alike. The 0.93
+threshold is therefore a judgement from example pairs, not a calibrated value.
+
+\begin{figure}[!tb]
+\centering
+\includegraphics[width=0.8\linewidth]{figs/near_duplicate_examples.png}
+\caption{\textbf{A similarity of about 0.93 or more means the same physical specimen.}
+Each row shows two examples of a validation image (left of each pair) beside the most
+similar training image of the same species (right), found with a generic ImageNet-22k
+SWIN-Base. Rows are similarity bands, from identical scans (0.99 and above) to different
+specimens that merely look alike (0.85--0.93). Labels give each image's source collection
+in the original competitions, and the similarity. The threshold of about 0.93 was chosen by
+looking at pairs like these.}
+\label{fig:neardup}
+\end{figure}
+
+Table~\ref{tab:copies} gives the results. In the ablation data, 1.7\% of validation images
+have a copy of the same specimen in the training set, and DBM gets 98\% of those right,
+against 84\% of the rest. Because they are only 1.7\% of the images, they add about a
+quarter of a point to overall accuracy (1.7\% of the images times an accuracy difference of
+14.5 points). Every loss is scored on the same images, so this shifts all of them about
+equally and the comparisons between losses stand, but absolute accuracy is slightly
+inflated. The 1.7\% is a lower bound: only the 145{,}344 of 167{,}955 validation images that
+survived into the merged data could be checked, and the merge had already removed exact
+duplicates, so some copies may be missing. On the ladder, about 3\% of validation images
+have a copy in the training set, and again the share is similar for the three image
+sources, so the copies are not concentrated among the 2021 images. They add roughly 0.1 to
+0.3 points to overall accuracy.
+
+\begin{table}[t]
+\centering
+\small
+\caption{\textbf{A few percent of validation images have a same-specimen copy in the
+training set, and DBM gets nearly all of them right.} A copy means a same-species training
+image with similarity of at least 0.93. The last column gives DBM's accuracy on validation
+images with and without such a copy; the similarity threshold used there is in brackets
+(0.95 for the ladder rows, the closest value measured for all of them).}
+\label{tab:copies}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}p{1.75in}rrp{1.2in}@{}}
+\toprule
+Validation images & Checked & With a copy ($\ge 0.93$) & DBM accuracy with / without \\
+\midrule
+Ablation: 2022 validation vs.\ 2022 training & 145{,}344 & 2{,}421 (1.7\%) & 0.983 / 0.838 ($\ge 0.93$) \\
+Ladder 15.5k: from Herbarium 2021 & 197{,}180 & 6{,}104 (3.1\%) & 0.984 / 0.931 ($\ge 0.95$) \\
+Ladder 15.5k: from the 2022 training split & 115{,}659 & 3{,}317 (2.9\%) & 0.984 / 0.843 ($\ge 0.95$) \\
+Ladder 15.5k: from the 2022 validation split & 29{,}093 & 811 (2.8\%) & 0.979 / 0.846 ($\ge 0.95$) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{What this means for the results.} Neither check changes which loss wins, because
+each loss is scored on the same validation images. They do mean that absolute accuracy is
+slightly inflated by copies, that ladder scores should not be compared with the ablation
+scores, and that part of any gain from combining models could in principle come from
+recognising a near-identical training image. We have not measured that last point for the
+routing corrections.
 
 \section{Summary of findings so far}
 \label{sec:summary}
@@ -792,39 +1092,58 @@ The clearest result is that losses which give each species its own margin, DBM a
 KappaFace, are the only interventions that improve on ArcFace by more than a fraction of
 a point. They add about 1.9 points of macro-F1 and 1.2--1.5 points of accuracy, and the
 gain holds with a second seed. Looking per species shows that these gains are
-concentrated in the rare tail, and that the two losses divide it between them: KappaFace
-is better below about 10 training images and DBM above about 15. A simple rule that
-routes rare-species predictions to KappaFace, with no retraining, lifts the rarest
-species by 3--8 points.
+concentrated in the rare tail. On Herbarium 2022 the two losses divide that tail between
+them: KappaFace is better below about 10 training images and DBM above about 15.
 
 The other ideas we tested did not help as implemented. Using the taxonomy (HACE),
 pulling features toward class centres (ECC) and aligning with BioCLIP (TARA) all
 matched or fell below ArcFace, and no loss changed the share of errors that land in the
 correct genus, which stays at 75--78\%. The geometry analysis adds a caution: across
 losses, tidier average geometry did not mean higher accuracy, and the best losses have
-looser species clusters than any ArcFace-family loss. Finally, on the scaling ladder DBM beats ArcFace at 15.5k,
-32k and 64k species, and its macro-F1 lead grows as more, mostly rare, species are added.
+looser species clusters than any ArcFace-family loss.
 
-\paragraph{Not yet measured.} Several pieces are still missing. KappaFace runs on the
-ladder, and the routing test on the ladder, are in progress. Per-species F1 by
-training-image count on the ladder rungs needs the per-image predictions of the ladder
-models to be saved, which has not been done yet. Geometry has not yet been split by
-rarity group, which would test the reading offered in Section~\ref{sec:res-geom}.
-FlexiGrad and the multi-task family, genus and species heads have not been built. And
-apart from DBM, KappaFace and ArcFace, every loss has been run with only one seed.
+On the scaling ladder, the order is DBM, then KappaFace, then ArcFace at 15.5k, 32k and
+64k species. DBM's macro-F1 lead over ArcFace grows as more, mostly rare, species are
+added, from 2.6 to 3.9 points, while KappaFace's stays near 1.5 points. KappaFace's
+advantage on the rarest species, seen on Herbarium 2022, does not reappear on the ladder.
+Routing rare-species answers to KappaFace raises macro-F1 over DBM alone on every rung,
+by 0.4 to 0.7 points in the first analysis. But a control with plain ArcFace as the second
+model recovers 60--80\% of the gain, so most of it comes from combining two different
+models, and we cannot say that KappaFace is special here.
+
+Two checks on the data temper the absolute numbers but not the ranking of losses. About
+1.7\% of the ablation's validation images, and about 3\% of the ladder's, have a copy of
+the same physical specimen in the training set. And the ladder's validation set contains
+many easier Herbarium 2021 images, which is why its 15.5k scores are higher than the
+ablation's even though doubling the training data helped only about 0.4 points on the
+images the two share.
+
+\paragraph{Not yet measured.} Several pieces are still missing. Cross-entropy and
+cross-entropy-with-logit-adjustment baselines at 384\,px on the Herbarium 2022 data are
+training now and are not reported, so the comparison with the simplest baselines is still
+missing. We do not know why the 2021 validation images are easier, why the KappaFace
+crossover disappears on the ladder, or why DBM's lead grows with the number of species
+while KappaFace's does not. The ArcFace control for routing was run only on the ladder,
+routing gains have no uncertainty intervals, and we have not checked whether
+KappaFace's routing corrections include same-specimen copies. Geometry has not been
+split by rarity group, which would test the reading offered in Section~\ref{sec:res-geom},
+and it has not been measured on the ladder models. FlexiGrad and the multi-task family,
+genus and species heads have not been built. And apart from DBM, KappaFace and ArcFace on
+Herbarium 2022, every run has used only one seed.
 
 % Discussion intentionally left out of this draft.
 
+\clearpage
 \appendix
 \section{Provenance}
 \label{app:prov}
 
-\begin{table}[h]
+\begin{table}[t]
 \centering
 \small
 \caption{Run identifiers behind each result (first 8 characters).}
 \footnotesize
-\begin{tabular}{@{}p{1.7in}p{3.5in}@{}}
+\begin{tabular}{@{}p{1.9in}p{3.3in}@{}}
 \toprule
 Result & Runs \\
 \midrule
@@ -837,7 +1156,14 @@ Geometry (11 models) & \texttt{bf50bd59} \\
 X2-Softmax at $s=64$ & \texttt{877404ac} \\
 224\,px references & CE \texttt{be436c7e}, ArcFace \texttt{be730cdf} / \texttt{da0667dc} \\
 Ladder data build & \texttt{5c9db6fa} \\
-Ladder final runs (DBM / ArcFace) & 15.5k \texttt{dc59af2e} / \texttt{e3ecf637}, 32k \texttt{ca0355e1} / \texttt{f30277ed}, 64k \texttt{29abd9c9} / \texttt{2244e684} \\
+Ladder final runs (DBM / KappaFace / ArcFace) & 15.5k \texttt{dc59af2e} / \texttt{0911811c} / \texttt{e3ecf637}, 32k \texttt{ca0355e1} / \texttt{2677643e} / \texttt{f30277ed}, 64k \texttt{29abd9c9} / \texttt{125ab8df} / \texttt{2244e684} \\
+Ladder re-scores with saved predictions (DBM / KappaFace / ArcFace) & \texttt{a45f141b} / \texttt{f4d8caf9} / \texttt{54002e73} \\
+Ladder per-group comparison and routing & \texttt{a8745409} \\
+Routing, image-by-image counts; images behind the gain & \texttt{b9fbefe7}; \texttt{9ddce29c} \\
+Routing control with ArcFace & \texttt{763995bb} \\
+Ladder vs.\ ablation on the same images & \texttt{6c184416} \\
+Same-specimen copies & \texttt{1eb2694b}, \texttt{4704f8f8} \\
+In progress, not reported & CE \texttt{5a1a1645}, CE with logit adjustment \texttt{e2d28310} \\
 \bottomrule
 \end{tabular}
 \end{table}

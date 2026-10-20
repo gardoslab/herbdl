@@ -15,8 +15,9 @@ import csv
 import json
 import os
 
+import matplotlib.pyplot as plt
 import numpy as np
-from orx_figstyle import BASELINE, COLUMN, PALETTE, TEXT, figure_grid, panel_labels, save, use_style
+from orx_figstyle import BASELINE, COLUMN, PALETTE, TEXT, family, figure_grid, panel_labels, save, use_style
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA = os.path.join(HERE, "data")
@@ -192,59 +193,150 @@ MUTED_LINE = "#BBBBBB"
 
 # --------------------------------------------------------------- figure 5 ----
 def fig_ladder():
+    """Scaling ladder: final scores, leads over ArcFace, and the lead during training."""
     L = load("ladder.json")
     rungs = ["15.5k", "32k", "64k"]
     n = np.array([L["rungs"][r]["n_species"] for r in rungs])
-    fig, axes = figure_grid(1, 3, width=TEXT, ratio=0.36)
+    fig, axes = figure_grid(1, 3, width=TEXT, ratio=0.5)
+    ladder_losses = ["dbm", "kappaface", "arcface"]
 
     # (a) final macro-F1 (solid) and accuracy (dashed) vs number of species.
     ax = axes[0]
-    for key in ["dbm", "arcface"]:
+    for key in ladder_losses:
         label, color = LOSS[key]
-        f1 = [100 * L["rungs"][r][key]["f1"][-1] for r in rungs]
-        acc = [100 * L["rungs"][r][key]["acc"][-1] for r in rungs]
-        ax.plot(n, f1, "-o", color=color, markersize=3.5, label=f"{label} macro-F1")
-        ax.plot(n, acc, "--s", color=color, markersize=3, label=f"{label} accuracy")
+        ax.plot(n, [100 * L["rungs"][r][key]["f1"][-1] for r in rungs], "-o", color=color, markersize=3.5)
+        ax.plot(n, [100 * L["rungs"][r][key]["acc"][-1] for r in rungs], "--s", color=color, markersize=3)
     ax.set_xscale("log")
     ax.set_xticks(n)
-    ax.set_xticklabels(["15.5k", "32k", "64k"])
+    ax.set_xticklabels(rungs)
     ax.minorticks_off()
     ax.set_xlabel("Species in label set")
     ax.set_ylabel("Final score (%)")
-    ax.legend(loc="lower left", fontsize=5.5, handlelength=1.8)
+    ax.text(0.03, 0.04, "solid: macro-F1\ndashed: accuracy", transform=ax.transAxes, fontsize=5.5, va="bottom")
 
-    # (b) DBM's lead over ArcFace at the end of training.
+    # (b) lead over ArcFace at the end of training, for DBM and KappaFace.
     ax = axes[1]
-    width = 0.36
-    xi = np.arange(len(rungs))
-    for metric, dx, label, face in [("f1", -width / 2, "macro-F1", PALETTE["orange"]),
-                                    ("acc", width / 2, "accuracy", "white")]:
-        lead = [100 * (L["rungs"][r]["dbm"][metric][-1] - L["rungs"][r]["arcface"][metric][-1]) for r in rungs]
-        bars = ax.bar(xi + dx, lead, width, color=face, edgecolor=PALETTE["orange"], lw=1.0, label=label)
-        for b, v in zip(bars, lead):
-            ax.text(b.get_x() + b.get_width() / 2, v + 0.08, f"+{v:.1f}", ha="center", va="bottom", fontsize=5.5)
-    ax.set_xticks(xi)
+    for key in ["dbm", "kappaface"]:
+        label, color = LOSS[key]
+        for metric, ls, marker in [("f1", "-", "o"), ("acc", "--", "s")]:
+            lead = [100 * (L["rungs"][r][key][metric][-1] - L["rungs"][r]["arcface"][metric][-1]) for r in rungs]
+            ax.plot(n, lead, ls, marker=marker, color=color, markersize=3.5 if metric == "f1" else 3,
+                    label=f"{label} {'macro-F1' if metric == 'f1' else 'accuracy'}")
+    ax.set_xscale("log")
+    ax.set_xticks(n)
     ax.set_xticklabels(rungs)
-    ax.set_ylim(0, 4.8)
+    ax.minorticks_off()
+    ax.set_ylim(0, 4.5)
     ax.set_xlabel("Species in label set")
-    ax.set_ylabel("DBM − ArcFace (points)")
-    ax.legend(loc="upper left", fontsize=6)
+    ax.set_ylabel("Lead over ArcFace (points)")
+    ax.legend(loc="upper left", fontsize=5.2, handlelength=1.8, labelspacing=0.25)
 
-    # (c) macro-F1 over training at each rung.
+    # (c) macro-F1 lead over ArcFace at each evaluation during training.
     ax = axes[2]
     steps = np.array(L["steps"]) / 1000
     for r, marker in zip(rungs, ["o", "s", "^"]):
-        for key in ["dbm", "arcface"]:
-            color = LOSS[key][1]
-            ax.plot(steps, 100 * np.array(L["rungs"][r][key]["f1"]), "-", marker=marker, color=color,
-                    markersize=3, lw=1.0)
-        ax.annotate(r, (steps[-1], 100 * L["rungs"][r]["dbm"]["f1"][-1]), xytext=(4, 0),
-                    textcoords="offset points", fontsize=6, va="center")
+        base = np.array(L["rungs"][r]["arcface"]["f1"])
+        for key in ["dbm", "kappaface"]:
+            lead = 100 * (np.array(L["rungs"][r][key]["f1"]) - base)
+            ax.plot(steps, lead, "-", marker=marker, color=LOSS[key][1], markersize=3, lw=1.0)
+        ax.annotate(r, (steps[0], 100 * (L["rungs"][r]["dbm"]["f1"][0] - base[0])), xytext=(-3, 0),
+                    textcoords="offset points", fontsize=5.5, va="center", ha="right")
     ax.set_xlabel("Optimizer steps (thousands)")
-    ax.set_ylabel("Macro-F1 (%)")
-    ax.set_xlim(15, 150)
+    ax.set_ylabel("Macro-F1 lead over ArcFace (points)")
+    ax.set_xlim(-5, 140)
+    ax.set_ylim(0, 6.5)
+    handles = [plt.Line2D([], [], color=LOSS[k][1], lw=1.4, label=LOSS[k][0]) for k in ladder_losses]
+    fig.legend(handles=handles, loc="outside lower center", ncol=3, fontsize=6, frameon=False)
     panel_labels(axes)
     save(fig, os.path.join(HERE, "fig_ladder"))
+
+
+# --------------------------------------------------------------- figure 6 ----
+def fig_ladder_bands():
+    """KappaFace minus DBM per-species F1, by training-image band, on each ladder rung."""
+    D = load("ladder_routing.json")
+    rungs = [("n15k", "15.5k"), ("n32k", "32k"), ("n64k", "64k")]
+    bands = ["2-5", "6-10", "11-15", "16-25", "26-50", "51-100", "101+"]
+    labels = [b.replace("-", "–") for b in bands]
+    shades = family("blue", 3)
+    fig, axes = figure_grid(1, 1, width=TEXT, ratio=0.4)
+    ax = axes[0] if hasattr(axes, "__len__") else axes
+    x = np.arange(len(bands))
+    ax.axhline(0, color=BASELINE, lw=0.8, zorder=0)
+    ymin = -8.0
+    off_scale = []
+    for (key, name), color, marker, dx in zip(rungs, shades, ["o", "s", "^"], [-0.22, 0, 0.22]):
+        mid, lo, hi = [], [], []
+        for b in bands:
+            r = D[key]["bands"][b]
+            mid.append(100 * r["kappa_minus_dbm"]); lo.append(100 * r["ci95"][0]); hi.append(100 * r["ci95"][1])
+        mid, lo, hi = map(np.array, (mid, lo, hi))
+        on = mid >= ymin
+        ax.errorbar((x + dx)[on], mid[on], yerr=[(mid - lo)[on], (hi - mid)[on]], fmt=marker, color=color,
+                    markersize=3.8, elinewidth=1.0, capsize=0, label=f"{name} species")
+        for i in np.where(~on)[0]:
+            # A point far below the axis: draw an arrow at the floor and print its value instead.
+            ax.plot(x[i] + dx, ymin + 0.35, "v", color=color, markersize=4.5, clip_on=False)
+            ax.annotate(f"{mid[i]:.1f} (n={D[key]['bands'][bands[i]]['n_species']})", (x[i] + dx, ymin + 0.35),
+                        xytext=(6, 0), textcoords="offset points", fontsize=5.5, va="center", color=color)
+            off_scale.append((name, bands[i], round(float(mid[i]), 2), D[key]["bands"][bands[i]]["n_species"]))
+    ax.set_ylim(ymin, 1.0)
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.set_xlabel("Training images per species")
+    ax.set_ylabel("KappaFace − DBM\nper-species F1 (points)")
+    ax.legend(loc="lower right", fontsize=6)
+    save(fig, os.path.join(HERE, "fig_ladder_bands"))
+    print("off-scale points:", off_scale)
+
+
+# --------------------------------------------------------------- figure 7 ----
+def fig_routing():
+    """Routing on the ladder: gain per rung (with the ArcFace control), and what changes."""
+    R = load("ladder_routing.json")
+    C = load("ladder_routing_control.json")
+    counts = load("routing_counts.json")
+    keys = [("n15k", "15.5k"), ("n32k", "32k"), ("n64k", "64k")]
+    fig, axes = figure_grid(1, 2, width=TEXT, ratio=0.42)
+
+    ax = axes[0]
+    width = 0.26
+    xi = np.arange(len(keys))
+    series = [
+        ("KappaFace, first split", [100 * (R[k]["routing"]["routed"]["half_B_macro_f1"] - R[k]["routing"]["dbm"]["half_B_macro_f1"]) for k, _ in keys],
+         LOSS["kappaface"][1], None),
+        ("KappaFace, second split", [100 * C[k]["kappaface"]["gain"]["macro_f1"] for k, _ in keys], LOSS["kappaface"][1], "//"),
+        ("ArcFace, second split", [100 * C[k]["arcface"]["gain"]["macro_f1"] for k, _ in keys], LOSS["arcface"][1], None),
+    ]
+    for j, (label, vals, color, hatch) in enumerate(series):
+        bars = ax.bar(xi + (j - 1) * width, vals, width, color=color if hatch is None else "white", edgecolor=color,
+                      lw=1.0, hatch=hatch, label=label)
+        for b, v in zip(bars, vals):
+            ax.text(b.get_x() + b.get_width() / 2, v + 0.01, f"{v:.2f}", ha="center", va="bottom", fontsize=5)
+    ax.set_xticks(xi)
+    ax.set_xticklabels([n for _, n in keys])
+    ax.set_xlabel("Species in label set")
+    ax.set_ylabel("Macro-F1 gain from routing\nover DBM alone (points)")
+    ax.set_ylim(0, 0.95)
+    ax.legend(loc="upper left", fontsize=5.5)
+
+    ax = axes[1]
+    xs = np.arange(2)
+    for j, (label, key, color) in enumerate([("fixed", "fixed", PALETTE["green"]), ("broken", "broken", PALETTE["red"])]):
+        vals = [counts[r][key] for r in ("n32k", "n64k")]
+        bars = ax.bar(xs + (j - 0.5) * 0.34, vals, 0.34, color=color, label=label)
+        for b, v in zip(bars, vals):
+            ax.text(b.get_x() + b.get_width() / 2, v + 20, f"{v:,}", ha="center", va="bottom", fontsize=5.5)
+    for i, r in enumerate(("n32k", "n64k")):
+        ax.text(xs[i], 1480, f"net +{counts[r]['net']:,}", ha="center", fontsize=6)
+    ax.set_xticks(xs)
+    ax.set_xticklabels([f"32k (T={counts['n32k']['T']})", f"64k (T={counts['n64k']['T']})"])
+    ax.set_xlabel("Species in label set (cutoff T)")
+    ax.set_ylabel("Validation images whose answer\nchanges from DBM's")
+    ax.set_ylim(0, 1650)
+    ax.legend(loc="center left", bbox_to_anchor=(0.0, 0.62), fontsize=6)
+    panel_labels(axes)
+    save(fig, os.path.join(HERE, "fig_routing"))
 
 
 if __name__ == "__main__":
@@ -254,3 +346,5 @@ if __name__ == "__main__":
     fig_crossover()
     fig_geometry()
     fig_ladder()
+    fig_ladder_bands()
+    fig_routing()
