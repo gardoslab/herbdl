@@ -155,7 +155,7 @@ The loss-function ablation and scaling-ladder write-up lives at the repository r
   (`cd figs && python3 make_figures.py`; needs matplotlib and numpy)
 
 A copy of the report for Overleaf lives in the separate repository
-[gardoslab/experiment-artifacts](https://github.com/gardoslab/experiment-artifacts) (private), checked
+[gardoslab/project-artifacts](https://github.com/gardoslab/project-artifacts) (private), checked
 out locally at `~/overleaf` as `~/overleaf/herbdl/loss-ablations/` (`main.tex` plus `figs/`). To
 update it, copy `paper.tex` to `main.tex` and the `figs/*.pdf` and `figs/near_duplicate_examples.png`
 files across, then commit and push from `~/overleaf`. The exact steps and the list of files are in
