@@ -154,29 +154,13 @@ The loss-function ablation and scaling-ladder write-up lives at the repository r
 - `figs/make_figures.py` - regenerates every figure in `figs/` from the run-derived data in `figs/data/`
   (`cd figs && python3 make_figures.py`; needs matplotlib and numpy)
 
-The report is mirrored to the Overleaf project
-<https://www.overleaf.com/project/6ace8587bc789bd8fc1aba52> through Overleaf's Git integration
-(a premium feature). Overleaf's Git has no branches (only `main`) and compiles `main.tex`, so the
-Overleaf copy lives in its own clone outside this repo, laid out as
-`~/overleaf/<project>/<paper>/` (here `~/overleaf/herbdl/loss-ablations/`). The conventions, the
-list of files to copy and the push steps are in `~/overleaf/README.md` and
-`~/overleaf/herbdl/README.md`; in short:
-
-```bash
-# Once: clone the Overleaf project (username: git, password: an Overleaf Git token; never put
-# the token in the URL or commit it).
-git clone https://git.overleaf.com/6ace8587bc789bd8fc1aba52 ~/overleaf/herbdl/loss-ablations
-
-# Each update: copy in only what Overleaf needs, then commit and push to its single branch.
-O=~/overleaf/herbdl/loss-ablations
-cd "$O" && git pull --ff-only && cd -   # first pick up edits made in the Overleaf editor
-cp paper.tex "$O/main.tex"
-mkdir -p "$O/figs" && cp figs/fig_*.pdf figs/near_duplicate_examples.png "$O/figs/"
-cd "$O" && git add -A && git commit -m "Update report" && git push origin main
-```
-
-If co-authors edit in Overleaf, copy `main.tex` back to `paper.tex` before regenerating. Pushing
-from Git can drop or move Overleaf tracked changes and comments.
+A copy of the report for Overleaf lives in the separate repository
+[gardoslab/experiment-artifacts](https://github.com/gardoslab/experiment-artifacts) (private), checked
+out locally at `~/overleaf` as `~/overleaf/herbdl/loss-ablations/` (`main.tex` plus `figs/`). To
+update it, copy `paper.tex` to `main.tex` and the `figs/*.pdf` and `figs/near_duplicate_examples.png`
+files across, then commit and push from `~/overleaf`. The exact steps and the list of files are in
+`~/overleaf/herbdl/README.md`, and the layout conventions are in `~/overleaf/README.md`. Linking that
+repository to the Overleaf project (Overleaf's GitHub integration) is done on the Overleaf side.
 
 ## Additional Documentation
 
