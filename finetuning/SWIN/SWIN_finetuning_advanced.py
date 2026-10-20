@@ -622,6 +622,20 @@ class MixupTrainer(Trainer):
                 # TARA: SwinWithLoss routes this second view to the BioCLIP teacher only.
                 outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a,
                                 bioclip_pixel_values=inputs["bioclip_pixel_values"])
+            elif self.loss_registry and self.logit_adjustment:
+                # Balanced softmax (logit adjustment) on the registry's plain softmax head.
+                # The registry model's own loss ignores the log-prior, so take the head's raw
+                # logits (no labels -> no loss, no margin) and compute the loss here:
+                #   CE(logits + tau * log_prior, labels), float32, training only. Evaluation
+                # (below) uses the raw logits. main() allows this only for head=softmax with no
+                # aux losses, so this is exactly "CE + logit adjustment" and nothing else.
+                outputs = model(pixel_values=inputs["pixel_values"])
+                outputs["loss"] = F.cross_entropy(self._adjust_logits(outputs["logits"].float()), labels_a)
+                if not getattr(self, "_la_announced", False):
+                    self._la_announced = True
+                    print(f"__CUSTOM__: balanced softmax ACTIVE on the registry softmax head "
+                          f"(tau={self.logit_adjustment_tau}, log-prior range "
+                          f"{self.log_prior.min().item():.2f}..{self.log_prior.max().item():.2f})", flush=True)
             else:
                 outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a)
             loss = outputs.get("loss")
@@ -1296,6 +1310,11 @@ def main():
         raise ValueError("config sets loss_registry.enabled alongside arcface/hace/"
                           "multi_task -- loss_registry replaces the classifier head the "
                           "same way those do, enable exactly one")
+    if use_loss_registry and use_logit_adjustment and (loss_registry_head != 'softmax' or loss_registry_aux):
+        # Logit adjustment is only implemented for the plain softmax head (see compute_loss);
+        # on any other registry head it would be silently ignored, which is worse than failing.
+        raise ValueError(f"long_tail.logit_adjustment with loss_registry requires head='softmax' and no "
+                          f"aux losses, got head={loss_registry_head!r}, aux={loss_registry_aux}")
     use_tara = use_loss_registry and 'tara' in loss_registry_aux
     bioclip_teacher = None  # built with the model below, used by train_transforms
     if use_tara and use_advanced_aug:
