@@ -2135,6 +2135,16 @@ def main():
         trust_remote_code=model_args.trust_remote_code,
     )
 
+    # timm models (CoAtNet): TimmWrapperImageProcessor exposes data_config (timm-style) instead
+    # of size/image_mean/image_std (HF-style). Shim the HF attributes so the transform pipeline
+    # below is unchanged (ported from llindon's CoAtNet_finetuning_advanced.py).
+    if hasattr(image_processor, "data_config") and not hasattr(image_processor, "size"):
+        _dc = image_processor.data_config
+        _c, _h, _w = _dc["input_size"]
+        image_processor.size = {"height": _h, "width": _w}
+        image_processor.image_mean = list(_dc["mean"])
+        image_processor.image_std = list(_dc["std"])
+
     if frozen:
         print("__CUSTOM__: Freezing model according to the frozen type: ", frozen_type)
         for name, param in model.named_parameters():
@@ -2330,7 +2340,7 @@ def main():
         collator_num_classes = num_labels
 
     if (use_mixup_cutmix or use_multi_task or use_arcface or use_hace or use_loss_registry
-            or use_logit_adjustment):
+            or use_logit_adjustment or evaluation_config.get('predictions_path')):
         # Use mixup collator (can handle mixup/cutmix, multi-task, arcface, HACE, and
         # loss_registry). Also used for plain single-task + balanced softmax (mixup
         # disabled), since the logit adjustment lives in MixupTrainer.compute_loss.

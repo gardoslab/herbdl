@@ -9,7 +9,7 @@ N = 20
 def tiny():
     yield "convnext", ConvNextForImageClassification(ConvNextConfig(num_labels=N, depths=[1, 1, 1, 1], hidden_sizes=[8, 16, 16, 32])), 64
     yield "dinov2", Dinov2ForImageClassification(Dinov2Config(num_labels=N, hidden_size=32, num_hidden_layers=2, num_attention_heads=2, intermediate_size=64, image_size=56, patch_size=14)), 56
-    yield "efficientnet", EfficientNetForImageClassification(EfficientNetConfig(num_labels=N, image_size=64, depth_coefficient=0.2, width_coefficient=0.2)), 64
+    yield "efficientnet", EfficientNetForImageClassification(EfficientNetConfig(num_labels=N, image_size=64, depth_coefficient=0.2, width_coefficient=0.2, hidden_dim=256)), 64
     try:
         import timm
         from transformers import TimmWrapperConfig, TimmWrapperForImageClassification
