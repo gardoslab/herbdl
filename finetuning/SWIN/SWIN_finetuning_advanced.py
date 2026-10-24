@@ -976,6 +976,8 @@ class MarginWarmupCallback(TrainerCallback):
         arcface = getattr(model, 'arcface', None)
         if arcface is not None:
             arcface.set_margin(m)
+        elif getattr(model, 'head', None) is not None and hasattr(model, 'set_margin'):
+            model.set_margin(m)  # SwinWithLoss with a registry arcface head
 
     def on_step_begin(self, args, state, control, model=None, **kwargs):
         if self.warmup_epochs <= 0:
@@ -2421,6 +2423,14 @@ def main():
         trainer.add_callback(MarginWarmupCallback(
             target_margin=arcface_margin, warmup_epochs=arcface_margin_warmup_epochs
         ))
+
+    # Registry ArcFace head: same margin warmup as the native path (loss_registry.margin_warmup_epochs).
+    _reg_warmup = int((loss_registry_config.get('margin_warmup_epochs', 0) or 0)) if use_loss_registry else 0
+    if use_loss_registry and loss_registry_head == 'arcface' and _reg_warmup > 0:
+        trainer.add_callback(MarginWarmupCallback(
+            target_margin=float(loss_registry_head_kwargs.get('m', 0.30)), warmup_epochs=_reg_warmup
+        ))
+        print(f"__CUSTOM__: registry ArcFace margin warmup over {_reg_warmup} epochs")
 
     # KappaFace/ECC's per-class running buffers (mean_dir, center_feat, etc.) have no
     # cross-rank synchronization -- see KappaEpochUpdateCallback/ECCEpochUpdateCallback's
