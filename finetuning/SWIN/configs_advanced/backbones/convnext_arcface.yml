@@ -57,6 +57,7 @@ custom:
   run_group: PART4_CONVNEXT
   run_name: PART4_CONVNEXT_ARCFACE
   run_id: part4_convnext_arcface
+  run_notes: 'Part 4: convnext with the arcface loss, llindon recipe, Part 1 data.'
 wandb:
   enabled: true
   entity: gardoslab

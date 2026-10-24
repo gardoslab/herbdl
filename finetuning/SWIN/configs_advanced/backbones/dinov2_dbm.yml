@@ -57,6 +57,7 @@ custom:
   run_group: PART4_DINOV2
   run_name: PART4_DINOV2_DBM
   run_id: part4_dinov2_dbm
+  run_notes: 'Part 4: dinov2 with the dbm loss, llindon recipe, Part 1 data.'
 augmentation:
   use_advanced: false
   randaugment:

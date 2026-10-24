@@ -27,7 +27,8 @@ for bb, (src, batch) in BACKBONES.items():
                  save_total_limit=3, resume_from_checkpoint="newest", overwrite_output_dir=False,
                  per_device_eval_batch_size=64, dataloader_num_workers=16)
         c["data"]["max_eval_samples"] = None
-        c.setdefault("custom", {}).update(run_group=f"PART4_{bb.upper()}", run_name=f"PART4_{name.upper()}", run_id=f"part4_{name}")
+        c.setdefault("custom", {}).update(run_group=f"PART4_{bb.upper()}", run_name=f"PART4_{name.upper()}", run_id=f"part4_{name}",
+                                       run_notes=f"Part 4: {bb} with the {loss} loss, llindon recipe, Part 1 data.")
         c["wandb"] = dict(enabled=True, entity="gardoslab", project="herbdl", resume="allow")
         for k in ("arcface", "multi_task", "hace", "ema"):
             c[k] = dict(enabled=False)
