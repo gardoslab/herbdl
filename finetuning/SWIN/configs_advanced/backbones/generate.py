@@ -12,6 +12,7 @@ BACKBONES = {
     "dinov2": ("finetuning/DinoV2/configs_advanced/dinov2_base_baseline.yml", dict(per_device_train_batch_size=64, gradient_accumulation_steps=1)),
 }
 LOSSES = {
+    "ce": dict(loss_registry=dict(enabled=True, head="softmax", head_kwargs={}, aux=[]), long_tail=dict(logit_adjustment=False)),
     "ce_la": dict(loss_registry=dict(enabled=True, head="softmax", head_kwargs={}, aux=[]), long_tail=dict(logit_adjustment=True, tau=1.0)),
     "arcface": dict(loss_registry=dict(enabled=True, head="arcface", head_kwargs=dict(s=30.0, m=0.3), aux=[], margin_warmup_epochs=5),
                     long_tail=dict(logit_adjustment=False)),
