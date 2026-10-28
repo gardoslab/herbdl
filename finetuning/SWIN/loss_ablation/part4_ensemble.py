@@ -32,6 +32,7 @@ import numpy as np
 
 OUT_ROOT = "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN"
 P3, P4 = f"{OUT_ROOT}/PHASE3_EVAL", f"{OUT_ROOT}/PHASE4_EVAL"
+P4F = f"{OUT_ROOT}/PHASE4_EVAL_FULL"  # llindon CE checkpoints re-scored on the full val set
 TRAIN_JSON = "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
 VAL_JSON = "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
 LABEL = "scientificNameEncoded"
@@ -42,11 +43,11 @@ N_BOOT = 1000
 
 MODELS = {
     "swin_ce": f"{P3}/ce", "swin_ce_la": f"{P3}/ce_la", "swin_arcface": f"{P3}/arcface", "swin_dbm": f"{P3}/dbm",
-    "cnx_ce_llindon": f"{P4}/convnext_ce", "cnx_ce_la": f"{P4}/convnext_ce_la",
+    "cnx_ce_llindon": f"{P4F}/convnext_ce", "cnx_ce_la": f"{P4}/convnext_ce_la",
     "cnx_arcface": f"{P4}/convnext_arcface", "cnx_dbm": f"{P4}/convnext_dbm",
-    "dino_ce_llindon": f"{P4}/dinov2_ce", "dino_ce_la": f"{P4}/dinov2_ce_la",
+    "dino_ce_llindon": f"{P4F}/dinov2_ce", "dino_ce_la": f"{P4}/dinov2_ce_la",
     "dino_arcface": f"{P4}/dinov2_arcface", "dino_dbm": f"{P4}/dinov2_dbm",
-    "coatnet_ce_llindon": f"{P4}/coatnet_ce", "effnet_ce_llindon": f"{P4}/efficientnet_ce",
+    "coatnet_ce_llindon": f"{P4F}/coatnet_ce", "effnet_ce_llindon": f"{P4F}/efficientnet_ce",
 }
 # Ensembles to evaluate: name -> members, strongest first.
 SETS = {
