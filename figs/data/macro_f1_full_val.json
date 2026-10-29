@@ -1,4 +1,0 @@
-{"_source": "Full-validation-set macro-F1. Seed-42 models: per-species analysis run 2964fe72 (data/per-species/per_species_summary.json). DBM seed 43: re-score run 61e3b0a7. KappaFace and ArcFace seed 43: 1-GPU training runs cf97fa8d and f4e0099f (full set).",
- "arcface": 0.7972, "subcenter_arcface": 0.8003, "hace": 0.7908, "dbm": 0.8161, "x2softmax": 0.3136,
- "kappaface": 0.8150, "arcface_ecc": 0.7934, "arcface_tara": 0.7986,
- "dbm_seed43": 0.8159, "kappaface_seed43": 0.8145, "arcface_seed43": 0.7976}

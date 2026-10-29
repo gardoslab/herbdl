@@ -1,9 +1,0 @@
-{"_source": "__P3__ PAIR lines of run 2964fe72 (paired 1000-resample image bootstrap on the full 167,955-image validation set; eval-set noise only, not seed noise). Values are fractions; [lo, hi] = 95% interval.",
- "vs_arcface": {
-  "dbm":               {"acc": [0.0145, 0.0130, 0.0158], "f1": [0.0189, 0.0170, 0.0214]},
-  "kappaface":         {"acc": [0.0116, 0.0102, 0.0129], "f1": [0.0177, 0.0155, 0.0195]},
-  "subcenter_arcface": {"acc": [0.0016, 0.0002, 0.0029], "f1": [0.0031, 0.0009, 0.0050]},
-  "arcface_tara":      {"acc": [0.0006, -0.0008, 0.0020], "f1": [0.0013, -0.0010, 0.0033]},
-  "arcface_ecc":       {"acc": [-0.0038, -0.0052, -0.0024], "f1": [-0.0038, -0.0063, -0.0021]},
-  "hace":              {"acc": [-0.0087, -0.0102, -0.0072], "f1": [-0.0065, -0.0091, -0.0045]}
- }}
