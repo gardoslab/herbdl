@@ -1,0 +1,108 @@
+# GENERATED eval-only re-score of Part 4 run convnext_ce_la
+model:
+  model_name_or_path: facebook/convnext-base-224-22k
+  config_name: null
+  cache_dir: null
+  model_revision: main
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: /projectnb/herbdl/data/kaggle-herbaria/train_2022.json
+  validation_file: /projectnb/herbdl/data/kaggle-herbaria/val_2022.json
+  image_column_name: filename
+  label_column_name: scientificNameEncoded
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: null
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+training:
+  output_dir: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/PHASE4_EVAL/convnext_ce_la
+  logging_dir: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/PHASE4_EVAL/convnext_ce_la
+  do_train: false
+  do_eval: true
+  per_device_train_batch_size: 128
+  per_device_eval_batch_size: 64
+  learning_rate: 3.0e-05
+  num_train_epochs: 50
+  warmup_steps: 1000
+  weight_decay: 0.01
+  gradient_accumulation_steps: 1
+  lr_scheduler_type: cosine_with_min_lr
+  lr_scheduler_kwargs:
+    min_lr: 1.0e-06
+  logging_strategy: epoch
+  save_strategy: epoch
+  save_total_limit: 3
+  eval_strategy: steps
+  eval_steps: 17928
+  report_to: none
+  bf16: true
+  dataloader_num_workers: 16
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 42
+  resume_from_checkpoint: null
+custom:
+  lr_type: cosine
+  frozen: false
+  frozen_type: none
+  run_group: PART4_CONVNEXT
+  run_name: PART4_CONVNEXT_CE_LA
+  run_id: part4_convnext_ce_la
+  run_notes: 'Part 4: convnext with the ce_la loss, llindon recipe, Part 1 data.'
+wandb:
+  enabled: false
+  entity: gardoslab
+  project: herbdl
+  resume: allow
+augmentation:
+  use_advanced: false
+  randaugment:
+    num_ops: 0
+    magnitude: 9
+  mixup:
+    enabled: false
+    alpha: 0.8
+  cutmix:
+    enabled: false
+    alpha: 1.0
+  mixup_cutmix_prob: 0.5
+  label_smoothing: 0.0
+  random_erasing:
+    enabled: false
+    probability: 0.25
+    min_area: 0.02
+    max_area: 0.33
+  color_jitter:
+    enabled: false
+    brightness: 0.4
+    contrast: 0.4
+    saturation: 0.4
+    hue: 0.1
+multi_task:
+  enabled: false
+arcface:
+  enabled: false
+hace:
+  enabled: false
+ema:
+  enabled: false
+loss_registry:
+  enabled: true
+  head: softmax
+  head_kwargs: {}
+  aux: []
+long_tail:
+  logit_adjustment: true
+  tau: 1.0
+evaluation:
+  init_weights: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/BACKBONES/convnext_ce_la/model.safetensors
+  predictions_path: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/PHASE4_EVAL/convnext_ce_la/predictions.npz
