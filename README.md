@@ -153,6 +153,22 @@ jupyter notebook kaggle22_clustering.ipynb
 - Image data: `/projectnb/herbdl/data/kaggle-herbaria/`
 - Model checkpoints: `/projectnb/herbdl/workspaces/<username>/herbdl/finetuning/output/`
 
+## Loss-Ablation Report and Overleaf Sync
+
+The loss-function ablation and scaling-ladder write-up lives at the repository root:
+
+- `paper.tex` / `paper.pdf` - the report (compiles with pdfLaTeX or `tectonic paper.tex`)
+- `figs/make_figures.py` - regenerates every figure in `figs/` from the run-derived data in `figs/data/`
+  (`cd figs && python3 make_figures.py`; needs matplotlib and numpy)
+
+A copy of the report for Overleaf lives in the separate repository
+[gardoslab/project-artifacts](https://github.com/gardoslab/project-artifacts) (private), checked
+out locally at `~/overleaf` as `~/overleaf/herbdl/loss-ablations/` (`main.tex` plus `figs/`). To
+update it, copy `paper.tex` to `main.tex` and the `figs/*.pdf` and `figs/near_duplicate_examples.png`
+files across, then commit and push from `~/overleaf`. The exact steps and the list of files are in
+`~/overleaf/herbdl/README.md`, and the layout conventions are in `~/overleaf/README.md`. Linking that
+repository to the Overleaf project (Overleaf's GitHub integration) is done on the Overleaf side.
+
 ## Additional Documentation
 
 - `CLAUDE.md` - Detailed project guide for Claude Code
