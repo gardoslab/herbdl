@@ -37,8 +37,12 @@ class SwinWithLoss(nn.Module):
         elif hasattr(base_model, "swin"):
             self.swin = base_model.swin
         else:
-            raise ValueError("base_model must have a 'swin' or 'swinv2' attribute")
-        hidden_size = base_model.config.hidden_size
+            # Not a SWIN: ConvNeXt / DINOv2 / EfficientNet / timm (CoAtNet). The encoder
+            # is still stored as self.swin so heads, exports and checkpoints are unchanged.
+            from .backbones import build_pooled_encoder
+            self.swin, hidden_size = build_pooled_encoder(base_model)
+        if hasattr(base_model, "swinv2") or hasattr(base_model, "swin"):
+            hidden_size = base_model.config.hidden_size
 
         self.hierarchy = hierarchy
         head_kwargs = head_kwargs or {}

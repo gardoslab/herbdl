@@ -625,6 +625,20 @@ class MixupTrainer(Trainer):
                 # TARA: SwinWithLoss routes this second view to the BioCLIP teacher only.
                 outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a,
                                 bioclip_pixel_values=inputs["bioclip_pixel_values"])
+            elif self.loss_registry and self.logit_adjustment:
+                # Balanced softmax (logit adjustment) on the registry's plain softmax head.
+                # The registry model's own loss ignores the log-prior, so take the head's raw
+                # logits (no labels -> no loss, no margin) and compute the loss here:
+                #   CE(logits + tau * log_prior, labels), float32, training only. Evaluation
+                # (below) uses the raw logits. main() allows this only for head=softmax with no
+                # aux losses, so this is exactly "CE + logit adjustment" and nothing else.
+                outputs = model(pixel_values=inputs["pixel_values"])
+                outputs["loss"] = F.cross_entropy(self._adjust_logits(outputs["logits"].float()), labels_a)
+                if not getattr(self, "_la_announced", False):
+                    self._la_announced = True
+                    print(f"__CUSTOM__: balanced softmax ACTIVE on the registry softmax head "
+                          f"(tau={self.logit_adjustment_tau}, log-prior range "
+                          f"{self.log_prior.min().item():.2f}..{self.log_prior.max().item():.2f})", flush=True)
             else:
                 outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a)
             loss = outputs.get("loss")
@@ -985,6 +999,8 @@ class MarginWarmupCallback(TrainerCallback):
         arcface = getattr(model, 'arcface', None)
         if arcface is not None:
             arcface.set_margin(m)
+        elif getattr(model, 'head', None) is not None and hasattr(model, 'set_margin'):
+            model.set_margin(m)  # SwinWithLoss with a registry arcface head
 
     def on_step_begin(self, args, state, control, model=None, **kwargs):
         if self.warmup_epochs <= 0:
@@ -1319,6 +1335,11 @@ def main():
         raise ValueError("config sets loss_registry.enabled alongside arcface/hace/"
                           "multi_task -- loss_registry replaces the classifier head the "
                           "same way those do, enable exactly one")
+    if use_loss_registry and use_logit_adjustment and (loss_registry_head != 'softmax' or loss_registry_aux):
+        # Logit adjustment is only implemented for the plain softmax head (see compute_loss);
+        # on any other registry head it would be silently ignored, which is worse than failing.
+        raise ValueError(f"long_tail.logit_adjustment with loss_registry requires head='softmax' and no "
+                          f"aux losses, got head={loss_registry_head!r}, aux={loss_registry_aux}")
     use_tara = use_loss_registry and 'tara' in loss_registry_aux
     bioclip_teacher = None  # built with the model below, used by train_transforms
     if use_tara and use_advanced_aug:
@@ -2142,6 +2163,16 @@ def main():
         trust_remote_code=model_args.trust_remote_code,
     )
 
+    # timm models (CoAtNet): TimmWrapperImageProcessor exposes data_config (timm-style) instead
+    # of size/image_mean/image_std (HF-style). Shim the HF attributes so the transform pipeline
+    # below is unchanged (ported from llindon's CoAtNet_finetuning_advanced.py).
+    if hasattr(image_processor, "data_config") and not hasattr(image_processor, "size"):
+        _dc = image_processor.data_config
+        _c, _h, _w = _dc["input_size"]
+        image_processor.size = {"height": _h, "width": _w}
+        image_processor.image_mean = list(_dc["mean"])
+        image_processor.image_std = list(_dc["std"])
+
     if frozen:
         print("__CUSTOM__: Freezing model according to the frozen type: ", frozen_type)
         for name, param in model.named_parameters():
@@ -2337,7 +2368,7 @@ def main():
         collator_num_classes = num_labels
 
     if (use_mixup_cutmix or use_multi_task or use_arcface or use_hace or use_loss_registry
-            or use_logit_adjustment):
+            or use_logit_adjustment or evaluation_config.get('predictions_path')):
         # Use mixup collator (can handle mixup/cutmix, multi-task, arcface, HACE, and
         # loss_registry). Also used for plain single-task + balanced softmax (mixup
         # disabled), since the logit adjustment lives in MixupTrainer.compute_loss.
@@ -2419,6 +2450,14 @@ def main():
         trainer.add_callback(MarginWarmupCallback(
             target_margin=arcface_margin, warmup_epochs=arcface_margin_warmup_epochs
         ))
+
+    # Registry ArcFace head: same margin warmup as the native path (loss_registry.margin_warmup_epochs).
+    _reg_warmup = int((loss_registry_config.get('margin_warmup_epochs', 0) or 0)) if use_loss_registry else 0
+    if use_loss_registry and loss_registry_head == 'arcface' and _reg_warmup > 0:
+        trainer.add_callback(MarginWarmupCallback(
+            target_margin=float(loss_registry_head_kwargs.get('m', 0.30)), warmup_epochs=_reg_warmup
+        ))
+        print(f"__CUSTOM__: registry ArcFace margin warmup over {_reg_warmup} epochs")
 
     # KappaFace/ECC's per-class running buffers (mean_dir, center_feat, etc.) have no
     # cross-rank synchronization -- see KappaEpochUpdateCallback/ECCEpochUpdateCallback's
