@@ -17,6 +17,7 @@ import yaml
 
 import depth
 import extract
+import capacity
 import geometry
 import spatial
 import taxonomy
@@ -313,6 +314,168 @@ def run_f1(cfg, df, n_classes, device):
     section("DONE")
 
 
+def run_capacity(cfg, df, n_classes, device):
+    """How many of the classifier's 1024 dimensions carry independent weight."""
+    section("CAPACITY: LOAD CLASSIFIER")
+    from transformers import SwinForImageClassification
+    model = SwinForImageClassification.from_pretrained(cfg["model"]["checkpoint"])
+    W = model.classifier.weight.detach().cpu().numpy()   # (K, C)
+    del model
+    print(f"__RG__: classifier weight matrix W: {W.shape}")
+
+    section("CAPACITY: CLASS CENTROIDS (reuses the geometry node's cached val "
+            "features; no forward pass if that cache is already complete)")
+    cache = extract.build_cache(df["path"].tolist(), df["label"].to_numpy(), cfg, device)
+    ok = cache["valid"]
+    y = df["label"].to_numpy()[ok]
+    feat = cache["feat"][ok]
+    mu, _, _mu_g, present = geometry.class_centroids(feat, y, n_classes, device)
+    mu_present = mu.cpu().numpy()[present]
+    print(f"__RG__: class-centroid matrix (classes with >=1 val image): {mu_present.shape}")
+
+    section("CAPACITY: SINGULAR VALUE SPECTRA")
+    spectra = {
+        "classifier_W": capacity.singular_values(W),
+        "class_centroids": capacity.singular_values(mu_present),
+        # The honest null: 15,501 rows into 1024 columns cannot be fully
+        # decorrelated even with zero structure, so "1024" itself is not the
+        # right ceiling to compare the trained matrix against -- this is.
+        "random_baseline": capacity.random_baseline(W.shape, seed=0),
+    }
+    shapes = {"classifier_W": W.shape, "class_centroids": mu_present.shape,
+              "random_baseline": W.shape}
+
+    results = {}
+    print(f"__RG__: {'matrix':18s} {'shape':>16s} {'entropy-erank':>14s} "
+          f"{'particip.ratio':>15s} {'dims@90%':>9s} {'dims@99%':>9s} {'cond#':>10s}")
+    for name, s in spectra.items():
+        st = capacity.effective_rank(s)
+        results[name] = {**st, "shape": list(shapes[name])}
+        print(f"__RG__: {name:18s} {str(shapes[name]):>16s} {st['erank_entropy']:14.1f} "
+              f"{st['participation_ratio']:15.1f} {st['dims_for_energy'][0.90]:9d} "
+              f"{st['dims_for_energy'][0.99]:9d} {st['condition_number']:10.1f}")
+
+    section("CAPACITY: VERDICT")
+    d = W.shape[1]
+    ceiling = results["random_baseline"]["erank_entropy"]
+    actual = results["classifier_W"]["erank_entropy"]
+    print(f"__RG__: classifier effective rank  = {actual:.1f} of {d} raw dimensions ({actual / d:.1%})")
+    print(f"__RG__: random-matrix ceiling      = {ceiling:.1f} of {d} raw dimensions ({ceiling / d:.1%})")
+    print(f"__RG__: classifier / ceiling       = {actual / ceiling:.1%}")
+
+    section("ARTIFACTS")
+    outdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
+    os.makedirs(outdir, exist_ok=True)
+    for name, s in spectra.items():
+        np.save(os.path.join(outdir, f"singular_values_{name}.npy"), s)
+    with open(os.path.join(outdir, "capacity_summary.json"), "w") as fh:
+        json.dump(results, fh, indent=2)
+    print(f"__RG__: wrote {os.path.join(outdir, 'capacity_summary.json')}")
+    section("DONE")
+
+
+def run_subspace(cfg, df, n_classes, device):
+    """Does a species' reliance on the near-degenerate directions predict how
+    poorly its detector is aligned with it?
+
+    The capacity node found detectors spread across ~879 of 1024 dimensions
+    while species positions carry real information in only ~467 of them, and
+    unevenly -- the loudest direction there carries ~925x the quietest. The
+    reading offered was that a detector's reach into those near-empty
+    directions dilutes its alignment with its own species. This tests that
+    directly rather than leaving it as a plausible story: split each species'
+    centred position into its share of energy in the informative directions
+    versus the near-degenerate tail, and correlate that split against the
+    detector-alignment measure from the geometry node.
+
+    No forward pass: reuses the geometry node's cached val features and the
+    checkpoint's classifier weights, identically to the capacity node.
+    """
+    section("SUBSPACE: LOAD CLASSIFIER + CENTROIDS")
+    from transformers import SwinForImageClassification
+    model = SwinForImageClassification.from_pretrained(cfg["model"]["checkpoint"])
+    W = model.classifier.weight.detach().cpu().numpy()   # (K, C)
+    del model
+
+    cache = extract.build_cache(df["path"].tolist(), df["label"].to_numpy(), cfg, device)
+    ok = cache["valid"]
+    y = df["label"].to_numpy()[ok]
+    pred = cache["pred"][ok]
+    feat = cache["feat"][ok]
+    mu, _, mu_g, present = geometry.class_centroids(feat, y, n_classes, device)
+    mu_np = mu.cpu().numpy()
+    mu_g_np = mu_g.cpu().numpy()
+    # Centred exactly as the geometry node's self-duality measure centres it --
+    # an off-centre matrix here would let the discarded global-mean direction
+    # masquerade as "informative" for every species alike (see capacity.py).
+    Mc = mu_np[present] - mu_g_np[None, :]
+    print(f"__RG__: centred centroid matrix: {Mc.shape}")
+
+    section("SUBSPACE: DECOMPOSE THE CENTRED CENTROID MATRIX")
+    s, vt = capacity.svd_full(Mc)
+    st = capacity.effective_rank(s)
+    r = int(round(st["erank_entropy"]))
+    print(f"__RG__: centred effective rank = {st['erank_entropy']:.1f}  "
+          f"-> top {r} directions treated as informative, "
+          f"remaining {Mc.shape[1] - r} as the near-degenerate tail")
+
+    tail_present = capacity.tail_energy_fraction(Mc, vt, r)
+    tail_frac = np.full(n_classes, np.nan)
+    tail_frac[present] = tail_present
+    print(f"__RG__: tail-energy fraction across species: "
+          f"mean={np.nanmean(tail_frac):.4f} median={np.nanmedian(tail_frac):.4f} "
+          f"p10={np.nanpercentile(tail_frac,10):.4f} p90={np.nanpercentile(tail_frac,90):.4f}")
+
+    section("SUBSPACE: DOES TAIL RELIANCE PREDICT MISALIGNMENT?")
+    # Detector alignment, computed identically to geometry.collapse_metrics'
+    # self_duality_cos: cosine between the classifier row and the centred
+    # centroid, so this compares directly against the parent line's Section 5.
+    denom = np.linalg.norm(W, axis=1) * np.linalg.norm(mu_np - mu_g_np[None, :], axis=1)
+    num = (W * (mu_np - mu_g_np[None, :])).sum(axis=1)
+    dual = np.full(n_classes, np.nan)
+    dual[present] = num[present] / np.where(denom[present] > 0, denom[present], np.nan)
+
+    correct = (y == pred)
+    rec = spatial.per_class_mean(correct.astype(np.float32), y, n_classes)
+
+    sel = present & np.isfinite(tail_frac) & np.isfinite(dual)
+    print(f"__RG__: {sel.sum():,} species enter the comparison")
+    r_align = spearman(tail_frac[sel], dual[sel])
+    r_recall = spearman(tail_frac[sel], rec[sel])
+    print(f"__RG__: Spearman(tail_energy_fraction, detector_alignment) = {r_align:+.4f}")
+    print(f"__RG__: Spearman(tail_energy_fraction, recall)             = {r_recall:+.4f}")
+
+    print("__RG__: quintiles of tail-energy fraction "
+          "(Q1 = lives in the informative directions, Q5 = lives in the tail):")
+    q = np.quantile(tail_frac[sel], np.linspace(0, 1, 6))
+    for i in range(5):
+        m = sel & (tail_frac >= q[i]) & (tail_frac <= q[i + 1])
+        if m.sum():
+            print(f"__RG__:     Q{i + 1}  tail_frac {q[i]:.3f}-{q[i + 1]:.3f}  "
+                  f"species {m.sum():5d}  alignment {np.nanmean(dual[m]):.4f}  "
+                  f"recall {np.nanmean(rec[m]):.4f}")
+
+    section("ARTIFACTS")
+    outdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
+    os.makedirs(outdir, exist_ok=True)
+    table = pd.DataFrame({
+        "class_id": np.arange(n_classes),
+        "tail_energy_fraction": tail_frac,
+        "detector_alignment": dual,
+        "recall": rec,
+    })
+    p = os.path.join(outdir, "subspace_alignment.csv")
+    table.to_csv(p, index=False)
+    print(f"__RG__: wrote {p}  ({len(table):,} rows)")
+    with open(os.path.join(outdir, "subspace_summary.json"), "w") as fh:
+        json.dump({"effective_rank_centred": st["erank_entropy"], "n_loud_dims": r,
+                   "n_tail_dims": Mc.shape[1] - r, "n_species": int(sel.sum()),
+                   "spearman_tail_vs_alignment": r_align,
+                   "spearman_tail_vs_recall": r_recall}, fh, indent=2)
+    print(f"__RG__: wrote {os.path.join(outdir, 'subspace_summary.json')}")
+    section("DONE")
+
+
 def section(title):
     print(f"\n__RG__ ===== {title} " + "=" * max(0, 58 - len(title)), flush=True)
 
@@ -426,6 +589,12 @@ def main():
         return
     if cfg["analysis"].get("mode", "geometry") == "f1":
         run_f1(cfg, df, n_classes, device)
+        return
+    if cfg["analysis"].get("mode", "geometry") == "capacity":
+        run_capacity(cfg, df, n_classes, device)
+        return
+    if cfg["analysis"].get("mode", "geometry") == "subspace":
+        run_subspace(cfg, df, n_classes, device)
         return
 
     # --- preprocessing fidelity ------------------------------------------
