@@ -15,6 +15,7 @@ import pandas as pd
 import torch
 import yaml
 
+import depth
 import extract
 import geometry
 import spatial
@@ -92,6 +93,103 @@ def train_counts(path, label_key, n_classes):
     if bad:
         print(f"__RG__: {bad} unparseable train manifest lines skipped")
     return counts
+
+
+def run_depth(cfg, df, n_classes, device):
+    """Depth x taxonomic-level resolution table."""
+    y = df["label"].to_numpy()
+    fam, gen, spe = taxonomy.build_taxonomy(df, cfg["model"]["label_mapping"], n_classes)
+
+    # Genus / family ids per image, derived from the species label.
+    gen_ids = {g: i for i, g in enumerate(sorted(set(gen)))}
+    fam_ids = {f: i for i, f in enumerate(sorted(set(fam)))}
+    gen_of_class = np.array([gen_ids[g] for g in gen])
+    fam_of_class = np.array([fam_ids[f] for f in fam])
+    y_gen, y_fam = gen_of_class[y], fam_of_class[y]
+    print(f"__RG__: levels -> species {n_classes:,}  genus {len(gen_ids):,}  family {len(fam_ids):,}")
+
+    section("DEPTH EXTRACT")
+    raw, names = depth.build_depth_cache(df["path"].tolist(), cfg, device)
+
+    # Three descriptors per stage. mean is what the parent node used; std is the
+    # spatial variation it discarded; meanstd is both, to check they are not
+    # merely redundant.
+    feats = {}
+    for nm in names:
+        feats[(nm, "mean")] = raw[(nm, "mean")]
+        feats[(nm, "std")] = raw[(nm, "std")]
+        feats[(nm, "mean+std")] = np.hstack([raw[(nm, "mean")], raw[(nm, "std")]])
+
+    fit = depth.alternating_split(y, n_classes)
+    print(f"__RG__: split  fit={fit.sum():,}  eval={(~fit).sum():,} "
+          f"(per-class alternation)")
+
+    section("REPRESENTATION DIAGNOSTIC")
+    # A nearest-centroid score is only readable if the vectors at that depth
+    # actually point in different directions. Check that before believing any of
+    # the accuracies below.
+    print(f"__RG__: {'stage':10s} {'descr':9s} {'dim':>6s} {'pairwise cos (raw)':>26s} "
+          f"{'(centred)':>22s}")
+    for (nm, d), X in feats.items():
+        m0, s0 = depth.cosine_concentration(X, device)
+        m1, s1 = depth.cosine_concentration(depth.prep(X, True), device)
+        print(f"__RG__: {nm:10s} {d:9s} {X.shape[1]:6d} {m0:14.4f} +/-{s0:8.4f} "
+              f"{m1:12.4f} +/-{s1:8.4f}")
+
+    rows = []
+    # Centring is settled by the parent node as necessary; only that path is run.
+    for centre in (True,):
+        tag = "centred"
+        section(f"DEPTH x DESCRIPTOR x TAXONOMIC LEVEL [{tag}] (nearest-centroid)")
+        print(f"__RG__: {'stage':10s} {'descr':9s} {'dim':>6s} {'family':>9s} {'genus':>9s} "
+              f"{'species':>9s} {'nn-is-congener':>16s}")
+        for (nm, d), X0 in feats.items():
+            X = depth.prep(X0, centre)
+            a_f, _ = depth.nearest_centroid_accuracy(X[fit], y_fam[fit], X[~fit], y_fam[~fit],
+                                                     len(fam_ids), device)
+            a_g, _ = depth.nearest_centroid_accuracy(X[fit], y_gen[fit], X[~fit], y_gen[~fit],
+                                                     len(gen_ids), device)
+            a_s, live = depth.nearest_centroid_accuracy(X[fit], y[fit], X[~fit], y[~fit],
+                                                        n_classes, device)
+            cong, tot = depth.congener_neighbour_rate(X, y, n_classes, gen, device)
+            print(f"__RG__: {nm:10s} {d:9s} {X.shape[1]:6d} {a_f:9.4f} {a_g:9.4f} {a_s:9.4f} "
+                  f"{cong:16.4f}", flush=True)
+            rows.append({"mode": tag, "stage": nm, "descriptor": d, "dim": int(X.shape[1]),
+                         "family": a_f, "genus": a_g, "species": a_s, "nn_is_congener": cong,
+                         "species_centroids_live": live, "classes_with_centroid": tot})
+
+    # Chance baselines, so "low" can be read against something.
+    section("CHANCE BASELINES (majority-class on the held-out half)")
+    for lvl, yy, k in (("family", y_fam, len(fam_ids)), ("genus", y_gen, len(gen_ids)),
+                       ("species", y, n_classes)):
+        maj = np.bincount(yy[~fit], minlength=k).max() / (~fit).sum()
+        print(f"__RG__: {lvl:8s} groups={k:6,d}  majority-class acc={maj:.4f}  "
+              f"uniform={1.0 / k:.6f}")
+
+    section("DOES VARIANCE RECOVER EARLY STRUCTURE? (species accuracy)")
+    print(f"__RG__: {'stage':10s} {'mean':>10s} {'std':>10s} {'mean+std':>10s} "
+          f"{'std/mean':>10s}")
+    by = {(r["stage"], r["descriptor"]): r for r in rows}
+    for nm in names:
+        m, sd, ms = (by[(nm, k)]["species"] for k in ("mean", "std", "mean+std"))
+        print(f"__RG__: {nm:10s} {m:10.4f} {sd:10.4f} {ms:10.4f} "
+              f"{(sd / m if m > 0 else float('nan')):10.2f}")
+
+    section("FRACTION OF FINAL-STAGE ACCURACY REACHED, per descriptor")
+    for d in ("mean", "std", "mean+std"):
+        last = by[(names[-1], d)]
+        print(f"__RG__: [{d}]  " + "  ".join(
+            f"{nm}:" + "/".join(f"{by[(nm, d)][k] / last[k]:.3f}"
+                                for k in ("family", "genus", "species")) for nm in names))
+    print("__RG__: (each entry is family/genus/species as a fraction of that "
+          "descriptor's own final stage)")
+
+    section("ARTIFACTS")
+    outdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
+    os.makedirs(outdir, exist_ok=True)
+    pd.DataFrame(rows).to_csv(os.path.join(outdir, "depth_taxonomy.csv"), index=False)
+    print(f"__RG__: wrote {os.path.join(outdir, 'depth_taxonomy.csv')}")
+    section("DONE")
 
 
 def section(title):
@@ -201,6 +299,10 @@ def main():
     n_tr = train_counts(cfg["data"]["train_manifest"], cfg["data"]["label_column"], n_classes)
     print(f"__RG__: train images     {n_tr.sum():,}  "
           f"(classes with 0 train images: {(n_tr == 0).sum():,})")
+
+    if cfg["analysis"].get("mode", "geometry") == "depth":
+        run_depth(cfg, df, n_classes, device)
+        return
 
     # --- preprocessing fidelity ------------------------------------------
     # The reported accuracy of a checkpoint is only reproducible under the
