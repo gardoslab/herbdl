@@ -90,6 +90,55 @@ class ImageList(Dataset):
             return torch.zeros(3, self.size, self.size), 0
 
 
+def load_head(ck, cfg):
+    """Read the (K, C) class-direction matrix straight out of the checkpoint file.
+
+    This must not go through `from_pretrained`. An ArcFace checkpoint stores its
+    head as `arcface.weight`, so `SwinForImageClassification` finds no
+    `classifier.weight`, **randomly initialises one**, and every geometry number
+    downstream would describe noise while looking entirely plausible. Reading the
+    tensor by name and failing loudly if it is absent is the only safe option.
+
+    Returns (W, bias, head_kind). ArcFace has no bias -- at inference it scores
+    by cosine alone.
+    """
+    from safetensors.torch import load_file
+
+    head = cfg["model"].get("head", "linear")
+    want = {"linear": "classifier.weight", "arcface": "arcface.weight"}
+    if head not in want:
+        raise ValueError(f"model.head must be one of {sorted(want)}, got {head!r}")
+
+    sd = load_file(os.path.join(ck, "model.safetensors"))
+    name = want[head]
+    if name not in sd:
+        present = [k for k in sd if not k.startswith(("swin.", "swinv2.", "backbone."))]
+        raise RuntimeError(
+            f"model.head={head!r} expects tensor {name!r} in {ck}, which does not "
+            f"contain it. Non-backbone tensors present: {present}")
+    W = sd[name].float()
+    b = sd.get(name.replace("weight", "bias"))
+    print(f"__RG__: head={head} tensor={name} shape={tuple(W.shape)} "
+          f"bias={'yes' if b is not None else 'none'}")
+    return W, (b.float() if b is not None else None), head
+
+
+def head_logits(pooled, W, b, head, scale):
+    """Reproduce the checkpoint's own inference rule.
+
+    linear   : pooled @ W.T + b
+    arcface  : scale * cos(pooled, W), i.e. both sides L2-normalised and no bias.
+               This mirrors SwinWithArcFace's eval branch exactly (k=1, margin
+               applied only during training).
+    """
+    if head == "arcface":
+        wn = torch.nn.functional.normalize(W, dim=1)
+        en = torch.nn.functional.normalize(pooled, dim=1)
+        return scale * (en @ wn.T)
+    out = pooled @ W.T
+    return out + b if b is not None else out
+
+
 def processor_size(proc):
     """transformers >=4.57 returns a SizeDict here: mapping-like, not a dict."""
     raw = getattr(proc, "size", None)
@@ -119,9 +168,17 @@ def probe_preprocessing(paths, labels, cfg, device, n_probe):
     proc = AutoImageProcessor.from_pretrained(ck)
     size = processor_size(proc)
     model = SwinForImageClassification.from_pretrained(ck).to(device).eval()
+    # Same reason as load_head: model(...).logits would run the randomly
+    # initialised classifier on an ArcFace checkpoint and the probe would
+    # compare three flavours of noise.
+    W_cpu, b_cpu, head = load_head(ck, cfg)
+    W = W_cpu.to(device)
+    b = b_cpu.to(device) if b_cpu is not None else None
+    scale = float(cfg["model"].get("arcface_scale", 30.0))
     autocast = torch.bfloat16 if device == "cuda" else torch.float32
 
-    print(f"__RG__: preprocessing probe on {len(sub_paths):,} sampled val images", flush=True)
+    print(f"__RG__: preprocessing probe on {len(sub_paths):,} sampled val images "
+          f"(head={head})", flush=True)
     results = {}
     for mode in ("processor", "eval_protocol", "shortest_edge"):
         tf = build_preprocess(mode, proc, size)
@@ -135,8 +192,9 @@ def probe_preprocessing(paths, labels, cfg, device, n_probe):
                 px = px.to(device, non_blocking=True)
                 with torch.autocast(device_type=device, dtype=autocast,
                                     enabled=(device == "cuda")):
-                    logits = model(pixel_values=px).logits
-                preds.append(logits.float().argmax(1).cpu().numpy())
+                    pooled = model.swin(pixel_values=px).pooler_output
+                logits = head_logits(pooled.float(), W, b, head, scale)
+                preds.append(logits.argmax(1).cpu().numpy())
                 off += px.shape[0]
         acc = float((np.concatenate(preds) == sub_y).mean())
         results[mode] = acc
@@ -198,12 +256,21 @@ def build_cache(paths, labels, cfg, device):
         proc = AutoImageProcessor.from_pretrained(ck)
         size = processor_size(proc)
         tf = build_preprocess(mode, proc, size)
+        # from_pretrained is used for the backbone only; the head comes from
+        # load_head, since an ArcFace checkpoint has no classifier.* to load.
         model = SwinForImageClassification.from_pretrained(ck).to(device).eval()
-        W = model.classifier.weight.detach()          # (K, C)
+        W_cpu, b_cpu, head = load_head(ck, cfg)
+        W = W_cpu.to(device)
+        b = b_cpu.to(device) if b_cpu is not None else None
+        scale = float(cfg["model"].get("arcface_scale", 30.0))
+        # ArcFace scores with the normalised row, so that is the direction whose
+        # per-position contributions are meaningful.
+        W_spat = (torch.nn.functional.normalize(W, dim=1) if head == "arcface" else W).float()
         n_classes = W.shape[0]
         autocast = torch.bfloat16 if device == "cuda" else torch.float32
         print(f"__RG__: model loaded, classes={n_classes:,} feat_dim={W.shape[1]} "
-              f"image_size={size} preprocess={mode}", flush=True)
+              f"image_size={size} preprocess={mode} head={head}"
+              + (f" scale={scale}" if head == "arcface" else ""), flush=True)
 
         t0, seen = time.time(), 0
         for s in range(n_shards):
@@ -229,10 +296,9 @@ def build_cache(paths, labels, cfg, device):
                         out = model.swin(pixel_values=px)
                         h = out.last_hidden_state           # (B, 49, C)
                         pooled = out.pooler_output          # (B, C) == h.mean(1)
-                        logits = model.classifier(pooled)   # (B, K)
 
                     h = h.float()
-                    logits = logits.float()
+                    logits = head_logits(pooled.float(), W, b, head, scale)
 
                     tl = logits.gather(1, y[:, None]).squeeze(1)
                     # Rank of the true class: how many classes outscore it.
@@ -244,10 +310,16 @@ def build_cache(paths, labels, cfg, device):
 
                     # Per-position logit contributions for the true and the
                     # predicted class: (B, 49) = h . w_class
+                    #
+                    # Still exact under ArcFace. Its logit is
+                    #   s * (pooled . w_hat) / ||pooled||,  pooled = mean_p h_p
+                    # so the sum over positions decomposes the same way and the
+                    # leading s/||pooled|| is one scalar per image -- it cancels
+                    # when spatial.py converts these to per-position shares.
                     buf["spat_true"].append(
-                        torch.einsum("bpc,bc->bp", h, W[y].float()).cpu().numpy().astype(np.float16))
+                        torch.einsum("bpc,bc->bp", h, W_spat[y]).cpu().numpy().astype(np.float16))
                     buf["spat_pred"].append(
-                        torch.einsum("bpc,bc->bp", h, W[pred].float()).cpu().numpy().astype(np.float16))
+                        torch.einsum("bpc,bc->bp", h, W_spat[pred]).cpu().numpy().astype(np.float16))
 
                     buf["feat"].append(pooled.float().cpu().numpy().astype(np.float16))
                     buf["pred"].append(pred.cpu().numpy().astype(np.int32))
