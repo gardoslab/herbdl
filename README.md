@@ -27,7 +27,7 @@ Model training and evaluation scripts for multiple architectures.
 SWIN Transformer training and evaluation.
 
 - `SWIN_finetuning_advanced.py` - the only training script; every technique is a YAML config section
-- `train_advanced.sh` - SCC job entry point (`CONFIG_FILE=...`); see `finetuning/CLAUDE.md`
+- `train_advanced.sh` - SCC job entry point (`CONFIG_FILE=...`); see `AGENTS.md`
 - `configs_advanced/` - run configs, including all loss-ablation and scaling-ladder runs
 - `loss_ablation/` - the loss functions and their analysis scripts (see below)
 
@@ -154,7 +154,7 @@ qsub -l h_rt=12:00:00 -P herbdl -l gpus=2 -l gpu_c=8.0 -l gpu_memory=48G \
 ```
 
 Each config's batch settings assume a GPU count (noted in its `gradient_accumulation_steps`
-comment); 1-GPU configs drop `NPROC_PER_NODE`. Environment details: `finetuning/CLAUDE.md`.
+comment); 1-GPU configs drop `NPROC_PER_NODE`. Environment details: `AGENTS.md`.
 
 ### Creating Clustering Visualizations
 
@@ -175,7 +175,7 @@ jupyter notebook kaggle22_clustering.ipynb
 
 ## Additional Documentation
 
-- `CLAUDE.md` / `AGENTS.md` - Project guide and lessons learned for coding agents
+- `AGENTS.md` - The one project guide for coding agents: architecture, commands, environment, lessons learned (`CLAUDE.md` just imports it)
 - Subdirectory READMEs in `datasets/`, `utils/`, `CLIP/`, and `finetuning/output/`
 
 ## License

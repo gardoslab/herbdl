@@ -18,7 +18,7 @@ trap, not a shortcut.
 `open_clip_torch` is not part of `fall-2026-pyt`; installed via
 `pip install --user open_clip_torch` under the project's PYTHONUSERBASE, same
 convention as every other extra package this project needs (see
-finetuning/CLAUDE.md).
+AGENTS.md).
 """
 
 import torch
