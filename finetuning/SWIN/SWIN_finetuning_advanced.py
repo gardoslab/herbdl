@@ -425,11 +425,60 @@ class SwinWithArcFace(nn.Module):
         return result
 
 
+class AugSchedule:
+    """Shared augmentation strength s in [0, 1] for a ramp-in (progressive) augmentation schedule.
+
+    Heavy augmentation (RandAugment, mixup/CutMix, label smoothing) changes the inputs a lot, and a
+    model fine-tuned from clean-image weights adapts better if the strength is increased gradually
+    (the idea of progressive learning in EfficientNetV2, Tan & Le 2021). One scalar s drives all
+    three: RandAugment is applied with probability s, mixup/CutMix with probability prob * s, and
+    label smoothing is eps * s. The value lives in shared memory, so DataLoader worker processes
+    (which run the transforms and the collator) see the updates made by AugWarmupCallback in the
+    main process. s = 1 for the whole run when augmentation.warmup_epochs is 0 (the default)."""
+    def __init__(self):
+        import multiprocessing
+        self._v = multiprocessing.Value('d', 1.0)
+
+    @property
+    def value(self):
+        return self._v.value
+
+    def set(self, x):
+        self._v.value = float(x)
+
+
+AUG_SCHEDULE = AugSchedule()
+
+
+class ScheduledRandAugment:
+    """Applies a RandAugment transform with probability AUG_SCHEDULE.value (a no-op at s = 0)."""
+    def __init__(self, rand_augment, schedule):
+        self.rand_augment, self.schedule = rand_augment, schedule
+
+    def __call__(self, img):
+        return self.rand_augment(img) if random.random() < self.schedule.value else img
+
+
+class AugWarmupCallback(TrainerCallback):
+    """Sets AUG_SCHEDULE.value = min(1, epoch / warmup_epochs) before every optimizer step.
+    Recomputed from state.epoch each step, so it is resume-safe."""
+    def __init__(self, schedule, warmup_epochs):
+        self.schedule, self.warmup_epochs = schedule, warmup_epochs
+
+    def on_step_begin(self, args, state, control, **kwargs):
+        self.schedule.set(min(1.0, (state.epoch or 0.0) / self.warmup_epochs))
+
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        if state.is_world_process_zero:
+            print(f"__CUSTOM__: augmentation strength s = {self.schedule.value:.3f} at epoch {state.epoch}", flush=True)
+
+
 class MixupCutmixCollator:
     """
     Collator that applies Mixup and/or Cutmix augmentation.
     """
-    def __init__(self, mixup_alpha=0.8, cutmix_alpha=1.0, prob=0.5, label_smoothing=0.1, num_classes=1000, multi_task=False, label_column_name="label"):
+    def __init__(self, mixup_alpha=0.8, cutmix_alpha=1.0, prob=0.5, label_smoothing=0.1, num_classes=1000, multi_task=False, label_column_name="label", schedule=None):
+        self.schedule = schedule  # AugSchedule: scales the mixup/CutMix probability (ramp-in)
         self.mixup_alpha = mixup_alpha
         self.cutmix_alpha = cutmix_alpha
         self.prob = prob
@@ -477,7 +526,7 @@ class MixupCutmixCollator:
                                 if "bioclip_pixel_values" in examples[0] else None)
 
         # Decide whether to apply mixup/cutmix
-        if random.random() > self.prob:
+        if random.random() > self.prob * (self.schedule.value if self.schedule is not None else 1.0):
             # No mixup/cutmix
             result = {"pixel_values": pixel_values, "labels": labels}
             if bioclip_pixel_values is not None:
@@ -554,8 +603,13 @@ class MixupTrainer(Trainer):
     """
     def __init__(self, *args, multi_task=False, arcface=False, hace=False, loss_registry=False,
                  aux_log_steps=500, predictions_path=None, features_path=None, logit_adjustment=False, log_prior=None, logit_adjustment_tau=1.0,
-                 family_weight=0.2, genus_weight=0.3, species_weight=1.0, **kwargs):
+                 family_weight=0.2, genus_weight=0.3, species_weight=1.0,
+                 registry_label_smoothing=0.0, aug_schedule=None, **kwargs):
         super().__init__(*args, **kwargs)
+        # Heavy augmentation on registry heads: label smoothing target (0 unless augmentation is
+        # enabled) and the shared ramp-in schedule; mixup/CutMix labels arrive as labels_b / lam.
+        self.registry_label_smoothing = registry_label_smoothing
+        self.aug_schedule = aug_schedule
         self.multi_task = multi_task
         self.arcface = arcface
         # HACE and loss_registry get the exact same treatment as (non-multi-task) ArcFace
@@ -640,7 +694,19 @@ class MixupTrainer(Trainer):
                           f"(tau={self.logit_adjustment_tau}, log-prior range "
                           f"{self.log_prior.min().item():.2f}..{self.log_prior.max().item():.2f})", flush=True)
             else:
-                outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a)
+                _ls = self.registry_label_smoothing * (self.aug_schedule.value if self.aug_schedule is not None else 1.0)
+                if self.loss_registry and (labels_b is not None or _ls > 0):
+                    # Heavy augmentation: mixup/CutMix mixed labels and/or label smoothing. The
+                    # head's margin is applied once per label set; loss = lam*L(y_a) + (1-lam)*L(y_b).
+                    outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a,
+                                    labels_b=labels_b, lam=lam, label_smoothing=_ls)
+                    if not getattr(self, "_heavy_announced", False):
+                        self._heavy_announced = True
+                        print("__CUSTOM__: heavy augmentation ACTIVE on the registry head "
+                              f"(label smoothing target {self.registry_label_smoothing}, mixed batch this step: "
+                              f"{labels_b is not None})", flush=True)
+                else:
+                    outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a)
             loss = outputs.get("loss")
             # Aux-loss visibility (ECC/TARA): the total loss alone can't show whether the aux
             # term is doing anything. TARA's value is -cos(student, teacher), so -value is the
@@ -1252,6 +1318,11 @@ def main():
     # Extract augmentation parameters
     aug_config = config.get('augmentation', {})
     use_advanced_aug = aug_config.get('use_advanced', False)
+    # augmentation.warmup_epochs: ramp the augmentation strength s from 0 to 1 over this many
+    # epochs (AugSchedule). 0 (default) = full strength from the first step.
+    aug_warmup_epochs = float(aug_config.get('warmup_epochs', 0) or 0) if use_advanced_aug else 0.0
+    AUG_SCHEDULE.set(0.0 if aug_warmup_epochs > 0 else 1.0)
+    print(f"__CUSTOM__: Augmentation warm-up epochs: {aug_warmup_epochs}")
 
     # Extract multi-crop testing parameters
     multi_crop_config = config.get('multi_crop', {})
@@ -1350,6 +1421,17 @@ def main():
         raise ValueError("loss_registry.aux includes 'tara' with augmentation.use_advanced=true "
                           "-- TARA currently supports only the standard RandomResizedCrop+flip "
                           "pipeline (shared between the SWIN and BioCLIP views)")
+
+    # Heavy augmentation (mixup/CutMix and/or label smoothing) on a registry head is implemented
+    # for a single head without aux losses (SwinWithLoss.forward mixes the head loss only). Refuse
+    # the combinations that would silently ignore the mixed labels.
+    _heavy_registry = use_loss_registry and use_advanced_aug and (
+        aug_config.get('mixup', {}).get('enabled', False) or aug_config.get('cutmix', {}).get('enabled', False)
+        or aug_config.get('label_smoothing', 0.0) > 0)
+    if _heavy_registry and (loss_registry_aux or use_logit_adjustment):
+        raise ValueError("mixup/CutMix/label smoothing with loss_registry is implemented for a single head "
+                         "only: remove loss_registry.aux and long_tail.logit_adjustment")
+
 
     print(f"__CUSTOM__: Learning rate type: {learning_rate_type}")
     print(f"__CUSTOM__: Frozen: {frozen}")
@@ -2212,12 +2294,13 @@ def main():
 
         # Add RandAugment if configured
         if aug_config.get('randaugment', {}).get('num_ops', 0) > 0:
-            train_transform_list.append(
+            train_transform_list.append(ScheduledRandAugment(
                 RandAugment(
                     num_ops=aug_config['randaugment']['num_ops'],
                     magnitude=aug_config['randaugment']['magnitude']
-                )
-            )
+                ),
+                AUG_SCHEDULE,
+            ))
 
         # Add ColorJitter if configured
         if aug_config.get('color_jitter', {}).get('enabled', False):
@@ -2393,6 +2476,7 @@ def main():
             num_classes=collator_num_classes,
             multi_task=use_multi_task,
             label_column_name=data_args.label_column_name,
+            schedule=AUG_SCHEDULE,
         )
 
         # Use custom trainer for mixup/cutmix loss, multi-task learning, or arcface
@@ -2414,6 +2498,8 @@ def main():
             logit_adjustment=use_logit_adjustment,
             log_prior=log_prior,
             logit_adjustment_tau=logit_adjustment_tau,
+            registry_label_smoothing=(aug_config.get('label_smoothing', 0.0) if use_advanced_aug else 0.0),
+            aug_schedule=AUG_SCHEDULE,
             family_weight=family_weight,
             genus_weight=genus_weight,
             species_weight=species_weight,
@@ -2444,6 +2530,10 @@ def main():
     # so the final evaluate()/save_model() below reflect the EMA weights.
     if use_ema:
         trainer.add_callback(EMACallback(decay=ema_decay))
+
+    # Heavy-augmentation ramp-in (AugSchedule): see AugWarmupCallback.
+    if aug_warmup_epochs > 0:
+        trainer.add_callback(AugWarmupCallback(AUG_SCHEDULE, aug_warmup_epochs))
 
     # ArcFace margin warmup: ramp m from 0 to its target over the first few epochs.
     if use_arcface and arcface_margin_warmup_epochs > 0:

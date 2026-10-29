@@ -149,7 +149,8 @@ class SwinWithLoss(nn.Module):
         # never has to branch on which of these three it is.
         return h.class_directions().unsqueeze(1), None, "cosine", float(h.s), 1
 
-    def forward(self, pixel_values, labels=None, bioclip_pixel_values=None, **kwargs):
+    def forward(self, pixel_values, labels=None, bioclip_pixel_values=None,
+                labels_b=None, lam=1.0, label_smoothing=0.0, **kwargs):
         pooled = self.swin(pixel_values).pooler_output
 
         if self.hace is not None:
@@ -160,7 +161,19 @@ class SwinWithLoss(nn.Module):
                 logits, loss = out, None
         else:
             logits = self.head(pooled, labels)
-            loss = F.cross_entropy(logits, labels) if labels is not None else None
+            if labels is None:
+                loss = None
+            elif labels_b is None and label_smoothing == 0.0:
+                loss = F.cross_entropy(logits, labels)
+            else:
+                # Heavy augmentation: label smoothing and/or mixup/CutMix. The margin is applied
+                # per label set, so the head runs once more with the second label set (the backbone
+                # runs once): loss = lam * CE(head(f, y_a), y_a) + (1 - lam) * CE(head(f, y_b), y_b).
+                loss = F.cross_entropy(logits, labels, label_smoothing=label_smoothing)
+                if labels_b is not None:
+                    logits_b = self.head(pooled, labels_b)
+                    loss = lam * loss + (1.0 - lam) * F.cross_entropy(
+                        logits_b, labels_b, label_smoothing=label_smoothing)
 
         aux_losses = {}  # detached per-aux values, for logging only (never used in the graph)
         if labels is not None:
