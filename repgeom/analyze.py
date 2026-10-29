@@ -192,6 +192,127 @@ def run_depth(cfg, df, n_classes, device):
     section("DONE")
 
 
+def run_f1(cfg, df, n_classes, device):
+    """Does detector misalignment cost F1, or only recall?
+
+    The geometry node found detector alignment is the strongest single
+    predictor of per-class *recall* (Spearman +0.595). Recall alone cannot tell
+    apart two very different failures: a detector that under-fires and misses
+    its own species, versus one that over-fires and grabs other species'
+    images. The second costs precision, which recall is blind to. F1 sees both,
+    so if alignment predicts F1 as strongly as it predicts recall, the effect
+    is about detector quality generally; if it predicts only recall, the
+    detector is specifically failing to claim its own.
+
+    No forward pass: the predictions this needs are already in the geometry
+    node's cache.
+    """
+    section("F1: LOAD CACHE")
+    cache = extract.build_cache(df["path"].tolist(), df["label"].to_numpy(), cfg, device)
+    ok = cache["valid"]
+    y = df["label"].to_numpy()[ok]
+    pred = cache["pred"][ok]
+    feat = cache["feat"][ok]
+
+    section("F1: PER-CLASS PRECISION / RECALL / F1")
+    n_val = np.bincount(y, minlength=n_classes).astype(np.int64)          # true support
+    n_pred = np.bincount(pred, minlength=n_classes).astype(np.int64)      # predicted support
+    tp = np.bincount(y[y == pred], minlength=n_classes).astype(np.int64)
+    present = n_val > 0
+
+    precision = np.full(n_classes, np.nan)
+    np.divide(tp, n_pred, out=precision, where=n_pred > 0)
+    # A class that is never predicted has no precision to speak of; scoring it 0
+    # is the sklearn convention and is what makes macro-F1 comparable to the
+    # figure the checkpoint reports.
+    precision[(n_pred == 0) & present] = 0.0
+
+    recall = np.full(n_classes, np.nan)
+    np.divide(tp, n_val, out=recall, where=n_val > 0)
+
+    denom = precision + recall
+    f1 = np.full(n_classes, np.nan)
+    np.divide(2 * precision * recall, denom, out=f1, where=np.isfinite(denom) & (denom > 0))
+    f1[present & np.isfinite(denom) & (denom == 0)] = 0.0
+
+    never_predicted = int(((n_pred == 0) & present).sum())
+    print(f"__RG__: species with val images            {present.sum():,}")
+    print(f"__RG__: species NEVER predicted, any image {never_predicted:,} "
+          f"({never_predicted / present.sum():.2%} of them)")
+    print(f"__RG__: macro precision {np.nanmean(precision[present]):.4f}   "
+          f"macro recall {np.nanmean(recall[present]):.4f}   "
+          f"macro F1 {np.nanmean(f1[present]):.4f}")
+    # Cross-check against the checkpoint's own reported eval_f1 (0.7455).
+    print(f"__RG__: macro F1 over all {n_classes:,} classes "
+          f"(absent ones scored 0) = {np.nan_to_num(f1).sum() / n_classes:.4f}")
+
+    section("F1: DETECTOR ALIGNMENT")
+    mu, _, mu_g, _p = geometry.class_centroids(feat, y, n_classes, device)
+    from transformers import SwinForImageClassification
+    model = SwinForImageClassification.from_pretrained(cfg["model"]["checkpoint"])
+    W = model.classifier.weight.detach().cpu().numpy()
+    del model
+    mu_np, mu_g_np = mu.cpu().numpy(), mu_g.cpu().numpy()
+    Mc = mu_np - mu_g_np[None, :]
+    denom_a = np.linalg.norm(W, axis=1) * np.linalg.norm(Mc, axis=1)
+    align = np.full(n_classes, np.nan)
+    num = (W * Mc).sum(axis=1)
+    np.divide(num, denom_a, out=align, where=denom_a > 0)
+    align[~present] = np.nan
+    print(f"__RG__: alignment mean={np.nanmean(align):.4f} median={np.nanmedian(align):.4f}")
+
+    section("F1: DOES ALIGNMENT PREDICT F1, OR ONLY RECALL?")
+    # Reported at several minimum-support thresholds on purpose. The subspace
+    # node produced a headline correlation on this same data that reversed sign
+    # once small-sample classes were excluded, so a single unfiltered number is
+    # not trustworthy evidence here.
+    print(f"__RG__: {'min n_val':>10s} {'species':>8s} {'vs precision':>13s} "
+          f"{'vs recall':>10s} {'vs F1':>8s}")
+    rows = []
+    for thr in (1, 5, 10, 20):
+        m = present & (n_val >= thr) & np.isfinite(align)
+        if m.sum() < 50:
+            continue
+        rp = spearman(align[m], precision[m])
+        rr = spearman(align[m], recall[m])
+        rf = spearman(align[m], f1[m])
+        print(f"__RG__: {thr:>10d} {m.sum():>8,d} {rp:>13.4f} {rr:>10.4f} {rf:>8.4f}")
+        rows.append({"min_n_val": thr, "n_species": int(m.sum()),
+                     "spearman_align_precision": rp, "spearman_align_recall": rr,
+                     "spearman_align_f1": rf})
+
+    sel = present & (n_val >= int(cfg["analysis"]["min_val_per_class"])) & np.isfinite(align)
+    print(f"__RG__: quintiles of detector alignment (n_val >= "
+          f"{cfg['analysis']['min_val_per_class']}, {sel.sum():,} species):")
+    q = np.quantile(align[sel], np.linspace(0, 1, 6))
+    for i in range(5):
+        m = sel & (align >= q[i]) & (align <= q[i + 1])
+        if m.sum():
+            print(f"__RG__:     Q{i + 1}  align {q[i]:.3f}-{q[i + 1]:.3f}  "
+                  f"species {m.sum():5d}  precision {np.nanmean(precision[m]):.4f}  "
+                  f"recall {np.nanmean(recall[m]):.4f}  F1 {np.nanmean(f1[m]):.4f}")
+
+    section("ARTIFACTS")
+    outdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
+    os.makedirs(outdir, exist_ok=True)
+    table = pd.DataFrame({
+        "class_id": np.arange(n_classes), "n_val": n_val, "n_pred": n_pred, "tp": tp,
+        "precision": precision, "recall": recall, "f1": f1, "detector_alignment": align,
+    })
+    p = os.path.join(outdir, "per_class_f1.csv")
+    table.to_csv(p, index=False)
+    print(f"__RG__: wrote {p}  ({len(table):,} rows)")
+    with open(os.path.join(outdir, "f1_summary.json"), "w") as fh:
+        json.dump({"macro_precision": float(np.nanmean(precision[present])),
+                   "macro_recall": float(np.nanmean(recall[present])),
+                   "macro_f1": float(np.nanmean(f1[present])),
+                   "never_predicted": never_predicted,
+                   "n_present": int(present.sum()),
+                   "correlations": rows}, fh, indent=2)
+    print(f"__RG__: wrote {os.path.join(outdir, 'f1_summary.json')}")
+    section("DONE")
+
+
 def section(title):
     print(f"\n__RG__ ===== {title} " + "=" * max(0, 58 - len(title)), flush=True)
 
@@ -302,6 +423,9 @@ def main():
 
     if cfg["analysis"].get("mode", "geometry") == "depth":
         run_depth(cfg, df, n_classes, device)
+        return
+    if cfg["analysis"].get("mode", "geometry") == "f1":
+        run_f1(cfg, df, n_classes, device)
         return
 
     # --- preprocessing fidelity ------------------------------------------
