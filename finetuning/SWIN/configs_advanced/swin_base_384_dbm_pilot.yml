@@ -42,8 +42,8 @@ data:
   train_val_split: 0.2
 
 training:
-  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_DBM_384_PILOT"
-  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_DBM_384_PILOT"
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_DBM_384_PILOT_SEED43"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_DBM_384_PILOT_SEED43"
   do_train: true
   do_eval: true
   per_device_train_batch_size: 64
@@ -65,15 +65,14 @@ training:
   dataloader_num_workers: 16
   remove_unused_columns: false
   overwrite_output_dir: false
-  seed: 42
-
+  seed: 43   # Phase 3 noise check: the only change from the seed-42 run
 custom:
   lr_type: "cosine"
   frozen: false
   frozen_type: "none"
-  run_group: "SWIN_Base_DBM_384_Pilot"
-  run_name: "SWIN_Base_DBM_384_Pilot"
-  run_id: "swin_base_dbm_384_pilot"
+  run_group: "SWIN_Base_DBM_384_Pilot_Seed43"
+  run_name: "SWIN_Base_DBM_384_Pilot_Seed43"
+  run_id: "swin_base_dbm_384_pilot_seed43"
   run_notes: >
     Real-scale pilot (50 epochs, 2 GPUs) of DBM, matched against the other
     384px pilots on every shared hyperparameter. First real-scale use of
