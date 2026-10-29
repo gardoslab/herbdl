@@ -45,16 +45,10 @@ pip install -r clustering_viz/requirements.txt
 Three main model architectures are explored:
 
 **SWIN Transformer** (`finetuning/SWIN/`):
-- Primary script: `SWIN_finetuning.py` - Full HuggingFace Trainer-based training with WandB logging
-- Alternative: `train.py` - Custom training loop with partial layer freezing support
-- Evaluation: `eval.py`
-- Base model: `microsoft/swin-base-patch4-window12-384`
-- WandB integration configured with project: `herbdl`, entity: `bu-spark-ml`
-- Environment variables control training behavior:
-  - `FROZEN`: Enable layer freezing (true/false)
-  - `FROZEN_TYPE`: Freezing strategy (v1, etc.)
-  - `LR_TYPE`: Learning rate schedule type
-  - `RUN_GROUP`, `RUN_NAME`, `RUN_ID`: WandB run identification
+- The only training script: `SWIN_finetuning_advanced.py` (YAML config in, HF `Trainer` underneath; every technique is a config section), launched through `train_advanced.sh`
+- Runs are configs in `configs_advanced/`; the loss-ablation code (losses, trainer options, analysis scripts) is in `loss_ablation/` (see its `README.md`)
+- WandB: project `herbdl`, entity `gardoslab` (set per config under `wandb:`)
+- Other backbones (ConvNeXt, DINOv2, CoAtNet, EfficientNet) run through the same script via `loss_ablation/backbones.py`
 
 **BioCLIP** (`finetuning/BioCLIP/`):
 - Zero-shot evaluation for biological domain
@@ -114,24 +108,14 @@ CLIP zero-shot experiments on herbarium specimens:
 
 ### Running SWIN Finetuning
 
-Standard training with HuggingFace Trainer:
 ```bash
 cd finetuning/SWIN
-python SWIN_finetuning.py \
-    --output_dir ../output/SWIN/kaggle22/ \
-    --model_name_or_path "microsoft/swin-base-patch4-window12-384" \
-    --train_file ../datasets/train_22_scientific.json \
-    --do_train --do_eval \
-    --per_device_train_batch_size 8 \
-    --learning_rate 1e-4 \
-    --num_train_epochs 3
+qsub -l h_rt=12:00:00 -P herbdl -l gpus=2 -l gpu_c=8.0 -l gpu_memory=48G \
+     -v NPROC_PER_NODE=2,CONFIG_FILE=configs_advanced/swin_base_384_dbm_pilot.yml train_advanced.sh
 ```
 
-Custom training with layer freezing:
-```bash
-cd finetuning/SWIN
-python train.py  # Freezes all layers except classifier and final layernorm
-```
+Eval-only re-scoring of a finished model: a config with `do_train: false`, `evaluation.init_weights` and
+`evaluation.predictions_path` (see `configs_advanced/phase3_eval/`).
 
 ### Running BioCLIP Evaluation
 
@@ -224,3 +208,61 @@ Most training scripts expect GPU resources. Example job parameters:
 ```
 
 See `finetuning/command.sh` for checkpoint resumption logic using `jq` to parse `trainer_state.json`.
+
+## Lessons learned (loss ablations, scaling ladder, backbone repeat)
+
+Hard-won; read before launching or analysing anything. Results and numbers live in the project's
+"Loss Function Ablations" document (kept outside this repo).
+
+### Evaluation: count the images, then trust the number
+- **Always check how many validation images were scored.** `val_2022` has 167,955. Two silent bugs changed results:
+  2-GPU runs were scored on rank 0's half only (fixed: predictions are gathered across ranks; macro-F1 was ~1 point
+  low), and a collaborator's configs capped evaluation at `data.max_eval_samples: 50000` (accuracy barely moves but
+  macro-F1 is 1.8-2.3 points lower on a subset, because species with no validation image but some predictions score F1 = 0).
+  Look for `Num examples = 167955` in the log.
+- An eval-only re-score (`evaluation.init_weights` + `evaluation.predictions_path`, `do_train: false`) must reproduce the
+  training run's own final numbers; use it to recover a score when a job died right after saving its model, and to save
+  per-image predictions for later analysis.
+- Macro-F1 = mean per-class F1 over classes in the labels or the predictions. Compare models only on the same images.
+  "Points" means percentage points (0.8161 -> 0.8125 is 0.36 points).
+- Seed noise is about 0.1 points (two seeds of three losses only). Bootstrap intervals over validation images measure
+  evaluation noise, not training noise.
+- **Same-specimen copies:** about 1.3-1.7% of `val_2022` images have a copy in `train_2022` (cosine of a generic SWIN
+  feature >= 0.93 flags 1.68%; by eye ~1.25%, because the 0.93-0.95 band is mostly look-alike scans). Models get ~98% of
+  them right; removing them lowers scores by a few tenths and changes no ranking. The ladder's validation set is easier
+  (Herbarium 2021 images) and not comparable with the ablation.
+- **Geometry metrics:** the separation gap subtracts an image-to-centroid cosine from a centroid-to-centroid cosine, so it
+  depends on how many images each centroid has. Compare by number of training images per species and with an equal number
+  of validation images per species (`loss_ablation/geometry_fixed_n.py`). The overall average is dominated by common species
+  (53% of species have 51-73 training images).
+
+### Training and configs
+- The native cross-entropy path applies label smoothing 0.1 by default (the collator default) and ignores logit adjustment;
+  the loss registry heads bypass it. Run plain cross-entropy through the registry `softmax` head. Logit adjustment works on
+  that head only.
+- The loss ablation uses **only a random crop and flip**. Heavy augmentation (RandAugment, mixup/CutMix, label smoothing)
+  exists in many older configs; applied from the first step it hurt badly (0.62 vs 0.78); ramp it in
+  (`augmentation.warmup_epochs`) or start from a trained checkpoint.
+- bf16: margin heads must take `acos` in fp32 (a bf16 clamp epsilon is a no-op, so `acos(>1)` gives NaN). Grep logs for
+  non-finite warnings before relaunching.
+- Keep the **effective batch** (per-device x accumulation x GPUs) when changing GPU count. Use
+  `resume_from_checkpoint: newest`; never leave `overwrite_output_dir` on. KappaFace and ECC are 1-GPU only.
+- Check a new config against the script's required keys before launching (e.g. `custom.run_notes`); a missing key kills
+  the job in seconds. Compare losses within a backbone only; each backbone keeps its own tuned recipe.
+
+### Cluster and job operations
+- SGE stops jobs at 12 hours ("job died on the exec node"). Relaunch from the newest checkpoint. Elapsed time under 12 hours
+  with exit status 137 means a node loss or kill: relaunch the same way. A job ending right at the limit can save the model
+  but not the final summary: re-score it.
+- After every launch run `orx supervise <run> --restart` and confirm the run leaves "starting" (the launcher prints "Could
+  not spawn `orx supervise`" and otherwise no status updates arrive). Do not trust the run list alone: stale "running"
+  records hid dead jobs for two days. Check `qstat` and checkpoint modification times. Logs of running jobs lag; read the
+  job's log file on the cluster.
+- The first evaluation of a run is slow (cold file reads, up to an hour), later ones take minutes. One-off NCCL watchdog
+  timeouts and Weights & Biases 404s on resume happen; relaunching from the checkpoint fixes them.
+- Keep at most 4 jobs queued or running unless told otherwise.
+
+### Git
+- Each experiment is an `orx/...` branch off the previous one; all are merged into `loss-ablations`. Shared single-file
+  configs (`repgeom/configs/repgeom.yml`, the SWIN-L hybrid yml) were overwritten by each experiment: keep one file per
+  variant instead.

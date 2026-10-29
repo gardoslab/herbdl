@@ -33,9 +33,15 @@ SWIN Transformer training and evaluation.
 
 #### Loss-function ablations
 - The losses themselves: `finetuning/SWIN/loss_ablation/losses.py` (HACE in `hierarchy.py`, ECC/TARA in `aux.py`)
-- Their run configs: `finetuning/SWIN/configs_advanced/swin_base_384_*.yml`
-- Everything else (tests, analysis scripts, trainer options): `finetuning/SWIN/loss_ablation/README.md`
+- Their run configs: `finetuning/SWIN/configs_advanced/swin_base_384_*.yml`; the same losses on other backbones:
+  `configs_advanced/backbones/` (training) and `backbone_eval/` (re-scoring); heavy-augmentation DBM: `swin_base_384_dbm_heavyaug.yml`
+- Everything else (tests, analysis scripts: ensembles, same-specimen copies, geometry by rarity, trainer options): `finetuning/SWIN/loss_ablation/README.md`
 - Results write-up: the project's "Loss Function Ablations" document (kept outside this repo)
+
+#### `ConvNeXt/`, `DinoV2/`, `EfficientNet_B6/`, `CoAtNet/`
+Older stand-alone training scripts and cross-entropy configs for those backbones (llindon). The loss
+ablation does not use these scripts: it runs the backbones through `SWIN_finetuning_advanced.py` with
+the adapters in `loss_ablation/backbones.py`, keeping llindon's configs as the recipe.
 
 #### `BioCLIP/`
 BioCLIP zero-shot evaluation for biological domain.
@@ -58,7 +64,25 @@ Hybrid model combining SWIN visual features with CLIP text-image alignment.
 
 ### `repgeom/`
 Representation-geometry analysis of trained SWIN checkpoints (class tightness, separation,
-classifier alignment, spatial evidence). See `repgeom/README.md`.
+classifier alignment, spatial evidence). See `repgeom/README.md`. One config per analysis mode in
+`repgeom/configs/` (`repgeom.yml` geometry / loss-ablation geometry, `depth.yml`, `f1.yml`,
+`capacity.yml`, `subspace.yml`); each experiment used to overwrite the single `repgeom.yml`, which
+is why they were split when the branches were merged.
+
+### `scaling/`
+Label-cardinality scaling study: census of the Kaggle 2021 pool, ladder builds, sweep and metric
+code, and fine-tune configs. See `scaling/README.md` and `scaling/BACKLOG.md`.
+
+### `datasets/gbif_f25/`
+Species index, overlap with GBIF-F24 and Harvard, and the long-tail / uniform-option rundown for
+the GBIF-F25 pool (`build_index.py`, `overlap.py`, `rundown.py`).
+
+### `paper/`
+The LaTeX report of the loss ablation and ladder, with its figure scripts and run-derived data
+(see "Loss-Ablation Report" below).
+
+### `docs/`
+SCC notes: GPU queues, a GPU check script, and how to run Claude on SCC.
 
 ### `CLIP/`
 Zero-shot evaluation experiments using OpenAI CLIP.
@@ -155,23 +179,23 @@ jupyter notebook kaggle22_clustering.ipynb
 
 ## Loss-Ablation Report and Overleaf Sync
 
-The loss-function ablation and scaling-ladder write-up lives at the repository root:
+The loss-function ablation and scaling-ladder write-up lives in `paper/`:
 
-- `paper.tex` / `paper.pdf` - the report (compiles with pdfLaTeX or `tectonic paper.tex`)
-- `figs/make_figures.py` - regenerates every figure in `figs/` from the run-derived data in `figs/data/`
-  (`cd figs && python3 make_figures.py`; needs matplotlib and numpy)
+- `paper/paper.tex` / `paper/paper.pdf` - the report (compiles with pdfLaTeX or `tectonic paper.tex`)
+- `paper/figs/make_figures.py` - regenerates every figure in `paper/figs/` from the run-derived data in `paper/figs/data/`
+  (`cd paper/figs && python3 make_figures.py`; needs matplotlib and numpy)
 
 A copy of the report for Overleaf lives in the separate repository
 [gardoslab/project-artifacts](https://github.com/gardoslab/project-artifacts) (private), checked
 out locally at `~/overleaf` as `~/overleaf/herbdl/loss-ablations/` (`main.tex` plus `figs/`). To
-update it, copy `paper.tex` to `main.tex` and the `figs/*.pdf` and `figs/near_duplicate_examples.png`
+update it, copy `paper/paper.tex` to `main.tex` and the `paper/figs/*.pdf` and `paper/figs/near_duplicate_examples.png`
 files across, then commit and push from `~/overleaf`. The exact steps and the list of files are in
 `~/overleaf/herbdl/README.md`, and the layout conventions are in `~/overleaf/README.md`. Linking that
 repository to the Overleaf project (Overleaf's GitHub integration) is done on the Overleaf side.
 
 ## Additional Documentation
 
-- `CLAUDE.md` - Detailed project guide for Claude Code
+- `CLAUDE.md` / `AGENTS.md` - Project guide and lessons learned for coding agents
 - Subdirectory READMEs in `datasets/`, `utils/`, `CLIP/`, and `finetuning/output/`
 
 ## License
