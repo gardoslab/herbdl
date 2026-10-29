@@ -104,3 +104,68 @@ def census(df, info, sample_check=8):
           f"(e.g. {df['path'].iloc[0]})")
     print("__LCS__ census end -----------------------------------------")
     return counts
+
+
+def load_pair(train_path, eval_path, image_column=None, label_column=None, image_root=""):
+    """Load a train pool and a DISJOINT eval pool onto one shared label space.
+
+    This becomes mandatory the moment the representation is itself fine-tuned on
+    the training pool. Scoring such a backbone on images it was fine-tuned on
+    measures memorisation, not recognition, and would flatten the cardinality
+    curve for entirely uninteresting reasons.
+
+    The two manifests are encoded independently by load_manifest, so their dense
+    label ids do NOT line up. We rebuild both from the *train* pool's raw labels
+    and drop eval rows whose class never appears in train.
+    """
+    tr, tinfo = load_manifest(train_path, image_column, label_column, image_root)
+    ev, einfo = load_manifest(eval_path, image_column, label_column, image_root)
+
+    uniq = np.sort(pd.unique(tr["raw_label"]))
+    remap = {v: i for i, v in enumerate(uniq)}
+    tr["label"] = tr["raw_label"].map(remap).astype(np.int64)
+
+    known = ev["raw_label"].isin(remap)
+    n_dropped = int((~known).sum())
+    ev = ev[known].copy()
+    ev["label"] = ev["raw_label"].map(remap).astype(np.int64)
+
+    tr = tr.copy()
+    tr["is_eval"] = False
+    ev["is_eval"] = True
+    both = pd.concat([tr, ev], ignore_index=True)
+
+    info = dict(tinfo)
+    info.update({
+        "n_classes": int(len(uniq)),
+        "n_images": int(len(both)),
+        "n_train_images": int(len(tr)),
+        "n_eval_images": int(len(ev)),
+        "eval_rows_dropped_unknown_class": n_dropped,
+        "eval_manifest_columns": einfo["manifest_columns"],
+    })
+    return both, info
+
+
+def pool_census(df, info):
+    """Second census for two-pool mode: per-pool sizes and per-class coverage."""
+    tr = df[~df["is_eval"]]
+    ev = df[df["is_eval"]]
+    tc = tr["label"].value_counts()
+    ec = ev["label"].value_counts()
+    print("__LCS__ pool census ----------------------------------------")
+    print(f"  train pool       : {len(tr):,} images over {tc.size:,} classes")
+    print(f"  eval  pool       : {len(ev):,} images over {ec.size:,} classes")
+    print(f"  eval rows dropped (class absent from train): "
+          f"{info['eval_rows_dropped_unknown_class']:,}")
+    if tc.size:
+        print("  train imgs/class : min={} med={} max={}".format(
+            int(tc.min()), int(tc.median()), int(tc.max())))
+    if ec.size:
+        print("  eval  imgs/class : min={} med={} max={}".format(
+            int(ec.min()), int(ec.median()), int(ec.max())))
+    overlap = set(tr["path"]) & set(ev["path"])
+    print(f"  path overlap between pools : {len(overlap):,} "
+          f"{'<-- LEAKAGE, eval is not held out' if overlap else '(clean)'}")
+    print("__LCS__ pool census end ------------------------------------", flush=True)
+    return len(overlap)

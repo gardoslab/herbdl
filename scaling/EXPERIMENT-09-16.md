@@ -1,12 +1,20 @@
-# Label cardinality sweep — what we did and what we found
+# How far does image recognition fall as you add labels?
 
-Run `09cfc736-44ca-4a1c-a839-a0e077ce0d84`, 16 September 2026. Commit `41cc489`.
-Ran 27m30s on one L40S. Raw numbers in
-`/projectnb/herbdl/workspaces/faridkar/herbdl/scaling/results/balanced_swin_base_in22k.json`.
+Three runs, 16 September 2026. This document supersedes an earlier version whose
+headline numbers were wrong; see "What we got wrong the first time" below.
+
+| Node | Run | What it did |
+|---|---|---|
+| `d2e95774` | `09cfc736` | First sweep. Fixed 4,000 training steps at every rung. **Superseded — undertrained.** |
+| `0ac5ea74` | `a9c8b04e` | Same sweep, but training budget measured rather than assumed. |
+| `5bf244c6` | `6fd4250b` | Same again, using a SWIN fine-tuned on the 15k herbarium labels, scored on held-out images. |
+
+Raw numbers on SCC under
+`/projectnb/herbdl/workspaces/faridkar/herbdl/scaling/results/`.
 
 ---
 
-## The question we were trying to answer
+## The question
 
 We'd seen SWIN get about 0.7 F1 on roughly 15,000 plant species, and suspected
 that number was flattering — that a handful of species were doing the heavy
@@ -19,8 +27,8 @@ differ in the number of labels, yes — but also in photo quality, in how many
 example images each class gets, in how similar the classes look. If accuracy is
 lower on the big one, you can't tell which of those four things caused it.
 
-So the whole point of this experiment was to change **only** the number of
-labels, and hold everything else still.
+So the whole point here was to change **only** the number of labels, and hold
+everything else still.
 
 ---
 
@@ -28,85 +36,82 @@ labels, and hold everything else still.
 
 ### Step one: turn every photo into a fingerprint
 
-We took a pretrained SWIN model and ran all 671,817 herbarium photos through it
-once, without ever modifying the model. For each photo the model produces a list
-of 1,024 numbers — think of it as a compact numerical description of what's in
-the image. We saved all of those to disk. This took about 20 minutes at 532
-images per second, and it happened exactly once.
+We ran every herbarium photo through a frozen SWIN model once, without modifying
+it. Each photo becomes a list of 1,024 numbers — a compact numerical description
+of what's in the image. Those get saved to disk.
 
-Why do it this way? Because now every experiment afterward is just arithmetic on
-saved numbers. We could run the entire label-count comparison in 27 minutes
-instead of weeks of retraining.
+Why do it this way? Because every experiment afterward is then just arithmetic on
+saved numbers. The whole label-count comparison takes minutes instead of weeks of
+retraining, which is what made it affordable to test five label counts across
+three random seeds and six training budgets.
 
-The tradeoff is real and worth stating plainly: we are measuring how well a
-*fixed* set of features supports different numbers of labels, not how well a
-model fully retrained from scratch would do. A fully fine-tuned model would
-score higher everywhere. Whether it would decline at the same *rate* is an open
-question this run cannot answer.
-
-One detail that matters: the backbone is pretrained on ImageNet-22k, **not** on
-herbarium labels. If we'd started from a model already fine-tuned on the 15k
-plant species, the features would already encode the answer to the very question
-we're asking, and the sweep would be circular.
+The tradeoff is real: we measure how well a *fixed* representation supports
+different numbers of labels, not how a model retrained end-to-end at each rung
+would behave. The third run below partly addresses this by swapping in a
+representation that was trained on this task.
 
 ### Step two: build a ladder of label counts
 
-We made five versions of the same task: tell apart 50 species, then 200, then
-1,000, then 5,000, then 13,548 species.
+Five versions of the same task: tell apart 50 species, then 200, then 1,000, then
+5,000, then everything eligible. The code caps the top rung at however many
+species actually qualify and says so in the log rather than silently substituting
+a number.
 
-We'd asked for 15,000 at the top, but only 13,548 species had enough photos to
-meet the rule in step three, so the code capped the top rung at the real ceiling
-and said so in the log rather than silently substituting a different number.
+### Step three — the important one: give every species the same data
 
-### Step three — the important one: give every species exactly the same data
+In every version, every species gets exactly 10 photos to learn from and 5 to be
+tested on. Not "on average 10." Exactly 10.
 
-In every single version, every species gets exactly 10 photos to learn from and
-5 photos to be tested on. Not "on average 10." Exactly 10.
+So moving from 50 species to 13,000 changes nothing about how much evidence each
+species has. The only thing that changes is how many other species must be ruled
+out.
 
-So when we move from 50 species to 13,548 species, the amount of evidence per
-species never changes. The *only* thing that changes is how many other species
-the model has to rule out.
+This also means the pool is not long-tailed by construction. Worth knowing:
+Herbarium-2022 isn't very long-tailed to begin with — images per species run 2 to
+73, median 52, because the organisers capped the head. The top 10% of species
+hold only 14.9% of the images.
 
 ### Step four: keep 50 species present at every rung
 
-We picked 50 species and made sure they appear in all five versions, with
-literally the same photos each time. Call them the anchor species. If their
-scores drop as the ladder climbs, we know exactly why — nothing about them
-changed, only the crowd around them grew.
+Fifty species appear in all five versions with literally the same photos each
+time. Call them the anchor species. If their scores drop as the ladder climbs, we
+know exactly why: nothing about them changed, only the crowd around them grew.
 
 ### Step five: repeat three times
 
-Different random species selections each time, so we can see whether results are
-stable or just luck. They were stable — see the spread column in the table below.
+Different random species selections per seed. Results were stable — see the
+spread columns below.
 
 ---
 
 ## How we scored it
 
-Two things matter here.
+**Plain accuracy** asks what fraction of test photos we got right. The trouble is
+that if 200 species are easy and 13,000 are hopeless, accuracy still looks
+respectable because the easy ones are numerous in the test set.
 
-**Plain accuracy** asks: what fraction of test photos did we get right? The
-trouble is that if 200 species are easy and 13,000 are hopeless, accuracy can
-look respectable because the easy ones are numerous in the test set.
+**Macro-F1** scores each species separately, then averages with every species
+counting equally. A rare species counts exactly as much as a common one. This is
+the number that catches the problem we suspected, and it's the one to read
+throughout.
 
-**Macro-F1** fixes this. It scores each species separately, then averages those
-scores with every species counting equally — a rare species counts exactly as
-much as a common one. This is the number that catches the problem we suspected,
-and it's the one to read throughout.
+We also track two things that describe the *shape* of the outcome rather than its
+average: the **dead fraction** (species that never get a single correct
+prediction) and the **Gini** of per-species scores (0 = everyone scores the same,
+1 = maximally lopsided).
 
 ---
 
-## A note on the training budget, because it constrains everything below
+## The training budget, and why it needed measuring
 
-The small classifier that sits on top of the fingerprints got **4,000 training
-steps at every rung**, batch size 1024 — identical compute whether it was
-separating 50 species or 13,548.
+The small classifier that sits on top of the fingerprints originally got 4,000
+training steps at every rung. That sounds fair — identical compute for every
+task.
 
-That sounds fair, but in terms of passes over the data it isn't, because more
-classes at 10 images each means a bigger training set. (At N=50 the batch is
-clamped to the 500 training images, so each step is one full-batch pass.)
+It isn't. More species means more training photos, so the same 4,000 steps buys
+very different amounts of practice:
 
-| N | training images | passes over the data |
+| N | training images | passes over the data at 4k steps |
 |---:|---:|---:|
 | 50 | 500 | 4,000 |
 | 200 | 2,000 | 2,048 |
@@ -114,164 +119,247 @@ clamped to the 500 training images, so each step is one full-batch pass.)
 | 5,000 | 50,000 | 82 |
 | 13,548 | 135,480 | **30** |
 
-We chose fixed steps deliberately. Fixing *epochs* instead was tried first and
-made the accuracy curve come out **increasing** in N — obviously an artifact of
-handing the larger tasks proportionally more compute. But fixed steps carries
-the opposite bias, and 30 passes versus 4,000 is a wide enough gap to matter.
+(At N=50 the batch clamps to the 500 training images, so each step is one
+full-batch pass.)
 
-Neither knob is neutral. Read the numbers below with that in mind.
+Fixing *epochs* instead was tried first and made the accuracy curve come out
+**increasing** in N — plainly an artifact of handing larger tasks more compute.
+Neither knob is neutral.
 
----
+So the second run stopped choosing and **measured** instead. For each rung it
+trains at 4k, 8k, 16k, 32k, 64k, 128k steps and keeps going until doubling the
+budget buys less than 0.005 macro-F1.
 
-## What we found
-
-The ladder, averaged over three repeats:
-
-| Species being told apart | Macro-F1 | Anchor-50 F1 | Share scoring zero |
-|---:|---:|---:|---:|
-| 50 | 0.856 ±0.043 | 0.856 ±0.043 | 0% |
-| 200 | 0.729 ±0.018 | 0.717 ±0.031 | 0.5% |
-| 1,000 | 0.528 ±0.016 | 0.512 ±0.038 | 5.9% |
-| 5,000 | 0.277 ±0.003 | 0.272 ±0.048 | 30.4% |
-| 13,548 | 0.159 ±0.001 | 0.157 ±0.012 | **50.9%** |
-
-### Signal one: there is no breaking point
-
-We expected to find a threshold — some count where things fall apart. There
-isn't one. The decline starts immediately at 50 species and continues smoothly
-all the way up. No knee in the curve, no cliff.
-
-Roughly speaking, every time you double the number of species you lose about a
-fifth of your macro-F1. The decline is gradual and relentless rather than sudden.
-
-Fitting a straight line through the five points on a log-log plot gives an
-exponent of about −0.30, but the leftover errors from that fit are systematically
-curved rather than random, which means a pure power law is the wrong shape. The
-honest summary is "roughly power-law through the middle," not a law. And see the
-caveat section — that exponent is biased steep anyway.
-
-### Signal two: the anchor species — the cleanest result here
-
-Those 50 species that appear at every rung, with identical photos throughout,
-scored **0.856 when they were the only species in the task, and 0.157 at
-13,548 species.**
-
-Same species. Same training photos. Same test photos. Same model. The only
-difference is how many other labels existed to be confused with. An 82% drop
-caused purely by adding competitors.
-
-This is the result worth defending, because it can't be explained away by data
-quality or class difficulty — those were held fixed by construction. It's the
-confound that undermines every cross-dataset comparison in the literature, and
-this design removes it.
-
-### Signal three: severe concentration, but not from imbalance
-
-At the top rung we sorted all 13,548 species by their individual score and split
-them into ten equal groups:
-
-```
-best tenth: 0.578   0.370   0.297   0.224   0.121   0.000   0.000   0.000   0.000   0.000
-```
-
-Half the species — 6,895 of them — scored exactly zero. Not "low." Zero. The
-model never once correctly identified them. Any overall number you report is
-generated entirely by the better half, and mostly by the top fifth. Inequality
-across per-class scores (Gini) climbs from 0.084 at N=50 to 0.641 at N=13,548.
-
-Now the part worth pausing on. **Every species had the same 10 training photos.**
-So this lopsidedness cannot be blamed on some species having more data. Give
-every class identical evidence and a severe winners-and-losers split *still*
-appears, purely as a consequence of how many labels are competing.
-
-That's a more interesting claim than "rare classes do badly," which everyone
-already knows. It also reframes the original observation: the concentration in
-the 15k SWIN result is probably not mostly a long-tail problem.
-
-Supporting context from the dataset census: Herbarium-2022 is far more balanced
-than assumed. Images per species run from 2 to 73, median 52 — the organisers
-capped the head. The top 10% of species hold only 14.9% of the images. A
-genuinely long-tailed corpus would be nearer 50%.
-
-### Signal four: a negative result — feature-space isolation doesn't explain it
-
-Our guess beforehand was that the winners would be species sitting off on their
-own in fingerprint space — visually distinctive ones with no close lookalikes.
-So we measured, for each species, the distance from its average fingerprint to
-the nearest other species' average, and checked whether that predicted its score.
-
-It barely did. The correlation is about **+0.26**, where 0 means no relationship
-and 1 means perfect. Sorting species by isolation instead of by score flattens
-the profile right out:
-
-```
-by score:       0.578  0.370  0.297  0.224  0.121  0.000  0.000  0.000  0.000  0.000
-by isolation:   0.267  0.224  0.196  0.167  0.157  0.137  0.128  0.118  0.111  0.087
-```
-
-So "isolated species win, crowded species lose" is not the explanation. Something
-else decides winners and losers, and we don't yet know what. This prediction was
-wrong, and the gap is worth chasing.
+One detail matters here. The learning rate follows a schedule that rises then
+tapers to near zero at the end of whatever budget it's given. A run *planned* for
+4,000 steps and a run *stopped early* at 4,000 steps are different objects — the
+first has landed, the second is mid-flight. Every budget above is a complete run
+from scratch, not a snapshot.
 
 ---
 
-## The part we don't fully trust yet
+## Result 1 — the generic representation (ImageNet-22k SWIN)
 
-When you train the small classifier, you show it the data repeatedly and it
-improves each pass. At some point it stops improving — it's learned what it can.
-To check whether 4,000 steps was enough at the hardest setting, we simply trained
-it twice: once for 4,000 steps and once for 8,000.
+671,817 images, 15,501 species, 13,548 eligible at 10 train + 5 eval.
+Converged values, mean ± sd over three seeds:
 
-If it had finished learning, both should score about the same. Instead:
+| N | macro-F1 | anchor-50 F1 | Gini | dead frac | steps to converge |
+|---:|---:|---:|---:|---:|---:|
+| 50 | 0.856 ±0.041 | 0.856 ±0.041 | 0.083 | 0.000 | 8,000 |
+| 200 | 0.742 ±0.024 | 0.737 ±0.051 | 0.146 | 0.003 | 29,333 |
+| 1,000 | 0.595 ±0.014 | 0.587 ±0.024 | 0.227 | 0.035 | 64,000 |
+| 5,000 | 0.438 ±0.002 | 0.453 ±0.059 | 0.327 | 0.107 | 128,000 |
+| 13,548 | **0.336** ±0.001 | 0.358 ±0.060 | 0.414 | 0.197 | **>128,000** |
 
-- 4,000 steps → macro-F1 **0.160**
-- 8,000 steps → macro-F1 **0.199**
+### There is no breaking point
 
-Still climbing. **It hadn't finished learning — we stopped it too early.**
+No threshold, no cliff, no knee. The decline begins at 50 species and continues
+smoothly. Every doubling of the label set costs about **11%** of macro-F1.
 
-There's corroborating evidence. At 50 species the classifier got 100% on its own
-training photos, which is what you'd expect. At 13,548 species it managed only
-49% on its own training photos. It couldn't memorise the material it was shown,
-which is the signature of a classifier cut off partway. Given the table above —
-30 passes at the top rung against 4,000 at the bottom — that's unsurprising in
-hindsight.
+On a log-log plot the slope is **−0.165** with R²=0.974 — a good straight line.
 
-### What this means concretely
+### Adding competitors alone destroys performance
 
-- **The 0.159 at the top rung is too pessimistic.** The true value is higher.
-- **The −0.30 exponent is biased steep** and shouldn't be quoted as a finding.
-- **The shape holds.** Smooth decline with no threshold, the anchor collapse, and
-  half the species at zero all survive at 8,000 steps.
+The anchor species — identical photos throughout — go from **0.856 alone to 0.358
+among 13,548 competitors**, a 58% drop. Same species, same training photos, same
+test photos, same model. The only thing that changed is how many other labels
+existed to be confused with.
 
-It also likely explains an oddity. As a sanity check we ran a much simpler
-method with no training at all: average the 10 fingerprints for each species,
-then assign each test photo to whichever average it's closest to. At the top rung
-that untrained method *beat* the trained classifier, 0.206 to 0.159. That looked
-like a surprising finding about representations. The likelier explanation is
-mundane — the trained classifier was stopped before it caught up.
+This is the result worth defending. It can't be explained by data quality or
+class difficulty, because both were held fixed by construction. It removes the
+confound that undermines every cross-dataset comparison in the literature.
+
+### Concentration appears without any imbalance
+
+Per-species scores at the top rung, best tenth to worst:
+
+```
+0.785  0.614  0.512  0.428  0.352  0.275  0.222  0.166  0.003  0.000
+```
+
+About a fifth of species (19.7%, or roughly 2,670) never get a single correct prediction,
+and score inequality rises from 0.083 to 0.414 across the ladder — **even though
+every species had exactly the same 10 training photos**. The lopsidedness is not a
+long-tail effect; it emerges purely from label competition.
+
+### Training cost grows with the label space
+
+Look at the last column: 8,000 steps at N=50, 64,000 at N=1,000, still climbing
+past 128,000 at N=13,548.
+
+Part of what people experience as "large label spaces are harder" is not a lower
+ceiling but a **much more expensive climb to it**. Those are different problems
+with different fixes. On a fixed budget, a large label space looks far worse than
+it fundamentally is, and you may blame your representation when your schedule is
+the real constraint.
+
+### Caveat: the top rung is a floor
+
+At 13,548 species the probe was still improving when it hit the 128,000-step cap
+(+0.009 on the final doubling). **0.336 is a lower bound**, and the true decline
+is gentler still than −0.165.
 
 ---
 
-## Where that leaves us
+## Result 2 — the fine-tuned representation (SWIN_BASE_BASELINE, 15,501 labels)
 
-**Three findings we'd stand behind:**
+Same ladder, but the frozen features come from a SWIN fine-tuned on the full
+Kaggle-2022 label space.
 
-1. Performance declines smoothly with label count, with no threshold or cliff.
-2. Adding competing labels alone destroys performance on completely unchanged
-   classes — 0.856 to 0.157 on identical data.
-3. Severe winners-and-losers concentration emerges even with perfectly equal
-   data per class, so it is not fundamentally a long-tail effect.
+### Leakage was the central design problem
 
-**One open question:** why those particular species win, given that isolation in
-feature space explains so little of it.
+That model was fine-tuned on `train_2022.json`. The sweep originally drew both
+probe-train and probe-eval images from the same pool — so a fine-tuned backbone
+would have been scored on images it had memorised, flattening the curve for an
+entirely uninteresting reason.
 
-**One fix needed:** rerun the top two rungs training to convergence — stopping
-when improvement stalls rather than at a fixed count — and report the compute
-each rung actually needed. That turns the step budget from a confound into a
-measurement. It's a follow-on experiment, not a correction; this run answered its
-question, just with a fuzzier top end than we'd like.
+Probe-eval images therefore come only from `val_2022.json`, the split held out of
+fine-tuning, and the run asserts the two pools share no image path:
 
-Longer-term ideas, including the architecture comparison, are in `BACKLOG.md`.
+```
+train pool : 671,817 images / 15,501 classes  (median 52 img/class)
+eval  pool : 167,955 images / 15,334 classes  (median 12 img/class)
+path overlap between pools : 0 (clean)
+eligible at k_train=10 / k_eval=5 : 12,689 classes
+```
+
+The top rung is 12,689 rather than 13,548 because held-out images are scarcer.
+
+### The numbers
+
+| N | macro-F1 | anchor-50 F1 | Gini | dead frac | steps to converge |
+|---:|---:|---:|---:|---:|---:|
+| 50 | 0.985 ±0.002 | 0.985 ±0.002 | 0.013 | 0.000 | 8,000 |
+| 200 | 0.967 ±0.008 | 0.968 ±0.006 | 0.027 | 0.000 | 8,000 |
+| 1,000 | 0.914 ±0.005 | 0.908 ±0.008 | 0.061 | 0.000 | 8,000 |
+| 5,000 | 0.804 ±0.002 | 0.804 ±0.030 | 0.119 | 0.003 | 16,000 |
+| 12,689 | **0.712** ±0.002 | 0.701 ±0.031 | 0.169 | 0.013 | 32,000 |
+
+### Task-adapted features change the shape, not just the height
+
+This is the main finding of the comparison.
+
+| | generic IN22k | fine-tuned 15k |
+|---|---:|---:|
+| loss per doubling of N | 10.8% | **3.9%** |
+| log-log slope | −0.165 | **−0.057** |
+| gap at N=50 | — | +0.130 |
+| gap at top rung | — | **+0.376** |
+
+The two curves are not parallel lines offset by a constant. The fine-tuned one is
+genuinely **flatter** — about a third the slope — which is why the gap between
+them nearly triples from the bottom of the ladder to the top.
+
+So cardinality pressure is not a fixed tax you pay regardless of representation.
+A representation built for this label space absorbs most of it.
+
+### The original 0.7 reproduces, and is healthier than feared
+
+0.712 at 12,689 species on held-out images closely matches the ~0.7 that prompted
+this whole investigation — a useful independent check that this pipeline measures
+the same thing the original training did.
+
+But the "carried by the head" worry does not hold up. Per-species deciles:
+
+```
+fine-tuned:  1.000  0.929  0.889  0.823  0.776  0.724  0.659  0.580  0.480  0.261
+generic:     0.785  0.614  0.512  0.428  0.352  0.275  0.222  0.166  0.003  0.000
+```
+
+Only **1.3%** of species score zero (roughly 165 of 12,689), against 19.7% for the generic
+backbone, and even the worst tenth averages 0.261. The 0.7 is a broadly competent
+model, not a few winners propping up a corpse.
+
+### Fine-tuned features are also cheaper to fit
+
+The top rung converged at **32,000 steps**, against **>128,000** for the generic
+one. Task-adapted features don't only score higher; they reach their ceiling with
+far less optimisation. This reinforces the compute-to-convergence finding above.
+
+### Two caveats
+
+The fine-tuned curve is a **worse** power law (R²=0.896 vs 0.974) — it's flat from
+50→200 then steepens, so "3.9% per doubling" averages over a curve that isn't
+really straight. The comparison between arms is solid; the single exponent is a
+rougher summary than it appears.
+
+And this arm cannot be read as intrinsic task difficulty: its features were
+optimised on exactly this 15k decision. It answers the practical question — does
+task-adapted pretraining flatten the cardinality penalty? — and the answer is
+clearly yes. Held-out eval is what keeps even that question answerable.
+
+---
+
+## What feature-space geometry does *not* explain
+
+For each species we measured the distance from its average fingerprint to the
+nearest other species' average, then asked whether that predicts its score.
+
+It predicts weakly: correlation **+0.310** generic, **+0.373** fine-tuned. Sorting
+species by isolation instead of by score flattens the profile dramatically
+(generic: 0.481 → 0.207, versus 0.785 → 0.000 when sorted by score).
+
+So "visually distinctive species win, crowded species lose" is not the
+explanation. Something else decides winners and losers, and we don't yet know
+what. This was a prediction we made and it was wrong both times.
+
+---
+
+## What we got wrong the first time
+
+The first run fixed the budget at 4,000 steps, and three of its headline numbers
+were substantially artifacts of undertraining. Recording them because the size of
+the error is itself instructive:
+
+| Claim | Reported | Corrected |
+|---|---:|---:|
+| macro-F1 at ~13.5k species | 0.159 | **0.336** (a floor) |
+| loss per doubling | 18.6% | **10.8%** |
+| species scoring zero | 50.9% | **19.7%** |
+| anchor-50 drop | −81.7% | **−58.2%** |
+
+One claim was pure artifact. A no-training baseline (average each species'
+fingerprints, assign each test photo to the nearest average) appeared to *beat*
+the trained probe at the top rung, 0.206 to 0.159. Properly trained, the probe
+scores 0.336 and wins at every rung. There was no finding there — just a starved
+classifier.
+
+The earlier write-up also claimed the shape "held" at 8,000 steps. That was an
+overreach from a single doubling, on a curve still climbing steeply. One extra
+point does not license a stability claim.
+
+What survived: no threshold, the anchor effect, and concentration under equal
+evidence. Direction and shape held; magnitudes did not.
+
+---
+
+## Where this leaves us
+
+**Findings we'd stand behind:**
+
+1. Performance declines smoothly with label count — no threshold, no cliff — at
+   about 11% per doubling for a generic representation.
+2. Adding competing labels alone degrades performance on classes whose data never
+   changed: 0.856 → 0.358 on identical images.
+3. Severe score concentration emerges with perfectly equal per-class evidence, so
+   it is not fundamentally a long-tail effect.
+4. Task-adapted pretraining changes the *slope*, not just the intercept — 3.9% per
+   doubling versus 10.8%.
+5. Compute-to-convergence grows steeply with label count, and is separable from
+   representation quality.
+
+**Open questions:**
+
+- Which species land in the bottom decile, given that feature-space isolation
+  explains so little of it?
+- Where does the generic curve actually converge at the top rung, past 128k steps?
+- Does the pattern hold for architectures other than SWIN? See `BACKLOG.md`.
+
 Note that backlog item 3 (natural long-tailed regime) is largely moot on
 Herbarium-2022 given the census above — testing real imbalance needs the 2021 or
 merged GBIF pool instead.
+
+A further opportunity surfaced while resolving checkpoints: the SCC tree holds
+**118 loadable checkpoints**, including LR/schedule sweeps at 15,501 labels and a
+second regime at 64,497 labels. That is a ready-made axis for asking whether the
+cardinality slope depends on *how well* the backbone was trained.
