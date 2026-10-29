@@ -77,10 +77,6 @@ code, and fine-tune configs. See `scaling/README.md` and `scaling/BACKLOG.md`.
 Species index, overlap with GBIF-F24 and Harvard, and the long-tail / uniform-option rundown for
 the GBIF-F25 pool (`build_index.py`, `overlap.py`, `rundown.py`).
 
-### `paper/`
-The LaTeX report of the loss ablation and ladder, with its figure scripts and run-derived data
-(see "Loss-Ablation Report" below).
-
 ### `docs/`
 SCC notes: GPU queues, a GPU check script, and how to run Claude on SCC.
 
@@ -179,16 +175,16 @@ jupyter notebook kaggle22_clustering.ipynb
 
 ## Loss-Ablation Report and Overleaf Sync
 
-The loss-function ablation and scaling-ladder write-up lives in `paper/`:
+The loss-function ablation and scaling-ladder write-up lives at the repository root:
 
-- `paper/paper.tex` / `paper/paper.pdf` - the report (compiles with pdfLaTeX or `tectonic paper.tex`)
-- `paper/figs/make_figures.py` - regenerates every figure in `paper/figs/` from the run-derived data in `paper/figs/data/`
-  (`cd paper/figs && python3 make_figures.py`; needs matplotlib and numpy)
+- `paper.tex` / `paper.pdf` - the report (compiles with pdfLaTeX or `tectonic paper.tex`)
+- `figs/make_figures.py` - regenerates every figure in `figs/` from the run-derived data in `figs/data/`
+  (`cd figs && python3 make_figures.py`; needs matplotlib and numpy)
 
 A copy of the report for Overleaf lives in the separate repository
 [gardoslab/project-artifacts](https://github.com/gardoslab/project-artifacts) (private), checked
 out locally at `~/overleaf` as `~/overleaf/herbdl/loss-ablations/` (`main.tex` plus `figs/`). To
-update it, copy `paper/paper.tex` to `main.tex` and the `paper/figs/*.pdf` and `paper/figs/near_duplicate_examples.png`
+update it, copy `paper.tex` to `main.tex` and the `figs/*.pdf` and `figs/near_duplicate_examples.png`
 files across, then commit and push from `~/overleaf`. The exact steps and the list of files are in
 `~/overleaf/herbdl/README.md`, and the layout conventions are in `~/overleaf/README.md`. Linking that
 repository to the Overleaf project (Overleaf's GitHub integration) is done on the Overleaf side.
