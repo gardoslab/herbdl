@@ -84,8 +84,8 @@ data:
   train_val_split: 0.2     # unused: validation_file is set explicitly above
 
 training:
-  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_ARCFACE_384"
-  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_ARCFACE_384"
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_ARCFACE_384_SEED43"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_ARCFACE_384_SEED43"
   do_train: true
   do_eval: true
   per_device_train_batch_size: 64    # 256 OOMs at 384 on a 46GB L40S; effective batch held at
@@ -110,15 +110,14 @@ training:
   dataloader_num_workers: 16
   remove_unused_columns: false
   overwrite_output_dir: false
-  seed: 42
-
+  seed: 43   # Phase 3 noise check: the only change from the seed-42 run
 custom:
   lr_type: "cosine"
   frozen: false
   frozen_type: "none"
-  run_group: "SWIN_Base_ArcFace_384"
-  run_name: "SWIN_Base_ArcFace_384"
-  run_id: "swin_base_arcface_384"
+  run_group: "SWIN_Base_ArcFace_384_Seed43"
+  run_name: "SWIN_Base_ArcFace_384_Seed43"
+  run_id: "swin_base_arcface_384_seed43"
   run_notes: >
     Controlled ArcFace-only ablation vs SWIN_BASE_BASELINE (0.7797/0.7455).
     Same backbone/res/data/optimizer/schedule/seed/batch/aug as baseline;
