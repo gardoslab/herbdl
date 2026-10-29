@@ -10,8 +10,14 @@ OUT = "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/BACKBONES"
 BACKBONES = {
     "convnext": ("finetuning/ConvNeXt/configs/convnext_base_224_unfrozen.yml", dict(per_device_train_batch_size=128, gradient_accumulation_steps=1)),
     "dinov2": ("finetuning/DinoV2/configs_advanced/dinov2_base_baseline.yml", dict(per_device_train_batch_size=64, gradient_accumulation_steps=1)),
+    # CoAtNet-3 (timm, 224px): 32/GPU x 2 GPUs = his effective batch 64
+    "coatnet": ("finetuning/CoAtNet/configs_advanced/coatnet_base_baseline.yml", dict(per_device_train_batch_size=32, gradient_accumulation_steps=1)),
+    # EfficientNet-B6 (528px): 16/GPU x 8 accumulation x 2 GPUs = his effective batch 256
+    "efficientnet": ("finetuning/EfficientNet_B6/configs_advanced/efficientnet_b6_enhanced_workers4.yml",
+                     dict(per_device_train_batch_size=16, gradient_accumulation_steps=8, per_device_eval_batch_size=16)),
 }
 LOSSES = {
+    "ce": dict(loss_registry=dict(enabled=True, head="softmax", head_kwargs={}, aux=[]), long_tail=dict(logit_adjustment=False)),
     "ce_la": dict(loss_registry=dict(enabled=True, head="softmax", head_kwargs={}, aux=[]), long_tail=dict(logit_adjustment=True, tau=1.0)),
     "arcface": dict(loss_registry=dict(enabled=True, head="arcface", head_kwargs=dict(s=30.0, m=0.3), aux=[], margin_warmup_epochs=5),
                     long_tail=dict(logit_adjustment=False)),
@@ -25,9 +31,11 @@ for bb, (src, batch) in BACKBONES.items():
         t.update(batch)
         t.update(output_dir=f"{OUT}/{name}", logging_dir=f"{OUT}/{name}", do_train=True, do_eval=True,
                  save_total_limit=3, resume_from_checkpoint="newest", overwrite_output_dir=False,
-                 per_device_eval_batch_size=64, dataloader_num_workers=16)
+                 dataloader_num_workers=16)
+        t["per_device_eval_batch_size"] = batch.get("per_device_eval_batch_size", 64)
         c["data"]["max_eval_samples"] = None
-        c.setdefault("custom", {}).update(run_group=f"PART4_{bb.upper()}", run_name=f"PART4_{name.upper()}", run_id=f"part4_{name}")
+        c.setdefault("custom", {}).update(run_group=f"PART4_{bb.upper()}", run_name=f"PART4_{name.upper()}", run_id=f"part4_{name}",
+                                       run_notes=f"Part 4: {bb} with the {loss} loss, llindon recipe, Part 1 data.")
         c["wandb"] = dict(enabled=True, entity="gardoslab", project="herbdl", resume="allow")
         for k in ("arcface", "multi_task", "hace", "ema"):
             c[k] = dict(enabled=False)

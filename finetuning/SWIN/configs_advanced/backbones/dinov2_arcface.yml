@@ -57,6 +57,7 @@ custom:
   run_group: PART4_DINOV2
   run_name: PART4_DINOV2_ARCFACE
   run_id: part4_dinov2_arcface
+  run_notes: 'Part 4: dinov2 with the arcface loss, llindon recipe, Part 1 data.'
 augmentation:
   use_advanced: false
   randaugment:

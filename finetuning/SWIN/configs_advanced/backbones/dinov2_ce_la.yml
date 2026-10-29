@@ -57,6 +57,7 @@ custom:
   run_group: PART4_DINOV2
   run_name: PART4_DINOV2_CE_LA
   run_id: part4_dinov2_ce_la
+  run_notes: 'Part 4: dinov2 with the ce_la loss, llindon recipe, Part 1 data.'
 augmentation:
   use_advanced: false
   randaugment:
