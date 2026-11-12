@@ -23,8 +23,8 @@ Writes to --out:
 
 Usage (from finetuning/SWIN):
   python loss_ablation/species_sphere.py
-  python loss_ablation/species_sphere.py --models arcface dbm kappaface \
-      --add normface=<RUN_DIR>:registry
+  python loss_ablation/species_sphere.py --models normface arcface dbm
+  python loss_ablation/species_sphere.py --models dbm mymodel --add mymodel=<RUN_DIR>
 """
 
 import argparse
@@ -40,6 +40,12 @@ TRAIN_JSON = "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
 LABEL = "scientificNameEncoded"
 DEFAULT_OUT = (f"/projectnb/herbdl/workspaces/{os.environ.get('USER', 'unknown')}"
                "/herbdl/finetuning/output/SWIN/species_sphere")
+
+# Models missing from phase3_geometry.MODELS: name -> (PHASE3_GEOM folder, run dir, head kind).
+# NormFace (cosine head, m = 0) was exported under its old name, cosine_m0. A kind of None
+# means: read it from the tensor names in model.safetensors.
+EXTRA_MODELS = {"normface": ("cosine_m0", "SWIN_BASE_COSINE_M0_384", None)}
+HEAD_TENSORS = {"arcface": "arcface.weight", "hace": "hace.linear.weight", "registry": "head.weight"}
 
 SLOTS = ["#2a78d6", "#eb6834", "#1baf7a"]
 INK, INK2, GRID = "#0b0b0b", "#52514e", "#e6e5e0"
@@ -67,15 +73,28 @@ def taxonomy(train_rows, n_classes):
     return name, genus, family, n_train
 
 
-def load_model(geom, name, run_dir, kind):
+def head_kind(run_dir):
+    """The head kind phase3_geometry.class_directions needs, from the tensor names."""
+    from phase3_geometry import OUT
+    from safetensors import safe_open
+    with safe_open(f"{OUT}/{run_dir}/model.safetensors", "pt") as f:
+        names = set(f.keys())
+    for kind, tensor in HEAD_TENSORS.items():
+        if tensor in names:
+            return kind
+    sys.exit(f"{run_dir}: none of {sorted(HEAD_TENSORS.values())} in model.safetensors")
+
+
+def load_model(geom, folder, run_dir, kind):
     """Validation features (memory-mapped), labels, predictions and (N, k, d) templates."""
     from phase3_geometry import class_directions
-    feats = np.load(f"{geom}/{name}/features.npy", mmap_mode="r")
-    z = np.load(f"{geom}/{name}/predictions.npz")
+    feats = np.load(f"{geom}/{folder}/features.npy", mmap_mode="r")
+    z = np.load(f"{geom}/{folder}/predictions.npz")
     labels, preds = z["labels"].astype(np.int64), z["predictions"].astype(np.int64)
     if len(feats) != len(labels):
-        sys.exit(f"{name}: {len(feats)} features but {len(labels)} labels")
-    return feats, labels, preds, np.asarray(class_directions(run_dir, kind))
+        sys.exit(f"{folder}: {len(feats)} features but {len(labels)} labels")
+    W = class_directions(run_dir, kind or head_kind(run_dir))
+    return feats, labels, preds, np.asarray(W)
 
 
 # ---------------------------------------------------------------- choosing the triples
@@ -259,10 +278,11 @@ def draw_figure(results, triples, names, path):
 
 def parse_args(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("--models", nargs="+", default=["arcface", "dbm", "kappaface"],
-                    help="names from phase3_geometry.MODELS (or added with --add)")
-    ap.add_argument("--add", action="append", default=[], metavar="NAME=RUN_DIR:KIND",
-                    help="a model not in phase3_geometry.MODELS; KIND is arcface, registry or hace")
+    ap.add_argument("--models", nargs="+", default=["normface", "arcface", "dbm", "kappaface"],
+                    help="names from phase3_geometry.MODELS, EXTRA_MODELS or --add")
+    ap.add_argument("--add", action="append", default=[], metavar="NAME=RUN_DIR[:KIND]",
+                    help="another model, with features in <geom>/NAME; KIND (arcface, registry "
+                         "or hace) is read from model.safetensors if omitted")
     ap.add_argument("--reference", default="dbm", help="model whose confusions pick the similar triple")
     ap.add_argument("--min-val", type=int, default=10, help="minimum validation images per species")
     ap.add_argument("--seed", type=int, default=0, help="seed for the dissimilar triple")
@@ -277,17 +297,18 @@ def main(argv=None):
     args = parse_args(argv)
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from phase3_geometry import MODELS, N
-    registry = dict(MODELS)
+    registry = {name: (name, run_dir, kind) for name, (run_dir, kind) in MODELS.items()}
+    registry.update(EXTRA_MODELS)
     for spec in args.add:
         name, rest = spec.split("=", 1)
-        run_dir, kind = rest.rsplit(":", 1)
-        registry[name] = (run_dir, kind)
+        run_dir, _, kind = rest.partition(":")
+        registry[name] = (name, run_dir, kind or None)
     for m in [args.reference, *args.models]:
         if m not in registry:
             sys.exit(f"unknown model {m!r}; known: {sorted(registry)} (use --add for others)")
 
     names, genus, family, n_train = taxonomy(load_rows(TRAIN_JSON), N)
-    _, labels, preds, _ = load_model(args.geom, args.reference, *registry[args.reference])
+    _, labels, preds, _ = load_model(args.geom, *registry[args.reference])
     ok = np.bincount(labels, minlength=N) >= args.min_val
     print(f"species with >= {args.min_val} validation images: {int(ok.sum())}")
 
@@ -306,7 +327,7 @@ def main(argv=None):
     os.makedirs(args.out, exist_ok=True)
     results, arrays = {}, {}
     for m in args.models:
-        feats, lab, prd, W = load_model(args.geom, m, *registry[m])
+        feats, lab, prd, W = load_model(args.geom, *registry[m])
         if not np.array_equal(lab, labels):
             sys.exit(f"{m}: validation labels differ from {args.reference}'s")
         results[m] = {}

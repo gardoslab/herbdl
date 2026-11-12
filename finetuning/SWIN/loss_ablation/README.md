@@ -180,32 +180,38 @@ It writes to `--out` (default
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--models` | `arcface dbm kappaface` | Models to draw, one row each; names from `phase3_geometry.MODELS` or `--add` |
+| `--models` | `normface arcface dbm kappaface` | Models to draw, one row each (see [Models](#models)) |
 | `--reference` | `dbm` | Model whose confusions choose the similar triple |
 | `--min-val` | `10` | Minimum validation images per species. Lower it if too few species qualify |
 | `--seed` | `0` | Seed for the dissimilar triple |
 | `--similar`, `--dissimilar` | chosen automatically | Three species names each, to fix a triple by hand |
-| `--add NAME=RUN_DIR:KIND` | | A model not in `phase3_geometry.MODELS` (see below) |
+| `--add NAME=RUN_DIR[:KIND]` | | Another model (see [Models](#models)) |
 | `--geom` | Farid's `PHASE3_GEOM` | Folder holding `<model>/features.npy` and `predictions.npz` |
 | `--out` | your workspace (above) | Output folder |
 
-### Adding NormFace or another model
+### Models
 
-A model needs cached validation features before it can be drawn. NormFace and ArcFace
-with m = 0.1 have no `configs_advanced/phase3_geom/` config yet, so:
+`--models` takes any name from `phase3_geometry.MODELS` (the Phase 3 models: `arcface`,
+`dbm`, `kappaface`, `subcenter_arcface`, `arcface_tara`, `arcface_ecc`, `hace`,
+`x2softmax` and the `*_seed43` reruns), plus `normface`, which `species_sphere.py`
+defines in `EXTRA_MODELS`. NormFace's features were exported under its old name, in
+`PHASE3_GEOM/cosine_m0/`, and its weights are in `SWIN_BASE_COSINE_M0_384/`.
 
-1. Make an eval-only config like the ones in `configs_advanced/phase3_geom/` (see
-   `generate.py` there), with `do_train: false` and `evaluation.features_path` and
-   `evaluation.predictions_path` pointing to `<geom>/normface/features.npy` and
-   `<geom>/normface/predictions.npz`. Run it with `train_advanced.sh` on a GPU node.
-2. Draw it, naming the training run's folder (the one holding `model.safetensors`) and
-   its head kind (`registry` for heads in `losses.py`, `arcface` for the native ArcFace
-   head, `hace` for HACE). The folder is relative to `phase3_geometry.OUT`, which is
-   Farid's `finetuning/output/SWIN`:
+To draw another model:
+
+1. It needs cached validation features. ArcFace with m = 0.1, for example, has no
+   `configs_advanced/phase3_geom/` config. Make an eval-only config like the ones there
+   (see `generate.py`), with `do_train: false` and `evaluation.features_path` and
+   `evaluation.predictions_path` pointing to `<geom>/<name>/features.npy` and
+   `<geom>/<name>/predictions.npz`. Run it with `train_advanced.sh` on a GPU node.
+2. Add it with `--add <name>=<RUN_DIR>`, where `RUN_DIR` is the training run's folder
+   (the one holding `model.safetensors`) relative to `phase3_geometry.OUT`, Farid's
+   `finetuning/output/SWIN`. The script reads the head type from the tensor names in
+   `model.safetensors`; append `:registry`, `:arcface` or `:hace` to set it by hand.
 
    ```bash
-   python loss_ablation/species_sphere.py --models normface arcface dbm \
-       --add normface=<RUN_DIR>:registry
+   python loss_ablation/species_sphere.py --models arcface_m01 arcface dbm \
+       --add arcface_m01=<RUN_DIR>
    ```
 
    Add `--geom <folder>` if the features are not in Farid's `PHASE3_GEOM`.
