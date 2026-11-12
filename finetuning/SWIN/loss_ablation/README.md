@@ -25,6 +25,7 @@ CoAtNet, EfficientNet) and ensembles of the saved predictions. All training goes
 | `part4_leakage.py`, `copy_gallery.py` | Same-specimen copies between train and validation (full `val_2022`), every model re-scored without them; picture sheets of the flagged pairs |
 | `geometry_by_rarity.py`, `geometry_fixed_n.py` | Separation gap by number of training images per species; the fixed-n version uses 2 validation images per species (the plain version is confounded by validation counts) |
 | `near_duplicates*.py`, `ladder_*.py`, `kappaface_wins.py`, `routing_counts.py` | Ladder-side analyses: near-duplicates, routing, per-count breakdowns |
+| `species_sphere.py`, `species_sphere_smoke.py` | Sphere plots of three similar and three dissimilar species per model, from the cached `PHASE3_GEOM` features; CPU smoke test. See [Species-sphere figure](#species-sphere-figure) |
 | `run_*.sh` | SCC wrappers (env setup inside the script) |
 
 ## Trainer options added for this work (`SWIN_finetuning_advanced.py`)
@@ -64,3 +65,169 @@ KappaFace and ECC must run on 1 GPU (per-species buffers are not synced across G
 
 Results and the full write-up live in the project's tracking document
 ("Loss Function Ablations.md"), not in this repository.
+
+## Species-sphere figure
+
+`species_sphere.py` draws, for each model, the validation features of three
+**dissimilar** species (one from each of three families) and three **similar** species
+(one genus: the triple the reference model confuses most). Each image's feature is
+projected onto the 3-D span of the three species' class templates and drawn on the unit
+sphere, viewed from the templates' mean direction.
+
+The projection keeps the cosine between every feature and each of the three templates
+exactly, so the picture shows the model's real decision among the three species. It
+drops the part of the feature that is orthogonal to all three templates. Plotting 8 or
+more species this way would not work: their templates are nearly orthogonal, and more
+than three orthogonal directions cannot be shown in 3-D without distortion.
+
+It needs no GPU and loads no images. It reads:
+
+- `PHASE3_GEOM/<model>/features.npy` and `predictions.npz`, the cached full-validation
+  outputs of the eval-only runs (the same inputs as `phase3_geometry.py`);
+- the class templates from each model's `model.safetensors`, through
+  `phase3_geometry.class_directions`;
+- `train_2022.json` for genus, family and training-image counts.
+
+It writes to `--out` (default
+`/projectnb/herbdl/workspaces/$USER/herbdl/finetuning/output/SWIN/species_sphere`):
+
+| File | Contents |
+|---|---|
+| `species_sphere.png` | One row per model; columns are the dissimilar and similar triples |
+| `species_sphere.npz` | Projected points (`<model>__<kind>__coords`), templates, species slot and full-model correctness per image, and the triples, for redrawing elsewhere |
+| `triples.json` | The chosen species (name, genus, family, training and validation counts) and per-panel statistics |
+
+### Running it on the SCC
+
+1. **Log in** to a login node from your laptop:
+
+   ```bash
+   ssh <BU-login>@scc1.bu.edu
+   ```
+
+   Login nodes are for editing and submitting jobs. Run the analysis on a compute node.
+
+2. **Get the code** in your workspace. Clone the repository there first if you don't have
+   a copy (`git clone https://github.com/gardoslab/herbdl.git`):
+
+   ```bash
+   cd /projectnb/herbdl/workspaces/$USER/herbdl
+   git fetch origin
+   git switch feat/species-sphere-viz
+   cd finetuning/SWIN
+   ```
+
+3. **Get a compute node.** The script needs CPUs only, no GPU. Choose one of the
+   following:
+
+   - *Interactive shell (simplest).* `qrsh` waits for a node and opens a shell on it:
+
+     ```bash
+     qrsh -P herbdl -l h_rt=02:00:00 -pe omp 4
+     cd /projectnb/herbdl/workspaces/$USER/herbdl/finetuning/SWIN
+     ```
+
+   - *A node you can ssh into*, for example from VS Code Remote-SSH or a second
+     terminal. Hold the node with a placeholder job, then ssh to it while that job runs.
+     The SCC only lets you ssh to a compute node where you have a running job.
+
+     ```bash
+     qsub -P herbdl -l h_rt=04:00:00 -pe omp 4 -N hold -b y sleep 4h
+     qstat -u $USER     # once the state is "r", the queue column shows <queue>@scc-XXX
+     ssh scc-XXX        # from the login node
+     ```
+
+     From your laptop in one step: `ssh -J <BU-login>@scc1.bu.edu <BU-login>@scc-XXX`.
+     When you are done, release the node with `qdel <job-id>`.
+
+4. **Load the environment** (the shared `fall-2026-pyt` env, as in `run_*.sh`):
+
+   ```bash
+   module load miniconda
+   module load academic-ml/fall-2026
+   conda activate fall-2026-pyt
+   python -c "import matplotlib, safetensors"   # if this fails: pip install --user matplotlib
+   ```
+
+5. **Run the smoke test** (synthetic data, a few seconds):
+
+   ```bash
+   python loss_ablation/species_sphere_smoke.py
+   ```
+
+   It should end with `SMOKE OK`.
+
+6. **Run it on the real models:**
+
+   ```bash
+   python loss_ablation/species_sphere.py
+   ```
+
+   It prints the species it picked and one line of statistics per model and triple, then
+   the paths it wrote.
+
+   As a batch job instead of steps 3–6: `qsub loss_ablation/run_species_sphere.sh`
+   (arguments after the script name go to `species_sphere.py`; the log is
+   `species_sphere.o<job-id>`).
+
+7. **Copy the results to your laptop** (run this on your laptop):
+
+   ```bash
+   scp '<BU-login>@scc1.bu.edu:/projectnb/herbdl/workspaces/<BU-login>/herbdl/finetuning/output/SWIN/species_sphere/*' .
+   ```
+
+### Options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `--models` | `normface arcface dbm kappaface` | Models to draw, one row each (see [Models](#models)) |
+| `--reference` | `dbm` | Model whose confusions choose the similar triple |
+| `--min-val` | `10` | Minimum validation images per species. Lower it if too few species qualify |
+| `--seed` | `0` | Seed for the dissimilar triple |
+| `--similar`, `--dissimilar` | chosen automatically | Three species names each, to fix a triple by hand |
+| `--add NAME=RUN_DIR[:KIND]` | | Another model (see [Models](#models)) |
+| `--geom` | Farid's `PHASE3_GEOM` | Folder holding `<model>/features.npy` and `predictions.npz` |
+| `--out` | your workspace (above) | Output folder |
+
+### Models
+
+`--models` takes any name from `phase3_geometry.MODELS` (the Phase 3 models: `arcface`,
+`dbm`, `kappaface`, `subcenter_arcface`, `arcface_tara`, `arcface_ecc`, `hace`,
+`x2softmax` and the `*_seed43` reruns), plus `normface`, which `species_sphere.py`
+defines in `EXTRA_MODELS`. NormFace's features were exported under its old name, in
+`PHASE3_GEOM/cosine_m0/`, and its weights are in `SWIN_BASE_COSINE_M0_384/`.
+
+To draw another model:
+
+1. It needs cached validation features. ArcFace with m = 0.1, for example, has no
+   `configs_advanced/phase3_geom/` config. Make an eval-only config like the ones there
+   (see `generate.py`), with `do_train: false` and `evaluation.features_path` and
+   `evaluation.predictions_path` pointing to `<geom>/<name>/features.npy` and
+   `<geom>/<name>/predictions.npz`. Run it with `train_advanced.sh` on a GPU node.
+2. Add it with `--add <name>=<RUN_DIR>`, where `RUN_DIR` is the training run's folder
+   (the one holding `model.safetensors`) relative to `phase3_geometry.OUT`, Farid's
+   `finetuning/output/SWIN`. The script reads the head type from the tensor names in
+   `model.safetensors`; append `:registry`, `:arcface` or `:hace` to set it by hand.
+
+   ```bash
+   python loss_ablation/species_sphere.py --models arcface_m01 arcface dbm \
+       --add arcface_m01=<RUN_DIR>
+   ```
+
+   Add `--geom <folder>` if the features are not in Farid's `PHASE3_GEOM`.
+
+### Reading the figure and `triples.json`
+
+- **Diamonds** are the three class templates. **Lines** are where two templates tie; an
+  image is assigned to the species whose region it falls in (among these three).
+- **Dots** are validation images, coloured by their true species. **Hollow rings** are
+  images the full model gets wrong; the wrong answer may be a species outside the triple.
+- `template_angles_deg`: angles between the three templates. Expect about 90° for the
+  dissimilar triple and less for the similar one.
+- `mean_angle_to_own_template_deg`: how tight each species' cluster is.
+- `three_way_accuracy`: accuracy when the model chooses only among these three species.
+  `full_model_accuracy`: accuracy of the real predictions on the same images.
+- `mean_fraction_in_span`: mean length of the projected feature (1 = the whole feature
+  lies in the 3-D span). Values well below 1 mean most of the feature points elsewhere,
+  and the sphere view shows only part of the picture.
+- `hidden_behind_sphere`: images on the far side of the view, which are not drawn.
