@@ -1,0 +1,107 @@
+# Training-image geometry: pooled features of the subcenter_arcface model over the TRAIN split.
+# Copy of configs_advanced/phase3_geom/subcenter_arcface.yml with four changes:
+#   data.validation_file -> train_2022.json   (evaluate the train split, not val)
+#   output/features/predictions -> PHASE3_GEOM_TRAIN/subcenter_arcface
+#   per_device_eval_batch_size 64 -> 128;  dataloader_num_workers 16 -> 8 (two extractions share a 16-core job)
+# do_train is false: one forward pass per image, no gradients, no training.
+# Phase 3 geometry: copy of phase3_eval/subcenter_arcface.yml, writing to PHASE3_GEOM/subcenter_arcface and
+# also saving pooled features. Made by phase3_geom/generate.py.
+# GENERATED for Phase 3 eval-only re-evaluation -- do not train with this.
+# Source: orx/sub-center-arcface-k-3-at-384px-real-scale-pilot:finetuning/SWIN/configs_advanced/swin_base_384_subcenter_arcface_pilot.yml
+# Changes: do_train false, W&B off, output_dir -> PHASE3_GEOM/subcenter_arcface,
+# evaluation.init_weights = that run's final model.safetensors, predictions saved as .npz.
+model:
+  model_name_or_path: microsoft/swin-base-patch4-window12-384-in22k
+  config_name: null
+  cache_dir: null
+  model_revision: main
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: /projectnb/herbdl/data/kaggle-herbaria/train_2022.json
+  validation_file: /projectnb/herbdl/data/kaggle-herbaria/train_2022.json
+  image_column_name: filename
+  label_column_name: scientificNameEncoded
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: null
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+training:
+  output_dir: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/PHASE3_GEOM_TRAIN/subcenter_arcface
+  logging_dir: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/PHASE3_GEOM_TRAIN/subcenter_arcface
+  do_train: false
+  do_eval: true
+  per_device_train_batch_size: 64
+  per_device_eval_batch_size: 128
+  learning_rate: 0.0001
+  num_train_epochs: 50
+  warmup_steps: 500
+  weight_decay: 0.01
+  optim: adamw_torch_fused
+  gradient_accumulation_steps: 2
+  lr_scheduler_type: cosine
+  logging_strategy: epoch
+  save_strategy: epoch
+  save_total_limit: 55
+  eval_strategy: steps
+  eval_steps: 8964
+  report_to: none
+  bf16: true
+  dataloader_num_workers: 8
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 42
+  resume_from_checkpoint: null
+custom:
+  lr_type: cosine
+  frozen: false
+  frozen_type: none
+  run_group: SWIN_Base_SubcenterArcFace_384_Pilot
+  run_name: SWIN_Base_SubcenterArcFace_384_Pilot
+  run_id: swin_base_subcenter_arcface_384_pilot
+  run_notes: 'Real-scale pilot (50 epochs, 2 GPUs) of sub-center ArcFace (k=3), matched
+    against the 384px plain-ArcFace (k=1) ablation on every other hyperparameter.
+    De-risks wiring loss_ablation''s registry ideas into the production trainer before
+    running all 9 losses at this scale.
+
+    '
+augmentation:
+  use_advanced: false
+multi_task:
+  enabled: false
+arcface:
+  enabled: true
+  embedding_size: null
+  scale: 30.0
+  margin: 0.3
+  num_subcenters: 3
+  hybrid_ce_weight: 0.0
+  margin_warmup_epochs: 5
+hace:
+  enabled: false
+long_tail:
+  logit_adjustment: false
+ema:
+  enabled: false
+multi_crop:
+  enabled: false
+  crop_sizes:
+  - 224
+  target_size: 224
+wandb:
+  enabled: false
+  entity: gardoslab
+  project: herbdl
+  resume: allow
+evaluation:
+  init_weights: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_SUBCENTER_ARCFACE_384_PILOT/model.safetensors
+  features_path: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/PHASE3_GEOM_TRAIN/subcenter_arcface/features.npy
+  predictions_path: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/PHASE3_GEOM_TRAIN/subcenter_arcface/predictions.npz

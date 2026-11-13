@@ -1,0 +1,120 @@
+# SWIN-L @384 + ArcFace/Hybrid loss + Multi-task (family/genus/species) heads
+# Cold start from in22k pretrained backbone (no herbdl checkpoint chaining).
+# Loss: 0.7*ArcFace + 0.3*CE (hybrid) on species, plus auxiliary CE heads for
+# family/genus (multi-task). Medium augmentation, since heavy aug applied cold
+# has hurt convergence in prior curriculum runs (see ADVANCED_TECHNIQUES.md).
+
+model:
+  model_name_or_path: "microsoft/swin-large-patch4-window12-384-in22k"
+  config_name: "microsoft/swin-large-patch4-window12-384-in22k"
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: "microsoft/swin-large-patch4-window12-384-in22k"
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: 50000
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+
+training:
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_L_384_ARCFACE_HYBRID_MULTITASK"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_L_384_ARCFACE_HYBRID_MULTITASK"
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 16
+  per_device_eval_batch_size: 8
+  learning_rate: 0.0001
+  num_train_epochs: 100
+  warmup_steps: 0.05
+  weight_decay: 0.05
+  gradient_accumulation_steps: 8          # effective batch = 16 * 8 = 128
+  gradient_checkpointing: true            # needed to fit SWIN-L @384
+  lr_scheduler_type: "cosine"
+  lr_scheduler_kwargs:
+    eta_min: 0.000001
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 3
+  eval_strategy: "epoch"
+  eval_on_start: true
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 8
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 42
+
+custom:
+  lr_type: "cosine"
+  frozen: false
+  frozen_type: "none"
+  run_group: "SWIN_L_384"
+  run_name: "SWIN_L_384_ArcFace_Hybrid_MultiTask"
+  run_id: "swin_l_384_arcface_hybrid_multitask"
+  run_notes: "SWIN-L 384 in22k, cold start. Hybrid loss (0.7*ArcFace + 0.3*CE) on species + multitask family/genus CE heads."
+
+augmentation:
+  use_advanced: true
+  randaugment:
+    num_ops: 2
+    magnitude: 7                          # medium — cold start
+  mixup:
+    enabled: true
+    alpha: 0.8
+  cutmix:
+    enabled: true
+    alpha: 1.0
+  mixup_cutmix_prob: 0.3
+  label_smoothing: 0.1
+  random_erasing:
+    enabled: true
+    probability: 0.15
+    min_area: 0.02
+    max_area: 0.33
+  color_jitter:
+    enabled: true
+    brightness: 0.4
+    contrast: 0.4
+    saturation: 0.4
+    hue: 0.1
+
+multi_task:
+  enabled: true
+  min_species_samples: 2
+  family_weight: 0.2
+  genus_weight: 0.3
+  species_weight: 1.0
+
+arcface:
+  enabled: true
+  embedding_size: 512
+  scale: 30.0
+  margin: 0.50
+  num_subcenters: 3
+  hybrid_ce_weight: 0.3
+
+multi_crop:
+  enabled: false
+  crop_sizes: [400, 416, 448, 480, 512]
+  target_size: 384
+  flip: true
+
+wandb:
+  enabled: true
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"

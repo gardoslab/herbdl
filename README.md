@@ -24,12 +24,24 @@ Dataset management and preprocessing utilities.
 Model training and evaluation scripts for multiple architectures.
 
 #### `SWIN/`
-SWIN Transformer model training and evaluation.
+SWIN Transformer training and evaluation.
 
-- `SWIN_finetuning.py` - Primary training script using HuggingFace Trainer with WandB logging
-- `train.py` - Custom training loop with layer freezing support
-- `eval.py` - Model evaluation utilities
-- Base model: `microsoft/swin-base-patch4-window12-384`
+- `SWIN_finetuning_advanced.py` - the only training script; every technique is a YAML config section
+- `train_advanced.sh` - SCC job entry point (`CONFIG_FILE=...`); see `AGENTS.md`
+- `configs_advanced/` - run configs, including all loss-ablation and scaling-ladder runs
+- `loss_ablation/` - the loss functions and their analysis scripts (see below)
+
+#### Loss-function ablations
+- The losses themselves: `finetuning/SWIN/loss_ablation/losses.py` (HACE in `hierarchy.py`, ECC/TARA in `aux.py`)
+- Their run configs: `finetuning/SWIN/configs_advanced/swin_base_384_*.yml`; the same losses on other backbones:
+  `configs_advanced/backbones/` (training) and `backbone_eval/` (re-scoring); heavy-augmentation DBM: `swin_base_384_dbm_heavyaug.yml`
+- Everything else (tests, analysis scripts: ensembles, same-specimen copies, geometry by rarity, trainer options): `finetuning/SWIN/loss_ablation/README.md`
+- Results write-up: the project's "Loss Function Ablations" document (kept outside this repo)
+
+#### `ConvNeXt/`, `DinoV2/`, `EfficientNet_B6/`, `CoAtNet/`
+Older stand-alone training scripts and cross-entropy configs for those backbones (llindon). The loss
+ablation does not use these scripts: it runs the backbones through `SWIN_finetuning_advanced.py` with
+the adapters in `loss_ablation/backbones.py`, keeping llindon's configs as the recipe.
 
 #### `BioCLIP/`
 BioCLIP zero-shot evaluation for biological domain.
@@ -49,6 +61,24 @@ Hybrid model combining SWIN visual features with CLIP text-image alignment.
 - Model checkpoints saved in `output/SWIN/kaggle22/`
 - WandB integration: project `herbdl`, entity `bu-spark-ml`
 - Environment variables control freezing, learning rate schedules, and run identification
+
+### `repgeom/`
+Representation-geometry analysis of trained SWIN checkpoints (class tightness, separation,
+classifier alignment, spatial evidence). See `repgeom/README.md`. One config per analysis mode in
+`repgeom/configs/` (`repgeom.yml` geometry / loss-ablation geometry, `depth.yml`, `f1.yml`,
+`capacity.yml`, `subspace.yml`); each experiment used to overwrite the single `repgeom.yml`, which
+is why they were split when the branches were merged.
+
+### `scaling/`
+Label-cardinality scaling study: census of the Kaggle 2021 pool, ladder builds, sweep and metric
+code, and fine-tune configs. See `scaling/README.md` and `scaling/BACKLOG.md`.
+
+### `datasets/gbif_f25/`
+Species index, overlap with GBIF-F24 and Harvard, and the long-tail / uniform-option rundown for
+the GBIF-F25 pool (`build_index.py`, `overlap.py`, `rundown.py`).
+
+### `docs/`
+SCC notes: GPU queues, a GPU check script, and how to run Claude on SCC.
 
 ### `CLIP/`
 Zero-shot evaluation experiments using OpenAI CLIP.
@@ -119,15 +149,12 @@ pip install -r clustering_viz/requirements.txt
 
 ```bash
 cd finetuning/SWIN
-python SWIN_finetuning.py \
-    --output_dir ../output/SWIN/kaggle22/ \
-    --model_name_or_path "microsoft/swin-base-patch4-window12-384" \
-    --train_file ../datasets/train_22_scientific.json \
-    --do_train --do_eval \
-    --per_device_train_batch_size 8 \
-    --learning_rate 1e-4 \
-    --num_train_epochs 3
+qsub -l h_rt=12:00:00 -P herbdl -l gpus=2 -l gpu_c=8.0 -l gpu_memory=48G \
+     -v NPROC_PER_NODE=2,CONFIG_FILE=configs_advanced/swin_base_384_dbm_pilot.yml train_advanced.sh
 ```
+
+Each config's batch settings assume a GPU count (noted in its `gradient_accumulation_steps`
+comment); 1-GPU configs drop `NPROC_PER_NODE`. Environment details: `AGENTS.md`.
 
 ### Creating Clustering Visualizations
 
@@ -148,7 +175,7 @@ jupyter notebook kaggle22_clustering.ipynb
 
 ## Additional Documentation
 
-- `CLAUDE.md` - Detailed project guide for Claude Code
+- `AGENTS.md` - The one project guide for coding agents: architecture, commands, environment, lessons learned (`CLAUDE.md` just imports it)
 - Subdirectory READMEs in `datasets/`, `utils/`, `CLIP/`, and `finetuning/output/`
 
 ## License

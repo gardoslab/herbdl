@@ -15,9 +15,11 @@
 
 import argparse
 import inspect
+import json
 import logging
 import os
 import re
+import shutil
 import sys
 import yaml
 from dataclasses import dataclass, field
@@ -299,6 +301,15 @@ class SubCenterArcMarginProduct(nn.Module):
         self.th = math.cos(math.pi - m)
         self.mm = math.sin(math.pi - m) * m
 
+    def set_margin(self, m):
+        """Update the margin (and its derived cos/sin/threshold terms) in place — used by
+        MarginWarmupCallback to ramp m from 0 to its target over the first few epochs."""
+        self.m = m
+        self.cos_m = math.cos(m)
+        self.sin_m = math.sin(m)
+        self.th = math.cos(math.pi - m)
+        self.mm = math.sin(math.pi - m) * m
+
     def forward(self, embeddings, labels=None):
         embeddings = F.normalize(embeddings, p=2, dim=1)
         weight = F.normalize(self.weight, p=2, dim=1)
@@ -308,7 +319,7 @@ class SubCenterArcMarginProduct(nn.Module):
         if labels is None:
             return cosine * self.s
 
-        sine = torch.sqrt((1.0 - cosine.pow(2)).clamp(0, 1))
+        sine = torch.sqrt((1.0 - cosine.pow(2)).clamp(1e-7, 1))  # lower bound keeps d(sqrt)/dx finite when cos -> 1 (NaN at s=15)
         phi = cosine * self.cos_m - sine * self.sin_m
         phi = torch.where(cosine > self.th, phi, cosine - self.mm) if not self.easy_margin else torch.where(cosine > 0, phi, cosine)
         one_hot = torch.zeros_like(cosine).scatter_(1, labels.view(-1, 1).long(), 1)
@@ -339,9 +350,20 @@ class SwinWithArcFace(nn.Module):
         self.genus_weight = genus_weight
         self.hybrid_ce_weight = hybrid_ce_weight
 
-        self.embedding = nn.Linear(hidden_size, embedding_size)
-        self.bn = nn.BatchNorm1d(embedding_size)
-        self.arcface = SubCenterArcMarginProduct(embedding_size, num_species, k=num_subcenters, s=scale, m=margin)
+        # embedding_size=None (config: `arcface.embedding_size: null`) skips the
+        # bottleneck+BatchNorm entirely and runs ArcFace directly on the backbone's
+        # pooled feature — for controlled ablations where the bottleneck/BN would be a
+        # confounding second intervention. Otherwise, a Linear+BN bottleneck to
+        # embedding_size (the original recipe) is used.
+        self.no_bottleneck = embedding_size is None
+        arc_in_features = hidden_size if self.no_bottleneck else embedding_size
+        if self.no_bottleneck:
+            self.embedding = None
+            self.bn = None
+        else:
+            self.embedding = nn.Linear(hidden_size, embedding_size)
+            self.bn = nn.BatchNorm1d(embedding_size)
+        self.arcface = SubCenterArcMarginProduct(arc_in_features, num_species, k=num_subcenters, s=scale, m=margin)
 
         if hybrid_ce_weight > 0:
             self.ce_classifier = nn.Linear(hidden_size, num_species)
@@ -360,7 +382,7 @@ class SwinWithArcFace(nn.Module):
 
     def forward(self, pixel_values, labels=None, family_labels=None, genus_labels=None, species_labels=None, **kwargs):
         pooled = self.swin(pixel_values).pooler_output
-        embeddings = self.bn(self.embedding(pooled))
+        embeddings = pooled if self.no_bottleneck else self.bn(self.embedding(pooled))
         arc_labels = species_labels if species_labels is not None else labels
 
         if arc_labels is not None:
@@ -403,11 +425,60 @@ class SwinWithArcFace(nn.Module):
         return result
 
 
+class AugSchedule:
+    """Shared augmentation strength s in [0, 1] for a ramp-in (progressive) augmentation schedule.
+
+    Heavy augmentation (RandAugment, mixup/CutMix, label smoothing) changes the inputs a lot, and a
+    model fine-tuned from clean-image weights adapts better if the strength is increased gradually
+    (the idea of progressive learning in EfficientNetV2, Tan & Le 2021). One scalar s drives all
+    three: RandAugment is applied with probability s, mixup/CutMix with probability prob * s, and
+    label smoothing is eps * s. The value lives in shared memory, so DataLoader worker processes
+    (which run the transforms and the collator) see the updates made by AugWarmupCallback in the
+    main process. s = 1 for the whole run when augmentation.warmup_epochs is 0 (the default)."""
+    def __init__(self):
+        import multiprocessing
+        self._v = multiprocessing.Value('d', 1.0)
+
+    @property
+    def value(self):
+        return self._v.value
+
+    def set(self, x):
+        self._v.value = float(x)
+
+
+AUG_SCHEDULE = AugSchedule()
+
+
+class ScheduledRandAugment:
+    """Applies a RandAugment transform with probability AUG_SCHEDULE.value (a no-op at s = 0)."""
+    def __init__(self, rand_augment, schedule):
+        self.rand_augment, self.schedule = rand_augment, schedule
+
+    def __call__(self, img):
+        return self.rand_augment(img) if random.random() < self.schedule.value else img
+
+
+class AugWarmupCallback(TrainerCallback):
+    """Sets AUG_SCHEDULE.value = min(1, epoch / warmup_epochs) before every optimizer step.
+    Recomputed from state.epoch each step, so it is resume-safe."""
+    def __init__(self, schedule, warmup_epochs):
+        self.schedule, self.warmup_epochs = schedule, warmup_epochs
+
+    def on_step_begin(self, args, state, control, **kwargs):
+        self.schedule.set(min(1.0, (state.epoch or 0.0) / self.warmup_epochs))
+
+    def on_epoch_begin(self, args, state, control, **kwargs):
+        if state.is_world_process_zero:
+            print(f"__CUSTOM__: augmentation strength s = {self.schedule.value:.3f} at epoch {state.epoch}", flush=True)
+
+
 class MixupCutmixCollator:
     """
     Collator that applies Mixup and/or Cutmix augmentation.
     """
-    def __init__(self, mixup_alpha=0.8, cutmix_alpha=1.0, prob=0.5, label_smoothing=0.1, num_classes=1000, multi_task=False, label_column_name="label"):
+    def __init__(self, mixup_alpha=0.8, cutmix_alpha=1.0, prob=0.5, label_smoothing=0.1, num_classes=1000, multi_task=False, label_column_name="label", schedule=None):
+        self.schedule = schedule  # AugSchedule: scales the mixup/CutMix probability (ramp-in)
         self.mixup_alpha = mixup_alpha
         self.cutmix_alpha = cutmix_alpha
         self.prob = prob
@@ -447,10 +518,19 @@ class MixupCutmixCollator:
 
         batch_size = pixel_values.size(0)
 
+        # TARA's second view of each image (BioCLIP-preprocessed, 224px, CLIP-normalised),
+        # present only when loss_registry.aux includes 'tara' -- see train_transforms. Never
+        # mixed: TARA is refused alongside mixup/cutmix at config time, so this only ever
+        # reaches the no-mixup branch below in practice.
+        bioclip_pixel_values = (torch.stack([example["bioclip_pixel_values"] for example in examples])
+                                if "bioclip_pixel_values" in examples[0] else None)
+
         # Decide whether to apply mixup/cutmix
-        if random.random() > self.prob:
+        if random.random() > self.prob * (self.schedule.value if self.schedule is not None else 1.0):
             # No mixup/cutmix
             result = {"pixel_values": pixel_values, "labels": labels}
+            if bioclip_pixel_values is not None:
+                result["bioclip_pixel_values"] = bioclip_pixel_values
             if self.multi_task:
                 result.update({
                     "family_labels": family_labels,
@@ -521,12 +601,32 @@ class MixupTrainer(Trainer):
     """
     Custom Trainer that handles Mixup/Cutmix loss computation and batch-wise evaluation.
     """
-    def __init__(self, *args, multi_task=False, arcface=False,
-                 logit_adjustment=False, log_prior=None, logit_adjustment_tau=1.0,
-                 family_weight=0.2, genus_weight=0.3, species_weight=1.0, **kwargs):
+    def __init__(self, *args, multi_task=False, arcface=False, hace=False, loss_registry=False,
+                 aux_log_steps=500, predictions_path=None, features_path=None, logit_adjustment=False, log_prior=None, logit_adjustment_tau=1.0,
+                 family_weight=0.2, genus_weight=0.3, species_weight=1.0,
+                 registry_label_smoothing=0.0, aug_schedule=None, **kwargs):
         super().__init__(*args, **kwargs)
+        # Heavy augmentation on registry heads: label smoothing target (0 unless augmentation is
+        # enabled) and the shared ramp-in schedule; mixup/CutMix labels arrive as labels_b / lam.
+        self.registry_label_smoothing = registry_label_smoothing
+        self.aug_schedule = aug_schedule
         self.multi_task = multi_task
         self.arcface = arcface
+        # HACE and loss_registry get the exact same treatment as (non-multi-task) ArcFace
+        # below: the model computes its own loss internally from a single `labels` tensor,
+        # no mixup/cutmix, no separate per-level heads -- true of every SwinWithLoss
+        # instantiation regardless of which head/hierarchy/aux it wraps, since forward()'s
+        # {"loss", "logits"} contract doesn't change. Kept as separate flags (not folded
+        # into `arcface`) purely so logs/errors say what's actually running.
+        self.hace = hace
+        self.loss_registry = loss_registry
+        self.aux_log_steps = aux_log_steps  # print ECC/TARA aux-loss values every N optimizer steps
+        # evaluation.predictions_path: if set, evaluation_loop also saves every image's
+        # argmax / top-5 / label as an .npz (val-set order), for per-species analysis.
+        self.predictions_path = predictions_path
+        # evaluation.features_path: if set, evaluation_loop also saves every image's pooled
+        # backbone feature (the vector the classifier head reads) as fp16 .npy, val-set order.
+        self.features_path = features_path
         # Multi-task loss weights (used when recomputing the mixed/adjusted loss here;
         # kept in sync with MultiTaskSwinModel's internal weighting).
         self.family_weight = family_weight
@@ -553,13 +653,15 @@ class MixupTrainer(Trainer):
 
         smoothing = getattr(self.data_collator, 'label_smoothing', 0.0)
 
-        # ArcFace: model computes its own loss internally (no mixup/cutmix with ArcFace).
+        # ArcFace and HACE: the model computes its own loss internally (no mixup/cutmix),
+        # from a single `labels` tensor -- identical Trainer-side contract for both, since
+        # both wrap `forward(pixel_values, labels) -> {"loss", "logits"}` the same way.
         # NOTE: logit_adjustment (balanced softmax) is intentionally NOT applied here —
-        # the ArcFace margin already provides a form of class separation, and adding
-        # log_prior on top of scaled cosine logits is not well-defined. If you enable
-        # both arcface and long_tail.logit_adjustment in the config, logit_adjustment
-        # has no effect during training (this early return bypasses _adjust_logits).
-        if self.arcface:
+        # ArcFace's margin (or HACE's ancestral smoothing) already provides a form of
+        # class separation, and adding log_prior on top is not well-defined for either.
+        # If you enable logit_adjustment alongside arcface/hace, it has no effect during
+        # training (this early return bypasses _adjust_logits).
+        if self.arcface or self.hace or self.loss_registry:
             if self.multi_task:
                 family_labels = inputs.pop("family_labels", None)
                 genus_labels = inputs.pop("genus_labels", None)
@@ -573,9 +675,68 @@ class MixupTrainer(Trainer):
                     family_labels=family_labels,
                     genus_labels=genus_labels,
                 )
+            elif "bioclip_pixel_values" in inputs:
+                # TARA: SwinWithLoss routes this second view to the BioCLIP teacher only.
+                outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a,
+                                bioclip_pixel_values=inputs["bioclip_pixel_values"])
+            elif self.loss_registry and self.logit_adjustment:
+                # Balanced softmax (logit adjustment) on the registry's plain softmax head.
+                # The registry model's own loss ignores the log-prior, so take the head's raw
+                # logits (no labels -> no loss, no margin) and compute the loss here:
+                #   CE(logits + tau * log_prior, labels), float32, training only. Evaluation
+                # (below) uses the raw logits. main() allows this only for head=softmax with no
+                # aux losses, so this is exactly "CE + logit adjustment" and nothing else.
+                outputs = model(pixel_values=inputs["pixel_values"])
+                outputs["loss"] = F.cross_entropy(self._adjust_logits(outputs["logits"].float()), labels_a)
+                if not getattr(self, "_la_announced", False):
+                    self._la_announced = True
+                    print(f"__CUSTOM__: balanced softmax ACTIVE on the registry softmax head "
+                          f"(tau={self.logit_adjustment_tau}, log-prior range "
+                          f"{self.log_prior.min().item():.2f}..{self.log_prior.max().item():.2f})", flush=True)
             else:
-                outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a)
+                _ls = self.registry_label_smoothing * (self.aug_schedule.value if self.aug_schedule is not None else 1.0)
+                if self.loss_registry and (labels_b is not None or _ls > 0):
+                    # Heavy augmentation: mixup/CutMix mixed labels and/or label smoothing. The
+                    # head's margin is applied once per label set; loss = lam*L(y_a) + (1-lam)*L(y_b).
+                    outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a,
+                                    labels_b=labels_b, lam=lam, label_smoothing=_ls)
+                    if not getattr(self, "_heavy_announced", False):
+                        self._heavy_announced = True
+                        print("__CUSTOM__: heavy augmentation ACTIVE on the registry head "
+                              f"(label smoothing target {self.registry_label_smoothing}, mixed batch this step: "
+                              f"{labels_b is not None})", flush=True)
+                else:
+                    outputs = model(pixel_values=inputs["pixel_values"], labels=labels_a)
             loss = outputs.get("loss")
+            # Aux-loss visibility (ECC/TARA): the total loss alone can't show whether the aux
+            # term is doing anything. TARA's value is -cos(student, teacher), so -value is the
+            # mean student/teacher cosine alignment. Printed once per `aux_log_steps` optimizer
+            # steps (loss_registry.aux_log_steps, default 500).
+            _aux = outputs.get("aux_losses") if isinstance(outputs, dict) else None
+            _step = self.state.global_step
+            if (_aux and model.training and _step % self.aux_log_steps == 0
+                    and getattr(self, "_last_aux_log_step", -1) != _step
+                    and self.is_world_process_zero()):
+                self._last_aux_log_step = _step
+                print(f"__CUSTOM__: aux losses at step {_step}: "
+                      + ", ".join(f"{k}={v.item():.4f}" for k, v in _aux.items())
+                      + f" (total loss {loss.item():.4f})", flush=True)
+            # NaN-safety: a prior 100-epoch ArcFace run (SWIN_L_384_ARCFACE_SEED0) trained
+            # healthily to epoch 77 (acc 0.804) then hit a single-step gradient explosion
+            # (loss 9->1277, grad_norm->nan) at epoch 78 and never recovered — a NaN loss
+            # backpropagates NaN grads that permanently corrupt the weights on the very next
+            # optimizer step, with no way to recover for the rest of training. Replace a
+            # non-finite loss with a disconnected zero (no graph to the model), so that
+            # step's backward pass contributes exactly zero gradient instead of NaN, and
+            # training continues rather than collapsing for good. Applied to HACE too, not
+            # because it has been observed to happen there yet, but because the failure mode
+            # (large output layer, softmax/log combination, bf16) is the same *class* of risk
+            # and this guard is unconditionally cheap.
+            if loss is not None and not torch.isfinite(loss):
+                _head_name = "ArcFace" if self.arcface else ("HACE" if self.hace else "loss_registry")
+                print(f"__CUSTOM__: WARNING non-finite {_head_name} loss ({loss.item()}) at step "
+                      f"{self.state.global_step} — skipping this batch's gradient contribution")
+                loss = torch.zeros((), device=loss.device, dtype=loss.dtype, requires_grad=True)
             return (loss, outputs) if return_outputs else loss
 
         # Handle multi-task learning
@@ -684,6 +845,15 @@ class MixupTrainer(Trainer):
         total_loss = 0.0
         total_batches = 0
 
+        # Pooled-feature capture for geometry analysis: every model this script builds
+        # (SwinWithArcFace, SwinWithLoss incl. HACE, the multi-task model) keeps its backbone
+        # at `.swin` and feeds its head from `.swin(...).pooler_output`, so one forward hook
+        # there sees exactly the vector the head reads, whatever the head is.
+        _pooled, _feat_hook, all_feats = [], None, []
+        if self.features_path:
+            _feat_hook = self.model.swin.register_forward_hook(
+                lambda mod, inp, out: _pooled.append(out.pooler_output.detach()))
+
         for step, inputs in enumerate(dataloader):
             # Move inputs to device
             inputs = self._prepare_inputs(inputs)
@@ -710,8 +880,13 @@ class MixupTrainer(Trainer):
                 labels = labels_a
 
             with torch.no_grad():
-                if self.arcface:
-                    # ArcFace inference: no labels → cosine similarity logits (no margin)
+                if self.arcface or self.hace or self.loss_registry:
+                    # ArcFace: no labels → cosine similarity logits (no margin).
+                    # HACE: no labels → aggregated species-level probabilities (see
+                    # HACEHead.forward), argmax-equivalent to raw softmax either way.
+                    # loss_registry: every head's own `if labels is None:` branch returns
+                    # exactly its inference-time logits/probabilities the same way (see
+                    # model.py's head_inference_info() docstring for the full account).
                     outputs = model(pixel_values=inputs["pixel_values"])
                 elif self.multi_task:
                     # For multi-task, pass all labels to model
@@ -745,9 +920,32 @@ class MixupTrainer(Trainer):
 
             # Compute predictions for this batch
             predictions = torch.argmax(logits, dim=-1)
+            top5 = logits.topk(5, dim=-1).indices if self.predictions_path else None
+
+            # Under DDP each rank only sees its own shard of the eval set (alternate
+            # batches). Gather every rank's predictions/labels so metrics cover the WHOLE
+            # validation set -- without this, 2-GPU runs silently reported metrics on rank
+            # 0's half only (found in Phase 3: their logged eval_accuracy/eval_f1 match the
+            # rank-0 alternate-batch subset, not the full set). gather_for_metrics also
+            # drops the duplicate samples the sampler pads the last batch with. Gathered
+            # order is rank-interleaved per step, i.e. the original val-set order. A no-op
+            # on 1 GPU.
+            predictions = self.accelerator.gather_for_metrics(predictions)
+            if top5 is not None:
+                top5 = self.accelerator.gather_for_metrics(top5)
+            if labels is not None:
+                labels = self.accelerator.gather_for_metrics(labels)
+            if _feat_hook is not None:
+                if len(_pooled) != 1:
+                    raise RuntimeError(f"expected one backbone forward per eval batch, saw {len(_pooled)}")
+                all_feats.append(self.accelerator.gather_for_metrics(_pooled.pop()).half().cpu())
 
             # Move to CPU and store (batch-wise to save memory)
             all_predictions.append(predictions.cpu())
+            if top5 is not None:
+                if step == 0:
+                    all_top5 = []
+                all_top5.append(top5.cpu())
             if labels is not None:
                 all_labels.append(labels.cpu())
 
@@ -755,19 +953,33 @@ class MixupTrainer(Trainer):
         all_predictions = torch.cat(all_predictions, dim=0).numpy()
         all_labels = torch.cat(all_labels, dim=0).numpy() if all_labels else None
 
+        if _feat_hook is not None:
+            _feat_hook.remove()
+            if self.is_world_process_zero():
+                feats = torch.cat(all_feats, dim=0).numpy()
+                os.makedirs(os.path.dirname(self.features_path) or ".", exist_ok=True)
+                np.save(self.features_path, feats)
+                print(f"__CUSTOM__: saved pooled features {feats.shape} ({feats.dtype}) to "
+                      f"{self.features_path}")
+
+        if self.predictions_path and self.is_world_process_zero():
+            os.makedirs(os.path.dirname(self.predictions_path) or ".", exist_ok=True)
+            np.savez_compressed(self.predictions_path, predictions=all_predictions,
+                                labels=all_labels, top5=torch.cat(all_top5, dim=0).numpy())
+            print(f"__CUSTOM__: saved {len(all_predictions)} per-image predictions to "
+                  f"{self.predictions_path}")
+
         # Compute metrics
         metrics = {}
         if self.compute_metrics is not None and all_labels is not None:
             # Create a mock EvalPrediction object
             from transformers.trainer_utils import EvalPrediction
 
-            # For compute_metrics, we need to pass logits in the right shape
-            # Since we've already computed predictions, we'll use one-hot encoding
-            num_labels = logits.shape[-1]
-            mock_logits = np.zeros((len(all_predictions), num_labels))
-            mock_logits[np.arange(len(all_predictions)), all_predictions] = 1.0
-
-            eval_pred = EvalPrediction(predictions=mock_logits, label_ids=all_labels)
+            # Pass the predicted class ids directly (1-D); both compute_metrics variants
+            # take them as-is (`len(shape) > 1` -> argmax, else use as predictions). The old
+            # dense one-hot (N_images x N_species float64) was 21 GB at 168k x 15.5k and
+            # would be ~290 GB at the scaling ladder's 562k x 64k.
+            eval_pred = EvalPrediction(predictions=all_predictions, label_ids=all_labels)
             metrics = self.compute_metrics(eval_pred)
 
         # Add loss to metrics
@@ -832,6 +1044,120 @@ class EMACallback(TrainerCallback):
     def on_train_end(self, args, state, control, model=None, **kwargs):
         print("__CUSTOM__: Copying EMA weights into model for final eval/save")
         self.copy_to_model(model)
+
+
+class MarginWarmupCallback(TrainerCallback):
+    """
+    Ramps SwinWithArcFace's ArcFace margin `m` linearly from 0 to `target_margin` over
+    the first `warmup_epochs` epochs, then holds it at `target_margin`.
+
+    ArcFace's angular margin is applied to features that start out effectively random
+    (an untrained backbone), and training from scratch at full margin is a documented
+    source of non-convergence/instability. Recomputed from `state.epoch` on every step
+    (not a persisted counter), so it is resume-safe: resuming mid-warmup naturally
+    continues the ramp from the correct point.
+    """
+    def __init__(self, target_margin, warmup_epochs):
+        self.target_margin = target_margin
+        self.warmup_epochs = warmup_epochs
+
+    def _set(self, model, m):
+        arcface = getattr(model, 'arcface', None)
+        if arcface is not None:
+            arcface.set_margin(m)
+        elif getattr(model, 'head', None) is not None and hasattr(model, 'set_margin'):
+            model.set_margin(m)  # SwinWithLoss with a registry arcface head
+
+    def on_step_begin(self, args, state, control, model=None, **kwargs):
+        if self.warmup_epochs <= 0:
+            return
+        frac = min(1.0, (state.epoch or 0.0) / self.warmup_epochs)
+        self._set(model, frac * self.target_margin)
+
+    def on_train_begin(self, args, state, control, model=None, **kwargs):
+        frac = min(1.0, (state.epoch or 0.0) / self.warmup_epochs) if self.warmup_epochs > 0 else 1.0
+        self._set(model, frac * self.target_margin)
+        print(f"__CUSTOM__: ArcFace margin warmup enabled — 0 -> {self.target_margin} over "
+              f"{self.warmup_epochs} epochs (starting at m={frac * self.target_margin:.4f})")
+
+
+class KappaEpochUpdateCallback(TrainerCallback):
+    """Calls KappaFaceHead.recompute_margins() once per epoch -- the callback
+    losses.py's own docstring names but that was never actually implemented
+    anywhere in loss_ablation/. Without it, KappaFaceHead.update_buffer()
+    (called every step from forward()) keeps accumulating the per-class mean
+    direction, but per_class_margin never leaves its initial flat m0 value --
+    the entire adaptive-margin mechanism this loss exists for would silently
+    never activate, for the whole run, without ever raising an error.
+
+    NOT attached under 2-GPU DDP (see loss_registry.head=kappaface's config
+    comment): KappaFaceHead's running buffers (mean_dir, dir_initialized,
+    per_class_margin) are plain per-step torch ops with no
+    torch.distributed.all_reduce anywhere in their update path, so each DDP
+    rank accumulates from only the half of each batch it processes -- the two
+    ranks' buffers silently diverge over training with no error or warning.
+    KappaFace/ECC pilots therefore run on 1 GPU, not 2, specifically to avoid
+    this; the checks in main() enforce that rather than relying on this
+    comment being read.
+    """
+    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+        head = getattr(model, 'head', None)
+        if head is not None and hasattr(head, 'recompute_margins'):
+            head.recompute_margins()
+            print(f"__CUSTOM__: KappaFace margins recomputed at epoch {state.epoch:.2f} "
+                  f"(mean per_class_margin={head.per_class_margin.mean().item():.4f})")
+
+
+class ECCEpochUpdateCallback(TrainerCallback):
+    """Calls ECCAux.recompute_similarity() once per epoch -- same gap as
+    KappaEpochUpdateCallback above, for the same reason (referenced in aux.py's
+    own docstring, never implemented). Without it, sim_index stays at its
+    init value (torch.arange(num_classes), i.e. every class's "most similar
+    OTHER class" defaults to ITSELF) for the whole run -- not merely inert
+    like the KappaFace gap, but actively wrong: the MCC loss's push-away term
+    would push a sample away from its OWN class center instead of a genuinely
+    confusable one, for every step of every epoch.
+
+    Same 1-GPU-only restriction as KappaEpochUpdateCallback, for the same
+    reason: ECCAux's center_feat/center_logit/counter buffers have no
+    cross-rank synchronization.
+    """
+    def on_epoch_end(self, args, state, control, model=None, **kwargs):
+        # aux_modules is an nn.ModuleDict, not a plain dict -- it has no .get()
+        # (nn.Module's __getattr__ fallback raises AttributeError for it, which is
+        # exactly what killed the first real run of this callback: 2h19m of otherwise
+        # healthy training, then a crash the instant epoch 1 actually ended and this
+        # fired for the first time). 'in' + [] work on ModuleDict; .get() does not.
+        aux_modules = getattr(model, 'aux_modules', None)
+        ecc = aux_modules['ecc'] if aux_modules is not None and 'ecc' in aux_modules else None
+        if ecc is not None:
+            ecc.recompute_similarity()
+            print(f"__CUSTOM__: ECC similarity index recomputed at epoch {state.epoch:.2f} "
+                  f"(mean sim_value={ecc.sim_value.mean().item():.4f})")
+
+
+class ConfigAndLabelMapSaveCallback(TrainerCallback):
+    """
+    Copies config.json (and label_mapping.json, if present) into every epoch checkpoint
+    directory, not just the final output_dir.
+
+    Trainer's built-in checkpointing calls `model.save_pretrained` for real
+    PreTrainedModel instances (which writes config.json alongside the weights at every
+    checkpoint), but the custom nn.Module wrappers here are not PreTrainedModel, so
+    Trainer's checkpoint path only writes raw weights — config.json previously only
+    existed at the top-level output_dir, written once after training finished. That
+    made intermediate checkpoints unloadable via AutoConfig.from_pretrained, which
+    blocks any training-dynamics analysis across epochs.
+    """
+    def on_save(self, args, state, control, model=None, **kwargs):
+        ckpt_dir = os.path.join(args.output_dir, f"checkpoint-{state.global_step}")
+        if not os.path.isdir(ckpt_dir):
+            return
+        if hasattr(model, 'config') and not isinstance(model, transformers.PreTrainedModel):
+            model.config.save_pretrained(ckpt_dir)
+        label_map_path = os.path.join(args.output_dir, "label_mapping.json")
+        if os.path.isfile(label_map_path):
+            shutil.copyfile(label_map_path, os.path.join(ckpt_dir, "label_mapping.json"))
 
 
 def load_config_from_yaml(config_path):
@@ -934,6 +1260,24 @@ def _relocate_output_dir(path):
     return relocated
 
 
+def _newest_checkpoint(output_dir):
+    """The checkpoint-N subdir of output_dir whose trainer_state.json was written most
+    recently, or None. Unlike get_last_checkpoint (highest N), this ignores stale
+    higher-numbered checkpoints left behind by an older run on a different step scheme
+    or with NaN-frozen weights -- the last save always belongs to the latest run."""
+    if not os.path.isdir(output_dir):
+        return None
+    newest, newest_mtime = None, None
+    for name in os.listdir(output_dir):
+        state = os.path.join(output_dir, name, "trainer_state.json")
+        if not re.fullmatch(r"checkpoint-\d+", name) or not os.path.isfile(state):
+            continue
+        mtime = os.path.getmtime(state)
+        if newest_mtime is None or mtime > newest_mtime:
+            newest, newest_mtime = os.path.join(output_dir, name), mtime
+    return newest
+
+
 def main():
     # Parse command line arguments for config file
     arg_parser = argparse.ArgumentParser(description="SWIN Fine-tuning with advanced augmentations")
@@ -974,6 +1318,11 @@ def main():
     # Extract augmentation parameters
     aug_config = config.get('augmentation', {})
     use_advanced_aug = aug_config.get('use_advanced', False)
+    # augmentation.warmup_epochs: ramp the augmentation strength s from 0 to 1 over this many
+    # epochs (AugSchedule). 0 (default) = full strength from the first step.
+    aug_warmup_epochs = float(aug_config.get('warmup_epochs', 0) or 0) if use_advanced_aug else 0.0
+    AUG_SCHEDULE.set(0.0 if aug_warmup_epochs > 0 else 1.0)
+    print(f"__CUSTOM__: Augmentation warm-up epochs: {aug_warmup_epochs}")
 
     # Extract multi-crop testing parameters
     multi_crop_config = config.get('multi_crop', {})
@@ -1015,6 +1364,74 @@ def main():
     arcface_margin = arcface_config.get('margin', 0.50)
     arcface_num_subcenters = arcface_config.get('num_subcenters', 3)
     arcface_hybrid_ce_weight = arcface_config.get('hybrid_ce_weight', 0.0)
+    # Ramp the margin 0 -> target over this many epochs (0 = disabled, use the target
+    # margin from step 0, the original behavior). See MarginWarmupCallback.
+    arcface_margin_warmup_epochs = arcface_config.get('margin_warmup_epochs', 0)
+
+    # HACE (Hierarchy-Aware Cross-Entropy): a single head like ArcFace's, but its output
+    # layer spans the whole species/genus/family/root tree rather than species alone, and
+    # it needs no margin/subcenter/hybrid-CE knobs of its own. Reuses
+    # loss_ablation/hierarchy.py's HACEHead/TaxonomyTree directly (imported lazily, only
+    # when enabled, in the tree-building and model-construction blocks below) rather than
+    # reimplementing the reachability-matrix math a second time in this script.
+    hace_config = config.get('hace', {})
+    use_hace = hace_config.get('enabled', False)
+    hace_dilution = hace_config.get('dilution', 0.6)
+    hace_label_smoothing = hace_config.get('label_smoothing', 0.0)
+    if use_hace and use_arcface:
+        raise ValueError("config sets both arcface.enabled and hace.enabled -- HACE is its "
+                          "own head (own output layer), not a modifier on top of ArcFace; "
+                          "enable exactly one")
+    if use_hace and use_multi_task:
+        raise ValueError("config sets both multi_task.enabled and hace.enabled -- HACE "
+                          "already produces its own family/genus/species structure via tree "
+                          "aggregation over ONE head, it does not use MultiTaskSwinModel's "
+                          "separate per-level heads; enable exactly one")
+
+    # loss_registry: the remaining loss_ablation heads that are NOT already covered by this
+    # script's own native code (ArcFace) or by their own dedicated section (HACE) --
+    # KappaFace, X2-Softmax, DBM, and any of ECC/TARA layered on top of one of the
+    # registry's own heads via `aux`. Reuses SwinWithLoss exactly as the `use_hace` branch
+    # does, just without a hierarchy. TARA additionally needs a second, BioCLIP-preprocessed
+    # view of every training image (224px, CLIP-normalised -- NOT the SWIN pixel_values;
+    # see aux.py's TARAAux docstring): built in train_transforms from the same random crop
+    # the SWIN view sees, stacked by the collator, passed to SwinWithLoss by compute_loss.
+    loss_registry_config = config.get('loss_registry', {})
+    use_loss_registry = loss_registry_config.get('enabled', False)
+    loss_registry_head = loss_registry_config.get('head', 'softmax')
+    loss_registry_head_kwargs = dict(loss_registry_config.get('head_kwargs', {}) or {})
+    loss_registry_aux = list(loss_registry_config.get('aux', []) or [])
+    loss_registry_aux_kwargs = dict(loss_registry_config.get('aux_kwargs', {}) or {})
+    if use_loss_registry and (use_arcface or use_hace or use_multi_task):
+        raise ValueError("config sets loss_registry.enabled alongside arcface/hace/"
+                          "multi_task -- loss_registry replaces the classifier head the "
+                          "same way those do, enable exactly one")
+    if use_loss_registry and use_logit_adjustment and (loss_registry_head != 'softmax' or loss_registry_aux):
+        # Logit adjustment is only implemented for the plain softmax head (see compute_loss);
+        # on any other registry head it would be silently ignored, which is worse than failing.
+        raise ValueError(f"long_tail.logit_adjustment with loss_registry requires head='softmax' and no "
+                          f"aux losses, got head={loss_registry_head!r}, aux={loss_registry_aux}")
+    use_tara = use_loss_registry and 'tara' in loss_registry_aux
+    bioclip_teacher = None  # built with the model below, used by train_transforms
+    if use_tara and use_advanced_aug:
+        # The BioCLIP view is cut from the same RandomResizedCrop+flip as the SWIN view so
+        # student and teacher see the same pixels. RandAugment/ColorJitter/RandomErasing
+        # (and mixup/cutmix) would each need a deliberate decision about whether the teacher
+        # sees them too -- refuse rather than pick one silently.
+        raise ValueError("loss_registry.aux includes 'tara' with augmentation.use_advanced=true "
+                          "-- TARA currently supports only the standard RandomResizedCrop+flip "
+                          "pipeline (shared between the SWIN and BioCLIP views)")
+
+    # Heavy augmentation (mixup/CutMix and/or label smoothing) on a registry head is implemented
+    # for a single head without aux losses (SwinWithLoss.forward mixes the head loss only). Refuse
+    # the combinations that would silently ignore the mixed labels.
+    _heavy_registry = use_loss_registry and use_advanced_aug and (
+        aug_config.get('mixup', {}).get('enabled', False) or aug_config.get('cutmix', {}).get('enabled', False)
+        or aug_config.get('label_smoothing', 0.0) > 0)
+    if _heavy_registry and (loss_registry_aux or use_logit_adjustment):
+        raise ValueError("mixup/CutMix/label smoothing with loss_registry is implemented for a single head "
+                         "only: remove loss_registry.aux and long_tail.logit_adjustment")
+
 
     print(f"__CUSTOM__: Learning rate type: {learning_rate_type}")
     print(f"__CUSTOM__: Frozen: {frozen}")
@@ -1030,6 +1447,13 @@ def main():
         print(f"__CUSTOM__: Loss weights - Family: {family_weight}, Genus: {genus_weight}, Species: {species_weight}")
     if use_arcface:
         print(f"__CUSTOM__: ArcFace embedding_size={arcface_embedding_size}, scale={arcface_scale}, margin={arcface_margin}, k={arcface_num_subcenters}, hybrid_ce_weight={arcface_hybrid_ce_weight}")
+    print(f"__CUSTOM__: HACE: {use_hace}")
+    if use_hace:
+        print(f"__CUSTOM__: HACE dilution={hace_dilution}, label_smoothing={hace_label_smoothing}")
+    print(f"__CUSTOM__: loss_registry: {use_loss_registry}")
+    if use_loss_registry:
+        print(f"__CUSTOM__: loss_registry head={loss_registry_head} kwargs={loss_registry_head_kwargs} "
+              f"aux={loss_registry_aux} aux_kwargs={loss_registry_aux_kwargs}")
 
     # Create ModelArguments from config
     model_args = ModelArguments(
@@ -1090,8 +1514,12 @@ def main():
         per_device_eval_batch_size=config['training']['per_device_eval_batch_size'],
         learning_rate=float(config['training']['learning_rate']),
         num_train_epochs=config['training']['num_train_epochs'],
+        # Optional fixed step budget (overrides num_train_epochs when > 0). The scaling ladder
+        # uses it so every rung trains the same 131,250 optimizer steps as the 15k runs.
+        max_steps=int(config['training'].get('max_steps', -1) or -1),
         warmup_steps=_warmup_steps,
         weight_decay=config['training']['weight_decay'],
+        optim=config['training'].get('optim', 'adamw_torch'),
         gradient_accumulation_steps=config['training']['gradient_accumulation_steps'],
         lr_scheduler_type=config['training']['lr_scheduler_type'],
         logging_strategy=config['training']['logging_strategy'],
@@ -1111,6 +1539,23 @@ def main():
         gradient_checkpointing=config['training'].get('gradient_checkpointing', False),
         gradient_checkpointing_kwargs=config['training'].get('gradient_checkpointing_kwargs', None),
         load_best_model_at_end=config['training'].get('load_best_model_at_end', False),
+        # Explicit override for auto-detected `last_checkpoint` (see main()'s own
+        # `get_last_checkpoint` call below). Needed because "highest step number in
+        # output_dir" is not always "the checkpoint worth resuming from": a run whose
+        # loss went NaN and got silently guarded (see MixupTrainer's non-finite-loss
+        # skip) keeps incrementing its step counter and saving checkpoints under
+        # frozen, useless weights for the rest of its time budget -- often FASTER than
+        # healthy training, since a no-op backward pass on a disconnected zero-loss
+        # tensor skips real gradient computation entirely. That stale, high-numbered
+        # checkpoint then silently outranks a real, lower-numbered one the next time
+        # auto-detection runs. Caught for real on X2-Softmax: its first (NaN'd) launch
+        # raced to checkpoint-102375 post-collapse while two later, healthy, from-
+        # scratch relaunches only reached checkpoint-36750/39375 -- auto-detection
+        # picked the poisoned one, and resuming from it immediately reproduced the
+        # exact same NaN. Set this explicitly whenever a directory might contain a
+        # stale/poisoned high-numbered checkpoint alongside a real lower one -- either a
+        # path, or `newest` (resolved in main() by save time, so it doesn't go stale).
+        resume_from_checkpoint=config['training'].get('resume_from_checkpoint'),
         **_targs_extra_kwargs,
     )
 
@@ -1240,6 +1685,13 @@ def main():
                 "the `output_dir` or set `overwrite_output_dir: true` in your config to train from scratch."
             )
 
+    # `resume_from_checkpoint: newest` picks the most recently saved checkpoint rather than a
+    # fixed path, so a pin never goes stale across relaunches.
+    if training_args.resume_from_checkpoint == "newest":
+        training_args.resume_from_checkpoint = (
+            None if overwrite_output_dir else _newest_checkpoint(training_args.output_dir))
+        print(f"__CUSTOM__: resume_from_checkpoint=newest -> {training_args.resume_from_checkpoint}")
+
     # Set seed before initializing model
     set_seed(training_args.seed)
 
@@ -1356,6 +1808,87 @@ def main():
     num_labels = len(labels)
     id2label = {i: str(i) for i in range(num_labels)}
     label2id = {str(i): i for i in range(num_labels)}
+
+    # HACE: build the species -> genus -> family taxonomy tree once, from the same
+    # training rows every other path uses (not a subsample), so the tree is exhaustive
+    # over the real label space. TaxonomyTree/HACEHead come from loss_ablation/ (imported
+    # lazily here, not at module level, so a problem in that side-experiment package can
+    # never break the other config paths that don't use it).
+    hace_tree = None
+    if use_hace:
+        from loss_ablation.hierarchy import TaxonomyTree
+
+        print("__CUSTOM__: Building HACE taxonomy tree from training data")
+        if 'genus' not in dataset_column_names or 'family' not in dataset_column_names:
+            raise ValueError("hace.enabled requires 'genus' and 'family' columns in the "
+                              f"dataset; found columns: {dataset_column_names}")
+        _sp_col = dataset["train"][data_args.label_column_name]
+        _genus_col = dataset["train"]["genus"]
+        _family_col = dataset["train"]["family"]
+
+        _unique_genera = sorted(set(_genus_col))
+        _genus2id = {g: i for i, g in enumerate(_unique_genera)}
+        _unique_families = sorted(set(_family_col))
+        _family2id = {f: i for i, f in enumerate(_unique_families)}
+
+        _species_to_genus = [None] * num_labels
+        _genus_to_family = [None] * len(_unique_genera)
+        for _sp, _g, _f in zip(_sp_col, _genus_col, _family_col):
+            _gid, _fid = _genus2id[_g], _family2id[_f]
+            # Sanity check, not an assumption: every occurrence of a species must name
+            # the same genus, and every occurrence of a genus the same family, or the
+            # tree structure this loss depends on is ambiguous in the raw data.
+            if _species_to_genus[_sp] is not None and _species_to_genus[_sp] != _gid:
+                raise ValueError(f"species id {_sp} maps to more than one genus in the "
+                                  "training data -- HACE's tree assumes a strict hierarchy")
+            if _genus_to_family[_gid] is not None and _genus_to_family[_gid] != _fid:
+                raise ValueError(f"genus {_g!r} maps to more than one family in the "
+                                  "training data -- HACE's tree assumes a strict hierarchy")
+            _species_to_genus[_sp] = _gid
+            _genus_to_family[_gid] = _fid
+        if any(g is None for g in _species_to_genus):
+            _missing = [i for i, g in enumerate(_species_to_genus) if g is None]
+            raise ValueError(f"{len(_missing)} species id(s) never appeared with a genus in "
+                              f"the training data (e.g. {_missing[:5]}) -- cannot build a "
+                              "complete tree")
+
+        hace_tree = TaxonomyTree(_species_to_genus, _genus_to_family)
+        print(f"__CUSTOM__: HACE tree: {hace_tree.n_species} species / {hace_tree.n_genera} "
+              f"genera / {hace_tree.n_families} families / {hace_tree.n_nodes} total nodes")
+
+    # loss_registry: KappaFaceHead/DBMHead need per-class training counts (their whole
+    # mechanism is adapting margin/difficulty by class frequency). Built once here from the
+    # same training rows every other path counts from, the same Counter-based pattern the
+    # long_tail.logit_adjustment path below already uses -- not duplicated logic, reused
+    # verbatim since it answers the identical question ("how many training images per
+    # species id").
+    loss_registry_class_counts = None
+    if use_loss_registry and loss_registry_head in ("kappaface", "dbm"):
+        from collections import Counter as _Counter
+        _cnt = _Counter(dataset["train"][data_args.label_column_name])
+        loss_registry_class_counts = [_cnt.get(i, 0) for i in range(num_labels)]
+        _zero = [i for i, c in enumerate(loss_registry_class_counts) if c == 0]
+        if _zero:
+            raise ValueError(f"{len(_zero)} species id(s) have zero training examples "
+                              f"(e.g. {_zero[:5]}) -- {loss_registry_head} requires "
+                              "class_counts > 0 for every class")
+        print(f"__CUSTOM__: loss_registry class_counts built for {loss_registry_head}: "
+              f"min={min(loss_registry_class_counts)}, max={max(loss_registry_class_counts)}")
+
+    # Single-head (non-multi-task) runs: save encoded-id -> "Family Genus species" so
+    # downstream analysis can turn predictions back into species names. Multi-task runs
+    # already get their own hierarchical id2X mappings below, so this only applies to
+    # the plain (CE or ArcFace) single-species-head path.
+    if not use_multi_task and 'scientificName' in dataset_column_names \
+            and data_args.label_column_name == 'scientificNameEncoded':
+        print("__CUSTOM__: Building label_mapping.json (encoded id -> scientificName)")
+        _ids = dataset["train"]["scientificNameEncoded"]
+        _names = dataset["train"]["scientificName"]
+        label_mapping = {str(i): n for i, n in zip(_ids, _names)}
+        os.makedirs(training_args.output_dir, exist_ok=True)
+        with open(os.path.join(training_args.output_dir, "label_mapping.json"), "w") as f:
+            json.dump(label_mapping, f, indent=2)
+        print(f"__CUSTOM__: Saved label_mapping.json with {len(label_mapping)} entries to {training_args.output_dir}")
 
     # For multi-task learning, create hierarchical label mappings
     if use_multi_task:
@@ -1563,6 +2096,88 @@ def main():
                 except Exception as _e:
                     print(f"__CUSTOM__: Could not overlay non-backbone weights: {_e}")
 
+    elif use_hace:
+        print("__CUSTOM__: Creating SwinWithLoss(hierarchy='hace') model")
+        from loss_ablation.model import SwinWithLoss
+
+        config_obj = AutoConfig.from_pretrained(
+            model_args.config_name or model_args.model_name_or_path,
+            num_labels=num_labels,
+            finetuning_task="image-classification",
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            token=model_args.token,
+            trust_remote_code=model_args.trust_remote_code,
+        )
+        base_model = AutoModelForImageClassification.from_pretrained(
+            model_args.model_name_or_path,
+            from_tf=bool(".ckpt" in model_args.model_name_or_path),
+            config=config_obj,
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            token=model_args.token,
+            trust_remote_code=model_args.trust_remote_code,
+            ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
+        )
+        model = SwinWithLoss(
+            base_model,
+            num_species=num_labels,
+            hierarchy="hace",
+            tree=hace_tree,
+            hace_kwargs=dict(dilution=hace_dilution, label_smoothing=hace_label_smoothing),
+        )
+        print(f"__CUSTOM__: SwinWithLoss(hace) created — num_species={num_labels}, "
+              f"tree nodes={hace_tree.n_nodes}")
+    elif use_loss_registry:
+        print(f"__CUSTOM__: Creating SwinWithLoss(head='{loss_registry_head}') model")
+        from loss_ablation.model import SwinWithLoss
+
+        config_obj = AutoConfig.from_pretrained(
+            model_args.config_name or model_args.model_name_or_path,
+            num_labels=num_labels,
+            finetuning_task="image-classification",
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            token=model_args.token,
+            trust_remote_code=model_args.trust_remote_code,
+        )
+        base_model = AutoModelForImageClassification.from_pretrained(
+            model_args.model_name_or_path,
+            from_tf=bool(".ckpt" in model_args.model_name_or_path),
+            config=config_obj,
+            cache_dir=model_args.cache_dir,
+            revision=model_args.model_revision,
+            token=model_args.token,
+            trust_remote_code=model_args.trust_remote_code,
+            ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
+        )
+        _head_kwargs = dict(loss_registry_head_kwargs)
+        if loss_registry_head in ("kappaface", "dbm"):
+            _head_kwargs["class_counts"] = loss_registry_class_counts
+        if use_tara:
+            # Frozen BioCLIP teacher, one copy per rank on that rank's own GPU. It is NOT an
+            # nn.Module attribute of the model (TARAAux gets a plain embed callable), so it
+            # never lands in checkpoints or optimizer groups, and DDP never touches it. It
+            # holds no cross-rank state either, so unlike KappaFace/ECC, TARA is fine on
+            # several GPUs: each rank embeds exactly its own batch.
+            from loss_ablation.bioclip_teacher import BioCLIPTeacher
+            bioclip_teacher = BioCLIPTeacher(device=training_args.device)
+            loss_registry_aux_kwargs["tara"] = dict(
+                loss_registry_aux_kwargs.get("tara", {}) or {},
+                bioclip_dim=bioclip_teacher.embed_dim,
+                bioclip_embed_fn=bioclip_teacher.as_embed_fn())
+            print(f"__CUSTOM__: TARA BioCLIP teacher loaded on {training_args.device} — "
+                  f"embed_dim={bioclip_teacher.embed_dim}, transform={bioclip_teacher.transform}")
+        model = SwinWithLoss(
+            base_model,
+            num_species=num_labels,
+            head_name=loss_registry_head,
+            head_kwargs=_head_kwargs,
+            aux_names=loss_registry_aux,
+            aux_kwargs=loss_registry_aux_kwargs,
+        )
+        print(f"__CUSTOM__: SwinWithLoss(head={loss_registry_head}) created — "
+              f"num_species={num_labels}, aux={loss_registry_aux}")
     elif use_multi_task:
         print("__CUSTOM__: Creating multi-task SWIN model")
 
@@ -1630,6 +2245,16 @@ def main():
         trust_remote_code=model_args.trust_remote_code,
     )
 
+    # timm models (CoAtNet): TimmWrapperImageProcessor exposes data_config (timm-style) instead
+    # of size/image_mean/image_std (HF-style). Shim the HF attributes so the transform pipeline
+    # below is unchanged (ported from llindon's CoAtNet_finetuning_advanced.py).
+    if hasattr(image_processor, "data_config") and not hasattr(image_processor, "size"):
+        _dc = image_processor.data_config
+        _c, _h, _w = _dc["input_size"]
+        image_processor.size = {"height": _h, "width": _w}
+        image_processor.image_mean = list(_dc["mean"])
+        image_processor.image_std = list(_dc["std"])
+
     if frozen:
         print("__CUSTOM__: Freezing model according to the frozen type: ", frozen_type)
         for name, param in model.named_parameters():
@@ -1669,12 +2294,13 @@ def main():
 
         # Add RandAugment if configured
         if aug_config.get('randaugment', {}).get('num_ops', 0) > 0:
-            train_transform_list.append(
+            train_transform_list.append(ScheduledRandAugment(
                 RandAugment(
                     num_ops=aug_config['randaugment']['num_ops'],
                     magnitude=aug_config['randaugment']['magnitude']
-                )
-            )
+                ),
+                AUG_SCHEDULE,
+            ))
 
         # Add ColorJitter if configured
         if aug_config.get('color_jitter', {}).get('enabled', False):
@@ -1701,6 +2327,16 @@ def main():
             )
 
         _train_transforms = Compose(train_transform_list)
+    elif use_tara:
+        # Same standard pipeline, split in two so the BioCLIP view comes from the SAME random
+        # crop+flip as the SWIN view: geometry on the PIL image once, then each view gets its
+        # own tail (SWIN: ToTensor+ImageNet norm at `size`; BioCLIP: its own open_clip
+        # transform, i.e. 224px bicubic resize + CLIP norm).
+        print("__CUSTOM__: Using standard augmentation pipeline (shared crop for TARA's BioCLIP view)")
+        _train_geometry = Compose([RandomResizedCrop(size), RandomHorizontalFlip()])
+        _train_swin_tail = Compose([ToTensor(), normalize])
+        _bioclip_transform = bioclip_teacher.transform
+        _train_transforms = Compose([_train_geometry, _train_swin_tail])  # same result as below
     else:
         print("__CUSTOM__: Using standard augmentation pipeline")
         _train_transforms = Compose([
@@ -1719,9 +2355,15 @@ def main():
 
     def train_transforms(example_batch):
         """Apply _train_transforms across a batch."""
-        example_batch["pixel_values"] = [
-            _train_transforms(Image.open(pil_img).convert("RGB")) for pil_img in example_batch[data_args.image_column_name]
-        ]
+        if use_tara:
+            crops = [_train_geometry(Image.open(pil_img).convert("RGB"))
+                     for pil_img in example_batch[data_args.image_column_name]]
+            example_batch["pixel_values"] = [_train_swin_tail(c) for c in crops]
+            example_batch["bioclip_pixel_values"] = [_bioclip_transform(c) for c in crops]
+        else:
+            example_batch["pixel_values"] = [
+                _train_transforms(Image.open(pil_img).convert("RGB")) for pil_img in example_batch[data_args.image_column_name]
+            ]
         # Keep the label for mixup collator
         example_batch["label"] = example_batch[data_args.label_column_name]
 
@@ -1759,6 +2401,19 @@ def main():
 
         return example_batch
 
+    # evaluation section (eval-only re-runs of finished models): init_weights loads a
+    # finished model.safetensors into the freshly built model, strictly, so a config/
+    # architecture mismatch fails loudly instead of evaluating half-random weights.
+    evaluation_config = config.get('evaluation', {}) or {}
+    if evaluation_config.get('init_weights'):
+        if training_args.do_train:
+            raise ValueError("evaluation.init_weights is for eval-only runs; set do_train: false")
+        from safetensors.torch import load_file as _load_st
+        _sd = _load_st(evaluation_config['init_weights'])
+        model.load_state_dict(_sd, strict=True)
+        print(f"__CUSTOM__: loaded finished weights from {evaluation_config['init_weights']} "
+              f"({len(_sd)} tensors, strict)")
+
     if training_args.do_train:
         if "train" not in dataset:
             raise ValueError("--do_train requires a train dataset")
@@ -1795,14 +2450,19 @@ def main():
     else:
         collator_num_classes = num_labels
 
-    if use_mixup_cutmix or use_multi_task or use_arcface or use_logit_adjustment:
-        # Use mixup collator (can handle mixup/cutmix, multi-task, and arcface).
-        # Also used for plain single-task + balanced softmax (mixup disabled), since
-        # the logit adjustment lives in MixupTrainer.compute_loss.
+    if (use_mixup_cutmix or use_multi_task or use_arcface or use_hace or use_loss_registry
+            or use_logit_adjustment or evaluation_config.get('predictions_path')):
+        # Use mixup collator (can handle mixup/cutmix, multi-task, arcface, HACE, and
+        # loss_registry). Also used for plain single-task + balanced softmax (mixup
+        # disabled), since the logit adjustment lives in MixupTrainer.compute_loss.
         if use_mixup_cutmix:
             print("__CUSTOM__: Using Mixup/CutMix data collator" + (" with multi-task support" if use_multi_task else ""))
         elif use_arcface:
             print("__CUSTOM__: Using ArcFace data collator" + (" with multi-task support" if use_multi_task else ""))
+        elif use_hace:
+            print("__CUSTOM__: Using HACE data collator (plain species labels, no mixup)")
+        elif use_loss_registry:
+            print(f"__CUSTOM__: Using loss_registry data collator (plain species labels, no mixup)")
         elif use_multi_task:
             print("__CUSTOM__: Using multi-task data collator")
         else:
@@ -1816,6 +2476,7 @@ def main():
             num_classes=collator_num_classes,
             multi_task=use_multi_task,
             label_column_name=data_args.label_column_name,
+            schedule=AUG_SCHEDULE,
         )
 
         # Use custom trainer for mixup/cutmix loss, multi-task learning, or arcface
@@ -1829,9 +2490,16 @@ def main():
             data_collator=data_collator,
             multi_task=use_multi_task,
             arcface=use_arcface,
+            hace=use_hace,
+            loss_registry=use_loss_registry,
+            aux_log_steps=int(loss_registry_config.get('aux_log_steps', 500)),
+            predictions_path=evaluation_config.get('predictions_path'),
+            features_path=evaluation_config.get('features_path'),
             logit_adjustment=use_logit_adjustment,
             log_prior=log_prior,
             logit_adjustment_tau=logit_adjustment_tau,
+            registry_label_smoothing=(aug_config.get('label_smoothing', 0.0) if use_advanced_aug else 0.0),
+            aug_schedule=AUG_SCHEDULE,
             family_weight=family_weight,
             genus_weight=genus_weight,
             species_weight=species_weight,
@@ -1862,6 +2530,50 @@ def main():
     # so the final evaluate()/save_model() below reflect the EMA weights.
     if use_ema:
         trainer.add_callback(EMACallback(decay=ema_decay))
+
+    # Heavy-augmentation ramp-in (AugSchedule): see AugWarmupCallback.
+    if aug_warmup_epochs > 0:
+        trainer.add_callback(AugWarmupCallback(AUG_SCHEDULE, aug_warmup_epochs))
+
+    # ArcFace margin warmup: ramp m from 0 to its target over the first few epochs.
+    if use_arcface and arcface_margin_warmup_epochs > 0:
+        trainer.add_callback(MarginWarmupCallback(
+            target_margin=arcface_margin, warmup_epochs=arcface_margin_warmup_epochs
+        ))
+
+    # Registry ArcFace head: same margin warmup as the native path (loss_registry.margin_warmup_epochs).
+    _reg_warmup = int((loss_registry_config.get('margin_warmup_epochs', 0) or 0)) if use_loss_registry else 0
+    if use_loss_registry and loss_registry_head == 'arcface' and _reg_warmup > 0:
+        trainer.add_callback(MarginWarmupCallback(
+            target_margin=float(loss_registry_head_kwargs.get('m', 0.30)), warmup_epochs=_reg_warmup
+        ))
+        print(f"__CUSTOM__: registry ArcFace margin warmup over {_reg_warmup} epochs")
+
+    # KappaFace/ECC's per-class running buffers (mean_dir, center_feat, etc.) have no
+    # cross-rank synchronization -- see KappaEpochUpdateCallback/ECCEpochUpdateCallback's
+    # docstrings for the full account. Enforced here, not just documented, since a silent
+    # divergence between DDP ranks would produce a plausible-looking but subtly wrong
+    # model with no error at any point during or after training.
+    if use_loss_registry and loss_registry_head == 'kappaface' and training_args.world_size > 1:
+        raise ValueError(
+            f"loss_registry.head=kappaface requires exactly 1 GPU (world_size=1), got "
+            f"world_size={training_args.world_size} -- KappaFaceHead's per-class running "
+            "buffers have no cross-rank synchronization and would silently diverge under DDP")
+    if use_loss_registry and 'ecc' in loss_registry_aux and training_args.world_size > 1:
+        raise ValueError(
+            f"loss_registry.aux includes ecc, which requires exactly 1 GPU (world_size=1), "
+            f"got world_size={training_args.world_size} -- ECCAux's per-class running "
+            "buffers have no cross-rank synchronization and would silently diverge under DDP")
+    if use_loss_registry and loss_registry_head == 'kappaface':
+        trainer.add_callback(KappaEpochUpdateCallback())
+    if use_loss_registry and 'ecc' in loss_registry_aux:
+        trainer.add_callback(ECCEpochUpdateCallback())
+
+    # Propagate config.json (+ label_mapping.json) into every epoch checkpoint, not just
+    # the final output_dir, so intermediate checkpoints are independently loadable for
+    # training-dynamics analysis.
+    if hasattr(model, 'config') and not isinstance(model, transformers.PreTrainedModel):
+        trainer.add_callback(ConfigAndLabelMapSaveCallback())
 
     # Training
     if training_args.do_train:

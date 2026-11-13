@@ -1,0 +1,106 @@
+# Margin-size control: cosine softmax with ZERO margin (registry arcface head, s=30, m=0).
+# Made from swin_base_384_ce.yml: only the head (cosine, s=30, m=0) and output names differ.
+# Question: DBM's class margin is 0.2/n_y rad (<0.5 deg for most species); is DBM's win just 'no margin'?
+
+
+model:
+  model_name_or_path: "microsoft/swin-base-patch4-window12-384-in22k"
+  config_name: null
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: null
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+
+training:
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_COSINE_M0_S15_384"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_COSINE_M0_S15_384"
+  do_train: true
+  do_eval: false   # no evaluation in the 2-GPU training job: two segments froze at the start of an eval pass; scored afterwards by the 1-GPU re-score (phase3_geom/cosine_m0.yml)
+  per_device_train_batch_size: 64
+  per_device_eval_batch_size: 64
+  learning_rate: 0.0001
+  num_train_epochs: 50
+  warmup_steps: 500
+  weight_decay: 0.01
+  optim: "adamw_torch_fused"
+  gradient_accumulation_steps: 2   # 64 * 2 * 2 GPUs = effective batch 256
+  lr_scheduler_type: "cosine"
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 3
+  eval_strategy: "no"
+  eval_steps: 8964
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 8   # was 16 per GPU = 32 workers on a 16-core job
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  resume_from_checkpoint: newest
+  seed: 42
+
+custom:
+  lr_type: "cosine"
+  frozen: false
+  frozen_type: "none"
+  run_group: "SWIN_BASE_COSINE_M0_S15_384"
+  run_name: "SWIN_BASE_COSINE_M0_S15_384"
+  run_id: "swin_base_cosine_m0_s15_384"
+  run_notes: >
+    Scale control: NormFace (cosine softmax, m=0) at s=15, on the Part 1 data. Same
+    trainer, data, seed and schedule as the DBM and CE base runs; only the head differs.
+
+augmentation:
+  use_advanced: false
+
+multi_task:
+  enabled: false
+
+arcface:
+  enabled: false
+
+hace:
+  enabled: false
+
+loss_registry:
+  enabled: true
+  head: arcface
+  head_kwargs:
+    s: 15.0   # scale control: 30 -> 15 (AdaCos suggests ~14-16 for 15.5k classes); nothing else changes
+    m: 0.0   # zero margin: ArcMarginHead with m=0 is exactly a cosine softmax, s * cos(theta)
+  aux: []
+
+long_tail:
+  logit_adjustment: false
+  tau: 1.0
+
+ema:
+  enabled: false
+
+multi_crop:
+  enabled: false
+  crop_sizes: [224]
+  target_size: 224
+
+wandb:
+  enabled: true
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"

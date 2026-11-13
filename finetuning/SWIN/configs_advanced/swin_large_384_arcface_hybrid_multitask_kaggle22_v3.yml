@@ -1,0 +1,160 @@
+# =============================================================================
+# SWIN-L @384 + ArcFace/Hybrid loss + Multi-task (family/genus/species) heads
+# =============================================================================
+# Cold start from in22k pretrained backbone (no herbdl checkpoint chaining yet).
+# Loss: SwinWithArcFace hybrid — 0.7*SubCenterArcFace + 0.3*CE on species
+# (arcface.hybrid_ce_weight: 0.3), plus auxiliary CE heads for family/genus
+# (multi_task.enabled). See ADVANCED_TECHNIQUES.md §5 "Hybrid Loss (CE + ArcFace)".
+#
+# Mixup/CutMix are deliberately OFF: the collator would still mix pixel_values,
+# but SwinWithArcFace's arcface branch trains on the unmixed hard species label
+# (see MixupTrainer.compute_loss's early-return for self.arcface), so mixed
+# images + hard labels would be a silent train/label mismatch. Same reasoning
+# as swin_large_384_arcface.yml. RandAugment, random erasing, and color jitter
+# stay on (label-preserving, safe with ArcFace's hard-margin loss).
+#
+# EMA and balanced-softmax logit_adjustment are left off (as in
+# swin_large_384_arcface.yml): logit_adjustment has no effect on the arcface
+# training path (see compute_loss comment), and EMA's interaction with the
+# ArcFace angular margin hasn't been validated here — keep this run focused on
+# the three requested techniques (ArcFace, hybrid, multitask).
+#
+# Species head targets the full Kaggle species (scientificNameEncoded, ~15.5k
+# classes) so eval accuracy/F1 match the leaderboard metric, per
+# swin_large_384_concrete.yml's convention. Family/genus stay as auxiliary
+# coarse heads.
+#
+# NOTE: SWIN-L @384 is memory-heavy even with gradient checkpointing. If the
+# job OOMs, lower per_device_train_batch_size and raise
+# gradient_accumulation_steps to keep the effective batch (128) constant.
+# =============================================================================
+
+model:
+  model_name_or_path: "microsoft/swin-large-patch4-window12-384-in22k"
+  config_name: "microsoft/swin-large-patch4-window12-384-in22k"
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: "microsoft/swin-large-patch4-window12-384-in22k"
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: 50000
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+
+training:
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_L_384_ARCFACE_HYBRID_MULTITASK"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_L_384_ARCFACE_HYBRID_MULTITASK"
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 16
+  per_device_eval_batch_size: 8
+  learning_rate: 0.0001
+  num_train_epochs: 100
+  warmup_steps: 0.05
+  weight_decay: 0.05
+  gradient_accumulation_steps: 8          # effective batch = 16 * 8 = 128
+  gradient_checkpointing: true            # needed to fit SWIN-L @384
+  lr_scheduler_type: "cosine"
+  lr_scheduler_kwargs:
+    eta_min: 0.000001
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 3
+  eval_strategy: "epoch"
+  eval_on_start: true
+  load_best_model_at_end: false
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 8
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 42
+
+custom:
+  lr_type: "cosine"
+  frozen: false
+  frozen_type: "none"
+  run_group: "SWIN_L_384"
+  run_name: "SWIN_L_384_ArcFace_Hybrid_MultiTask"
+  run_id: "swin_l_384_arcface_hybrid_multitask"
+  run_notes: >
+    SWIN-L 384 in22k, cold start. Hybrid loss (0.7*ArcFace SubCenter k=3 + 0.3*CE)
+    on species (scientificNameEncoded, full leaderboard label space) + multitask
+    family/genus CE heads. Mixup/CutMix off (incompatible with ArcFace hard
+    labels); RandAugment mag 7 + erasing + color jitter on. No EMA, no logit
+    adjustment (kept off to isolate this combination).
+
+augmentation:
+  use_advanced: true
+  randaugment:
+    num_ops: 2
+    magnitude: 7
+  mixup:
+    enabled: false
+  cutmix:
+    enabled: false
+  mixup_cutmix_prob: 0.0
+  label_smoothing: 0.1
+  random_erasing:
+    enabled: true
+    probability: 0.15
+    min_area: 0.02
+    max_area: 0.33
+  color_jitter:
+    enabled: true
+    brightness: 0.4
+    contrast: 0.4
+    saturation: 0.4
+    hue: 0.1
+
+multi_task:
+  enabled: true
+  min_species_samples: 2
+  species_column: scientificNameEncoded
+  family_weight: 0.2
+  genus_weight: 0.3
+  species_weight: 1.0
+
+long_tail:
+  logit_adjustment: false
+  tau: 1.0
+
+ema:
+  enabled: false
+  decay: 0.9998
+
+# Multi-crop + horizontal-flip TTA (Tier 2.7). Leave disabled during training;
+# enable for the final/leaderboard prediction.
+multi_crop:
+  enabled: false
+  crop_sizes: [400, 416, 448, 480, 512]
+  target_size: 384
+  flip: true
+
+arcface:
+  enabled: true
+  embedding_size: 512
+  scale: 30.0
+  margin: 0.50
+  num_subcenters: 3
+  hybrid_ce_weight: 0.3   # 0.7*ArcFace + 0.3*CE
+
+wandb:
+  enabled: true
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"

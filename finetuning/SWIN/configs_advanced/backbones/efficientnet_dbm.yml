@@ -1,0 +1,115 @@
+# Part 4: efficientnet + dbm. Base recipe: finetuning/EfficientNet_B6/configs_advanced/efficientnet_b6_enhanced_workers4.yml (llindon). See Loss Function Ablations.md.
+model:
+  model_name_or_path: google/efficientnet-b6
+  config_name: null
+  cache_dir: null
+  model_revision: main
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: /projectnb/herbdl/data/kaggle-herbaria/train_2022.json
+  validation_file: /projectnb/herbdl/data/kaggle-herbaria/val_2022.json
+  image_column_name: filename
+  label_column_name: scientificNameEncoded
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: null
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+training:
+  output_dir: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/BACKBONES/efficientnet_dbm
+  logging_dir: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/BACKBONES/efficientnet_dbm
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 16
+  per_device_eval_batch_size: 16
+  learning_rate: 0.0005
+  num_train_epochs: 30
+  warmup_steps: 650
+  weight_decay: 0.01
+  gradient_accumulation_steps: 8
+  gradient_checkpointing: false
+  lr_scheduler_type: cosine
+  learning_rate_kwargs:
+    eta_min: 1.0e-06
+  logging_strategy: epoch
+  save_strategy: epoch
+  save_total_limit: 3
+  eval_strategy: steps
+  eval_steps: 8964
+  report_to: wandb
+  bf16: true
+  dataloader_num_workers: 16
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 42
+  resume_from_checkpoint: newest
+custom:
+  lr_type: cosine
+  frozen: false
+  frozen_type: none
+  run_group: PART4_EFFICIENTNET
+  run_name: PART4_EFFICIENTNET_DBM
+  run_id: part4_efficientnet_dbm
+  run_notes: 'Part 4: efficientnet with the dbm loss, llindon recipe, Part 1 data.'
+augmentation:
+  use_advanced: false
+  randaugment:
+    num_ops: 0
+    magnitude: 9
+  mixup:
+    enabled: false
+    alpha: 0.8
+  cutmix:
+    enabled: false
+    alpha: 1.0
+  mixup_cutmix_prob: 0.5
+  label_smoothing: 0.0
+  random_erasing:
+    enabled: false
+    probability: 0.25
+    min_area: 0.02
+    max_area: 0.33
+  color_jitter:
+    enabled: false
+    brightness: 0.4
+    contrast: 0.4
+    saturation: 0.4
+    hue: 0.1
+multi_crop:
+  enabled: false
+  crop_sizes:
+  - 256
+  - 288
+  - 320
+  - 384
+  - 448
+  target_size: 224
+wandb:
+  enabled: true
+  entity: gardoslab
+  project: herbdl
+  resume: allow
+arcface:
+  enabled: false
+multi_task:
+  enabled: false
+hace:
+  enabled: false
+ema:
+  enabled: false
+loss_registry:
+  enabled: true
+  head: dbm
+  head_kwargs:
+    s: 30.0
+  aux: []
+long_tail:
+  logit_adjustment: false
