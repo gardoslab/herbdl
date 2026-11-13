@@ -1,0 +1,96 @@
+# Head-swap 2x2: pooled features of the ArcFace body over the TRAIN split.
+# Copy of configs_advanced/phase3_geom/arcface.yml with three changes:
+#   data.validation_file -> train_2022.json   (evaluate the train split, not val)
+#   output/features/predictions -> PHASE3_GEOM_TRAIN/arcface
+#   per_device_eval_batch_size 64 -> 128
+# do_train is false: one forward pass per image, no gradients, no training.
+# The features feed loss_ablation/head_swap.py; the labels come from predictions.npz.
+model:
+  model_name_or_path: microsoft/swin-base-patch4-window12-384-in22k
+  config_name: null
+  cache_dir: null
+  model_revision: main
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: /projectnb/herbdl/data/kaggle-herbaria/train_2022.json
+  validation_file: /projectnb/herbdl/data/kaggle-herbaria/train_2022.json
+  image_column_name: filename
+  label_column_name: scientificNameEncoded
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: null
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+training:
+  output_dir: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/PHASE3_GEOM_TRAIN/arcface
+  logging_dir: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/PHASE3_GEOM_TRAIN/arcface
+  do_train: false
+  do_eval: true
+  per_device_train_batch_size: 64
+  per_device_eval_batch_size: 128
+  learning_rate: 0.0001
+  num_train_epochs: 50
+  warmup_steps: 500
+  weight_decay: 0.01
+  optim: adamw_torch_fused
+  gradient_accumulation_steps: 4
+  lr_scheduler_type: cosine
+  logging_strategy: epoch
+  save_strategy: epoch
+  save_total_limit: 55
+  eval_strategy: steps
+  eval_steps: 8964
+  report_to: none
+  bf16: true
+  dataloader_num_workers: 16
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 42
+  resume_from_checkpoint: null
+custom:
+  lr_type: cosine
+  frozen: false
+  frozen_type: none
+  run_group: SWIN_Base_ArcFace_384
+  run_name: SWIN_Base_ArcFace_384
+  run_id: swin_base_arcface_384
+  run_notes: 'Head-swap 2x2 support: pooled train-split features of the ArcFace body,
+    one eval-only forward pass per train image. Not a training run.'
+augmentation:
+  use_advanced: false
+multi_task:
+  enabled: false
+arcface:
+  enabled: true
+  embedding_size: null
+  scale: 30.0
+  margin: 0.3
+  num_subcenters: 1
+  hybrid_ce_weight: 0.0
+  margin_warmup_epochs: 5
+long_tail:
+  logit_adjustment: false
+ema:
+  enabled: false
+multi_crop:
+  enabled: false
+  crop_sizes:
+  - 224
+  target_size: 224
+wandb:
+  enabled: false
+  entity: gardoslab
+  project: herbdl
+  resume: allow
+evaluation:
+  init_weights: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_ARCFACE_384/model.safetensors
+  features_path: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/PHASE3_GEOM_TRAIN/arcface/features.npy
+  predictions_path: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/PHASE3_GEOM_TRAIN/arcface/predictions.npz

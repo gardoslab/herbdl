@@ -319,7 +319,7 @@ class SubCenterArcMarginProduct(nn.Module):
         if labels is None:
             return cosine * self.s
 
-        sine = torch.sqrt((1.0 - cosine.pow(2)).clamp(0, 1))
+        sine = torch.sqrt((1.0 - cosine.pow(2)).clamp(1e-7, 1))  # lower bound keeps d(sqrt)/dx finite when cos -> 1 (NaN at s=15)
         phi = cosine * self.cos_m - sine * self.sin_m
         phi = torch.where(cosine > self.th, phi, cosine - self.mm) if not self.easy_margin else torch.where(cosine > 0, phi, cosine)
         one_hot = torch.zeros_like(cosine).scatter_(1, labels.view(-1, 1).long(), 1)

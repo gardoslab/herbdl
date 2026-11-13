@@ -124,7 +124,7 @@ class ArcMarginHead(nn.Module):
         cosine = self._cosine(embeddings)
         if labels is None:
             return cosine * self.s
-        sine = torch.sqrt((1.0 - cosine.pow(2)).clamp(0, 1))
+        sine = torch.sqrt((1.0 - cosine.pow(2)).clamp(1e-7, 1))  # lower bound keeps d(sqrt)/dx finite when cos -> 1 (NaN at s=15)
         phi = cosine * self.cos_m - sine * self.sin_m
         phi = torch.where(cosine > self.th, phi, cosine - self.mm) if not self.easy_margin \
             else torch.where(cosine > 0, phi, cosine)
@@ -248,7 +248,7 @@ class KappaFaceHead(nn.Module):
         cos_m, sin_m = torch.cos(m_c), torch.sin(m_c)
         th, mm = torch.cos(math.pi - m_c), torch.sin(math.pi - m_c) * m_c
         target_cos = cosine.gather(1, labels.view(-1, 1)).squeeze(1)
-        sine = torch.sqrt((1.0 - target_cos.pow(2)).clamp(0, 1))
+        sine = torch.sqrt((1.0 - target_cos.pow(2)).clamp(1e-7, 1))  # lower bound keeps d(sqrt)/dx finite when cos -> 1
         phi = target_cos * cos_m - sine * sin_m
         phi = torch.where(target_cos > th, phi, target_cos - mm) if not self.easy_margin \
             else torch.where(target_cos > 0, phi, target_cos)

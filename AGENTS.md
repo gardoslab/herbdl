@@ -279,7 +279,8 @@ Hard-won; read before launching or analysing anything. Results and numbers live 
   (Herbarium 2021 images) and not comparable with the ablation.
 - **Geometry metrics:** the separation gap subtracts an image-to-centroid cosine from a centroid-to-centroid cosine, so it
   depends on how many images each centroid has. Compare by number of training images per species and with an equal number
-  of validation images per species (`loss_ablation/geometry_fixed_n.py`). The overall average is dominated by common species
+  of validation images per species (the paper uses the DBM-paper angle and Fisher score per band instead; see
+  `loss_ablation/README.md`). The overall average is dominated by common species
   (53% of species have 51-73 training images).
 
 ### Training and configs

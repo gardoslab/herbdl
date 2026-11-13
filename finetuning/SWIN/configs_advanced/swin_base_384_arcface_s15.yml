@@ -1,0 +1,169 @@
+# Scale control: ArcFace (k=1, m=0.3, 5-epoch margin warmup) at s=15 instead of 30.
+# Made from swin_base_384_arcface_ablation.yml (the paper's ArcFace row); only the scale, the
+# output/run names, 2 GPUs with gradient accumulation 2 (effective batch 256 kept), and the
+# evaluation/worker settings differ.
+# ArcFace at 384px — matched-epoch comparison against SWIN_BASE_ARCFACE_ABLATION.
+#
+# Cloned from swin_base_224_arcface_ablation.yml. Only what 384 forces has been
+# changed; every other field is byte-identical to the 224 run so the comparison
+# stays controlled.
+#
+#   1. backbone  window7-224 -> window12-384. Swin ties its attention windows to
+#      the input size, so a window7-224 model cannot take 384px at all. This is
+#      a DIFFERENT PRETRAINED CHECKPOINT, not just a resize — state it in any
+#      writeup; the comparison is "384 as you would actually run it", not a pure
+#      resolution ablation.
+#   2. batch      256 -> 64 x grad-accum 4. 256 OOMs at 384 on a 46GB L40S;
+#      the effective batch stays 256.
+#   3. output dir separate, so this never overwrites the 224 run.
+#
+# num_train_epochs stays 50 so the cosine LR trajectory matches the 224 run
+# step-for-step. The run is JUDGED AT EPOCH 20 against that run's
+# checkpoint-52500, which is exactly epoch 20 of the same schedule. At ~90
+# min/epoch a full 50 epochs would be ~75h; 20 epochs answers whether
+# resolution helps for ~30h.
+#
+# Controlled ArcFace ablation on the 15,501-species SWIN-Base baseline
+# =============================================================================
+# Isolates the effect of ArcFace loss ALONE against SWIN_BASE_BASELINE
+# (val top-1 0.7797, F1 0.7455). Change exactly one thing relative to that
+# baseline: replace the final nn.Linear(1024, 15501) with an ArcFace head
+# operating directly on the same 1024-d pooled feature (no bottleneck, no
+# BatchNorm, no hybrid CE, no multi-task heads, standard not sub-center).
+#
+# Hyperparameters below are copied from output/SWIN/SWIN_BASE_BASELINE/README.md
+# (the Trainer-generated model card from the actual run that produced 0.7797),
+# NOT from the repo's swin_base_baseline.yml — that file's output_dir is actually
+# SWIN_B_BASELINE_HIGHER_LR (lr 2e-4, batch 128), a different, later run; it is
+# not the source of the 0.7797 baseline despite the filename.
+#
+# weight_decay is NOT reported by the HF model-card generator (it's omitted from
+# the hyperparameters table regardless of value), so the true baseline's value
+# is unrecoverable from README.md. 0.01 here matches this repo's
+# swin_base_baseline.yml as the closest available reference; this is a
+# best-effort value, not a confirmed match, and should be flagged as such when
+# comparing results.
+#
+# Root cause of the prior ArcFace failure (SWIN_L_384_ARCFACE_SEED0): NOT a
+# launcher/resume bug. trainer_state.json shows healthy, improving training
+# through epoch 77 (acc 0.804, beating the CE baseline), then a single-step
+# gradient explosion at epoch 78 (loss 9.25 -> 1277.48, grad_norm -> nan) that
+# permanently corrupted the weights for the remaining 22 epochs (eval_accuracy
+# stuck at 2e-05 = chance level). Two mitigations are in this config/code:
+#   1. margin_warmup_epochs: 5 — ramps m from 0 to target, since ArcFace is a
+#      documented source of training instability.
+#   2. A NaN-safe loss guard in MixupTrainer.compute_loss (code change, not a
+#      config knob): a non-finite loss is replaced with a disconnected zero so
+#      that step contributes no gradient instead of corrupting the model, and
+#      training can continue instead of running 22 more dead epochs.
+# Neither eliminates the underlying risk (this is a different backbone/res/head
+# than SEED0), so post-run validation (below) must confirm accuracy is sane
+# before any geometry analysis is run on this checkpoint.
+# =============================================================================
+
+model:
+  model_name_or_path: "microsoft/swin-base-patch4-window12-384-in22k"
+  config_name: null
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: null   # full 167,955-image val split — do not subsample
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2     # unused: validation_file is set explicitly above
+
+training:
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_ARCFACE_S15_384"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_ARCFACE_S15_384"
+  do_train: true
+  do_eval: false   # no evaluation in the 2-GPU training job (as the NormFace runs); scored afterwards by a 1-GPU re-score
+  per_device_train_batch_size: 64    # 256 OOMs at 384 on a 46GB L40S; effective batch held at
+                                     # 256 via gradient_accumulation_steps: 4 below
+  per_device_eval_batch_size: 64     # README: eval_batch_size 64
+  learning_rate: 0.0001              # README: 1e-4 (NOT the 2e-4 in swin_base_baseline.yml)
+  num_train_epochs: 50
+  warmup_steps: 500                  # README: lr_scheduler_warmup_steps 500 (a step count, not a ratio)
+  weight_decay: 0.01                 # best-effort — see note above, not confirmed from README
+  optim: "adamw_torch_fused"         # README: optimizer adamw_torch_fused
+  gradient_accumulation_steps: 2     # 64 x 2 x 2 GPUs = 256, same effective batch as the s=30 run
+  lr_scheduler_type: "cosine"        # README: cosine (plain — do NOT add lr_scheduler_kwargs.eta_min,
+                                      # which would remap this to cosine_with_min_lr and deviate from baseline)
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 55               # keep every epoch (50) for training-dynamics analysis, not just the last few
+  eval_strategy: "no"
+  eval_steps: 8964                   # matches baseline's own empirical eval cadence (README log rows land on
+                                      # multiples of 8964, e.g. epoch 3.4149 == step 8964 / 2625 steps-per-epoch)
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 8   # 2 GPUs x 8 workers on a 16-core job
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  seed: 42
+
+custom:
+  lr_type: "cosine"
+  frozen: false
+  frozen_type: "none"
+  run_group: "SWIN_Base_ArcFace_S15_384"
+  run_name: "SWIN_Base_ArcFace_S15_384"
+  run_id: "swin_base_arcface_s15_384"
+  run_notes: >
+    Controlled ArcFace-only ablation vs SWIN_BASE_BASELINE (0.7797/0.7455).
+    Same backbone/res/data/optimizer/schedule/seed/batch/aug as baseline;
+    only the head changes: standard ArcFace (k=1, s=30, m=0.3, 5-epoch margin
+    warmup) directly on the 1024-d pooled feature, no bottleneck/BN, no
+    hybrid CE, no multi-task heads.
+
+# Basic augmentation only: RandomResizedCrop(224) + RandomHorizontalFlip, torchvision
+# default (bilinear) interpolation — matches the baseline and the correct eval protocol
+# (do NOT set use_advanced: true here, which would also change the val-transform's
+# implicit RandomResizedCrop interpolation to bicubic and add RandAugment/mixup/etc.,
+# confounding the ablation).
+augmentation:
+  use_advanced: false
+
+multi_task:
+  enabled: false
+
+arcface:
+  enabled: true
+  embedding_size: null      # null = no bottleneck/BatchNorm; ArcFace runs directly on the
+                             # backbone's 1024-d pooled feature (SwinWithArcFace no_bottleneck mode)
+  scale: 15.0               # scale control: 30 -> 15 (AdaCos suggests ~14-16 for 15.5k classes)
+  margin: 0.3
+  num_subcenters: 1          # k=1 == standard ArcFace (no sub-center robustness trick)
+  hybrid_ce_weight: 0.0      # pure ArcFace loss, no auxiliary CE head
+  margin_warmup_epochs: 5    # ramp m: 0 -> 0.3 over the first 5 epochs
+
+long_tail:
+  logit_adjustment: false
+
+ema:
+  enabled: false
+
+multi_crop:
+  enabled: false
+  crop_sizes: [224]
+  target_size: 224
+
+wandb:
+  enabled: true
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"

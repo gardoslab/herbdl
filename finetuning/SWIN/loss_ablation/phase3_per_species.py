@@ -1,6 +1,6 @@
 """Phase 3 per-species analysis of the 8 finished 384px loss models.
 
-Reads the per-image validation predictions written by run_phase3_eval.sh
+Reads the per-image validation predictions written by the configs_advanced/phase3_eval/ configs
 (PHASE3_EVAL/<model>/predictions.npz: predictions, labels, top5 in val-set order) and
 the training manifest (for per-species training-image counts and the genus/family of
 each species). numpy only; CPU.

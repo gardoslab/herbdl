@@ -1,0 +1,106 @@
+# Margin-size control: ArcFace with a small margin (registry arcface head, s=30, m=0.1 = 5.7 deg).
+# Made from swin_base_384_ce.yml: only the head (ArcFace, s=30, m=0.1) and output names differ.
+# Sits between cosine m=0 and the base ArcFace m=0.3 (17.2 deg) on the margin-size axis.
+
+
+model:
+  model_name_or_path: "microsoft/swin-base-patch4-window12-384-in22k"
+  config_name: null
+  cache_dir: null
+  model_revision: "main"
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
+  validation_file: "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
+  image_column_name: "filename"
+  label_column_name: "scientificNameEncoded"
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: null
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+
+training:
+  output_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_ARCFACE_M01_384"
+  logging_dir: "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_ARCFACE_M01_384"
+  do_train: true
+  do_eval: true
+  per_device_train_batch_size: 64
+  per_device_eval_batch_size: 64
+  learning_rate: 0.0001
+  num_train_epochs: 50
+  warmup_steps: 500
+  weight_decay: 0.01
+  optim: "adamw_torch_fused"
+  gradient_accumulation_steps: 2   # 64 * 2 * 2 GPUs = effective batch 256
+  lr_scheduler_type: "cosine"
+  logging_strategy: "epoch"
+  save_strategy: "epoch"
+  save_total_limit: 3
+  eval_strategy: "steps"
+  eval_steps: 8964
+  report_to: "wandb"
+  bf16: true
+  dataloader_num_workers: 16
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  resume_from_checkpoint: newest
+  seed: 42
+
+custom:
+  lr_type: "cosine"
+  frozen: false
+  frozen_type: "none"
+  run_group: "SWIN_BASE_ARCFACE_M01_384"
+  run_name: "SWIN_BASE_ARCFACE_M01_384"
+  run_id: "swin_base_arcface_m01_384"
+  run_notes: >
+    Margin-size control: ArcFace, s=30, m=0.1, on the Part 1 data. Same
+    trainer, data, seed and schedule as the DBM and CE base runs; only the head differs.
+
+augmentation:
+  use_advanced: false
+
+multi_task:
+  enabled: false
+
+arcface:
+  enabled: false
+
+hace:
+  enabled: false
+
+loss_registry:
+  enabled: true
+  head: arcface
+  head_kwargs:
+    s: 30.0
+    m: 0.1   # 5.7 degrees; no margin warmup (this trainer has none for the registry head)
+  aux: []
+
+long_tail:
+  logit_adjustment: false
+  tau: 1.0
+
+ema:
+  enabled: false
+
+multi_crop:
+  enabled: false
+  crop_sizes: [224]
+  target_size: 224
+
+wandb:
+  enabled: true
+  entity: "gardoslab"
+  project: "herbdl"
+  resume: "allow"
