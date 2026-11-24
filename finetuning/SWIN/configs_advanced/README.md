@@ -203,3 +203,56 @@ See `ADVANCED_TECHNIQUES.md` in the main directory for detailed implementation g
 ## Questions?
 
 Check `ADVANCED_TECHNIQUES.md` for more details on all techniques.
+
+## Loss-ablation configs
+
+One training config per model, dataset and loss; the code that reads them is described in
+`../loss_ablation/README.md`. Seed repeats, margin and scale controls, the epoch-matched check and
+all eval-only scoring passes were run from copies of these files with a few keys changed. Those
+copies are not kept: make your own copy and change the keys below.
+
+| Group | Files |
+|---|---|
+| SWIN-Base 384, 15.5k base data | `swin_base_384_{ce,ce_la,cosine_m0}.yml`, `swin_base_384_arcface_ablation.yml`, `swin_base_384_{dbm,kappaface,subcenter_arcface,x2softmax,hace,arcface_tara,arcface_ecc}_pilot.yml` |
+| SWIN-Base 384, ladder (15.5k / 32k / 64k species) | `swin_base_384_ladder_{n15k,n32k,n64k}_{ce,cosine_m0,dbm,kappaface,arcface}.yml`; sibling margin: `swin_base_384_ladder_n32k_sibling_margin.yml` |
+| ConvNeXt / DINOv2, base data | `backbones/{convnext,dinov2}_{ce,ce_la,cosine_m0,dbm,arcface}.yml` |
+| ConvNeXt / DINOv2, ladder | `backbones/ladder/{convnext,dinov2}_{n32k,n64k}_{cosine_m0,dbm,arcface}.yml` |
+| SWIN-L 384 hybrid ArcFace + multitask (Kaggle 2022) | `swin_large_384_arcface_hybrid_multitask.yml` |
+
+`arcface_tara` needs a BioCLIP teacher module that is not in this branch, so it does not run as is.
+
+### Changing a run
+
+Always give the copy its own `training.output_dir` and `custom.run_name` / `custom.run_id`;
+otherwise it resumes from, or overwrites, the original run's checkpoints.
+
+- **Seed**: `training.seed` (the paper's second seed is 43).
+- **Margin and logit scale** (registry heads): `loss_registry.head_kwargs.m` and `.s`. ArcFace with
+  `m: 0.0` is NormFace (the `cosine_m0` configs); the margin control used `m: 0.1`, the scale
+  control `s: 15.0`.
+- **Training length**: `training.num_train_epochs` on the base data. The ladder configs fix the
+  budget with `training.max_steps: 131250` (50 epochs of the 15.5k data); for an epoch-matched run,
+  remove `max_steps` and set `num_train_epochs`.
+- **GPUs**: keep the effective batch (per-device batch x `gradient_accumulation_steps` x GPUs) unchanged
+  when changing `NPROC_PER_NODE`.
+
+### Scoring a finished model (eval only)
+
+Copy the model's training config and set:
+
+```yaml
+training:
+  do_train: false
+  output_dir: <new folder>
+evaluation:
+  init_weights: <training output_dir>/model.safetensors
+  predictions_path: <new folder>/predictions.npz   # per-image argmax, top-5, label
+  features_path: <new folder>/features.npy          # optional: pooled features for the geometry analyses
+wandb:
+  enabled: false
+```
+
+To score training images instead (for the training-image geometry and the head swap), also set
+`data.validation_file` to the training manifest. Run it on 1 GPU:
+`HERBDL_NO_RELOCATE=1 CONFIG_FILE=configs_advanced/<copy>.yml bash train_advanced.sh`.
+Check that the log reports the full validation set (`Num examples = 167955` on the base data).
