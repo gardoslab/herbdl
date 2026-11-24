@@ -10,7 +10,7 @@ conda activate fall-2026-pyt
 
 # fall-2026-pyt is a read-only shared env, so extra packages (evaluate, wandb,
 # pytorch_metric_learning) live in a project-dir `pip install --user`, not $HOME
-# (10GB quota). See finetuning/CLAUDE.md for details, and for herb_env as a fallback
+# (10GB quota). See AGENTS.md (SCC training environment) for details, and for herb_env as a fallback
 # if fall-2026-pyt ever breaks or gets retired at semester turnover.
 export PYTHONUSERBASE=/projectnb/herbdl/workspaces/faridkar/.local-fall2026-pyt
 export PIP_CACHE_DIR=/projectnb/herbdl/workspaces/faridkar/.cache/pip

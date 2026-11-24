@@ -1,0 +1,15 @@
+# mode: loss_ablation_geometry -- compares within-class tightness,
+# nearest-class distance and detector alignment across every loss in
+# finetuning/SWIN/loss_ablation's registry, reading the exports its E2E
+# harness writes (see checkpoint_io.py there and loss_ablation_geometry.py
+# here for why this is a file contract, not a Python import).
+#
+# First target: run ec8d0dcf's exports -- a toy 40-species/9-images-per-class
+# subset. This proves the mechanism works; it is NOT a Phase-2-scale
+# comparison, and the numbers should be read as noisy given how few images
+# per class this small-scale harness uses.
+analysis:
+  mode: loss_ablation_geometry
+
+loss_ablation:
+  export_root: /projectnb/herbdl/workspaces/faridkar/herbdl/loss_ablation_geometry_exports

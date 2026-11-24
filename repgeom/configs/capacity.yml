@@ -1,0 +1,39 @@
+# SWIN_BASE_BASELINE: microsoft/swin-base-patch4-window7-224-in22k fine-tuned to
+# 15,501 Kaggle-Herbarium-2022 species. Reported val accuracy 0.7797, F1 0.7455
+# (finetuning/output/SWIN/SWIN_BASE_BASELINE/all_results.json).
+model:
+  checkpoint: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_BASELINE
+  # label_mapping.json ships next to the checkpoint: encoded id -> "Family Genus species"
+  label_mapping: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_BASELINE/label_mapping.json
+
+data:
+  # The exact split the checkpoint was evaluated on: the config that trained it
+  # passes validation_file, so HF never re-splits and val == this file.
+  val_manifest: /projectnb/herbdl/data/kaggle-herbaria/val_2022.json
+  # Only used for the per-class training-frequency covariate.
+  train_manifest: /projectnb/herbdl/data/kaggle-herbaria/train_2022.json
+  image_column: filename
+  label_column: scientificNameEncoded
+
+extract:
+  # Which val-time pipeline to cache features under. `eval_protocol` mirrors
+  # SWIN_finetuning.py's _val_transforms, which is what produced the reported
+  # 0.7797; see the PREPROCESSING PROBE block in the run log.
+  preprocess: eval_protocol
+  cache_root: /projectnb/herbdl/workspaces/faridkar/herbdl/repgeom/cache
+  batch_size: 128
+  num_workers: 16
+  topk: 5
+
+analysis:
+  # geometry  = the parent node's final-layer regression (not used here).
+  # capacity  = this node: singular-value spectrum of the classifier weight
+  #             matrix and the class centroids, against a random-matrix null.
+  mode: capacity
+  # Score this many sampled val images under every candidate preprocessing and
+  # print the comparison. 0 disables the probe. Irrelevant in capacity mode,
+  # which returns before this code runs; left at 0 rather than deleted so the
+  # key stays self-documenting if mode is ever switched back.
+  preprocess_probe_n: 0
+  # Per-class recall on fewer than this many val images is too noisy to regress on.
+  min_val_per_class: 5
