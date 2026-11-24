@@ -7,7 +7,7 @@ share one intervention point, so they cannot be swapped with a single
 
   head             replaces the classifier: the class-direction matrix and its
                    margin rule. softmax | arcface | subcenter_arcface |
-                   kappaface | x2softmax | dbm
+                   kappaface | x2softmax | dbm | sibling
   hierarchy        changes the output structure. none | hace
   aux              extra loss terms added on top of the head's loss, computed
                    from the same pooled feature. ecc | tara (composable, a list)
@@ -422,6 +422,114 @@ class DBMHead(nn.Module):
         self.K = m
 
 
+class SiblingMarginHead(nn.Module):
+    """Cosine head with a pairwise, taxonomy-aware margin (the "sibling margin").
+
+        logit_y   = s * cos(theta_y)
+        logit_j   = s * (cos(theta_j) + m(y, j)),   j != y
+
+    The margin sits on the *competitor's* score, so y must beat j by m(y, j). It depends on
+    how related j is to y and on how rare y is (rule in sibling_margin.py): largest against
+    species of y's genus, a fraction of that against other genera of the same family, zero
+    against other families, and all of it scaled by (n_min / n_y) ** tau so common species
+    feel almost nothing. With m_max = 0 this is exactly a cosine softmax (NormFace).
+
+    Margins are in cosine units and are added to the cosine, so no acos or sqrt is needed
+    (the bf16 acos(>1) NaN and the sqrt(0) gradient of the angular heads cannot occur). At
+    inference (labels=None) the logit is s * cosine, like every other head here.
+
+    Taxonomy and counts are fixed for the run and live in buffers, so every rank computes the
+    same margins and nothing is synchronised; this head is fine on several GPUs.
+
+    Every `log_every` training forward calls, rank 0 prints one `__SIBLING__` line describing
+    the margins applied in that batch (see _log_batch), so the distribution of applied
+    margins is in the run log.
+    """
+
+    def __init__(self, in_features, num_classes, class_counts, genus_ids, family_ids, s=30.0,
+                 m_max=0.15, tau=1.0, family_weight=0.25, genus_weight=1.0, log_every=1000):
+        super().__init__()
+        from .sibling_margin import species_margin
+        self.in_features = in_features
+        self.num_classes = num_classes
+        self.s = s
+        self.m_max = m_max
+        self.margin_scale = 1.0  # set_margin() rescales every margin through this
+        self.family_weight = family_weight
+        self.genus_weight = genus_weight
+        self.log_every = int(log_every)
+        self._calls = 0
+        self.weight = nn.Parameter(torch.FloatTensor(num_classes, in_features))
+        nn.init.xavier_uniform_(self.weight)
+        self.register_buffer("m_species", torch.as_tensor(species_margin(class_counts, m_max, tau), dtype=torch.float32))
+        self.register_buffer("genus_id", torch.as_tensor(genus_ids, dtype=torch.long))
+        self.register_buffer("family_id", torch.as_tensor(family_ids, dtype=torch.long))
+        if self.genus_id.shape[0] != num_classes or self.family_id.shape[0] != num_classes:
+            raise ValueError("genus_ids and family_ids need one entry per class")
+
+    def _cosine(self, embeddings):
+        emb = F.normalize(embeddings, p=2, dim=1)
+        w = F.normalize(self.weight, p=2, dim=1)
+        return F.linear(emb, w).float()
+
+    def pair_margin(self, labels):
+        """(B, C) margins m(y_i, j): zero at the true class and against other families."""
+        g, f = self.genus_id[labels], self.family_id[labels]
+        same_genus = self.genus_id.unsqueeze(0) == g.unsqueeze(1)
+        same_family = self.family_id.unsqueeze(0) == f.unsqueeze(1)
+        w = self.genus_weight * same_genus.float() + self.family_weight * (same_family & ~same_genus).float()
+        w = w.scatter(1, labels.view(-1, 1), 0.0)
+        return w * (self.m_species[labels] * self.margin_scale).unsqueeze(1)
+
+    def forward(self, embeddings, labels=None):
+        cosine = self._cosine(embeddings)
+        if labels is None:
+            return cosine * self.s
+        margin = self.pair_margin(labels)
+        if self.log_every > 0 and self.training:
+            self._calls += 1
+            if (self._calls - 1) % self.log_every == 0:  # the first call, then every log_every-th
+                self._log_batch(cosine.detach(), labels, margin.detach())
+        return (cosine + margin) * self.s
+
+    @torch.no_grad()
+    def _log_batch(self, cosine, labels, margin):
+        """One line of what the margin did in this batch (rank 0 only)."""
+        if torch.distributed.is_available() and torch.distributed.is_initialized() \
+                and torch.distributed.get_rank() != 0:
+            return
+        rows = torch.arange(len(labels), device=labels.device)
+        m_y = self.m_species[labels] * self.margin_scale
+        wrong = cosine.clone()
+        wrong[rows, labels] = float("-inf")
+        top = wrong.argmax(1)  # the strongest competitor of each image
+        m_top = margin[rows, top]
+        same_genus = self.genus_id[top] == self.genus_id[labels]
+        same_family = self.family_id[top] == self.family_id[labels]
+        q = torch.quantile(m_y, torch.tensor([0.5, 0.9, 0.99], device=m_y.device))
+        n_comp = (margin > 0).sum(1).float()
+        stats = {"call": self._calls, "batch": len(labels),
+                 "m_true_p50": q[0].item(), "m_true_p90": q[1].item(), "m_true_p99": q[2].item(), "m_true_max": m_y.max().item(),
+                 "images_margin_ge_0.03": (m_y >= 0.03).float().mean().item(),
+                 "top_is_sibling": same_genus.float().mean().item(),
+                 "top_is_family": (same_family & ~same_genus).float().mean().item(),
+                 "top_margin_mean": m_top.mean().item(), "top_margin_max": m_top.max().item(),
+                 "top_has_margin": (m_top > 0).float().mean().item(),
+                 "competitors_with_margin_mean": n_comp.mean().item(),
+                 "cos_true_mean": cosine[rows, labels].mean().item()}
+        self.last_stats = stats
+        print("__SIBLING__ " + " ".join(f"{k}={v:.4g}" if isinstance(v, float) else f"{k}={v}" for k, v in stats.items()),
+              flush=True)
+
+    def class_directions(self):
+        return self.weight.detach()
+
+    def set_margin(self, m):
+        # Rescale every margin so that the largest (the rarest species) becomes m; this is
+        # the lever a shared margin-warmup ramp pulls.
+        self.margin_scale = float(m) / self.m_max if self.m_max else 0.0
+
+
 HEAD_REGISTRY = {
     "softmax": SoftmaxHead,
     "arcface": lambda in_f, n, **kw: ArcMarginHead(in_f, n, k=1, **kw),
@@ -429,6 +537,7 @@ HEAD_REGISTRY = {
     "kappaface": KappaFaceHead,
     "x2softmax": X2SoftmaxHead,
     "dbm": DBMHead,
+    "sibling": SiblingMarginHead,
 }
 
 

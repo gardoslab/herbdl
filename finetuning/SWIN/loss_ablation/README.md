@@ -23,7 +23,8 @@ runs resume from the newest checkpoint across 12–24 h scheduler slots.
 
 | File | What it is |
 |---|---|
-| `losses.py` | Classifier heads: softmax, ArcFace / sub-center ArcFace (`m=0` is NormFace), KappaFace, X2-Softmax, DBM |
+| `losses.py` | Classifier heads: softmax, ArcFace / sub-center ArcFace (`m=0` is NormFace), KappaFace, X2-Softmax, DBM, sibling margin |
+| `sibling_margin.py` | The sibling-margin rule (pairwise, taxonomy-aware, rarity-scaled) in NumPy; `SiblingMarginHead` calls it. Test: `sibling_margin_test.py` |
 | `hierarchy.py` | HACE head and `TaxonomyTree` |
 | `aux.py`, `bioclip_teacher.py` | Auxiliary losses on top of a head: ECC, TARA (TARA needs the BioCLIP teacher) |
 | `model.py` | `SwinWithLoss`: backbone + any head / hierarchy / aux combination |
@@ -39,8 +40,11 @@ runs resume from the newest checkpoint across 12–24 h scheduler slots.
 | Margin controls | `swin_base_384_cosine_m0.yml` (NormFace), `swin_base_384_arcface_m01.yml` |
 | Logit-scale control | `swin_base_384_cosine_m0_s15.yml`, `swin_base_384_arcface_s15.yml` |
 | Scaling ladder | `swin_base_384_ladder_{n15k,n32k,n64k}_{dbm,kappaface,arcface,cosine_m0}.yml` (fixed 131,250 steps) |
-| Epoch-matched 32k check | `swin_base_384_ladder_n32k_{cosine_m0,arcface}_e50.yml` |
-| Cross-backbone replication | `backbones/` (train), `backbones/eval/`, `backbone_eval/` (score) |
+| Epoch-matched 32k check | `swin_base_384_ladder_n32k_{cosine_m0,arcface}_e50.yml`; scored by `ladder_eval/n32k_{cosine_m0,arcface}_e50.yml` (`run_e50_score.sh`) |
+| Cross-backbone replication | `backbones/` (train, incl. `{convnext,dinov2}_cosine_m0.yml`), `backbones/eval/`, `backbone_eval/` (score) |
+| Cross-backbone geometry | `backbones/geom/` (base data, val and train features); `backbones/ladder/` (ConvNeXt / DINOv2 on the 32k and 64k rungs) and `backbones/ladder/geom/` |
+| Ladder geometry on training images | `ladder_geom_train/`; plain-CE ladder scoring `ladder_eval/{n15k,n32k,n64k}_ce.yml` |
+| Sibling margin (32k rung, not in the paper) | `swin_base_384_ladder_n32k_sibling_margin.yml` (train), `ladder_eval/n32k_sibling.yml` (score) |
 | Scoring with saved predictions | `phase3_eval/` (base data), `ladder_eval/` (ladder) |
 | Scoring with saved features | `phase3_geom/` (validation images), `phase3_geom_train/` (training images) |
 
@@ -59,7 +63,23 @@ runs resume from the newest checkpoint across 12–24 h scheduler slots.
 | Ladder: lead decomposition by band; KappaFace / DBM trained margins | `band_leads_by_rung.py`, `ladder_margins.py` (band helpers in `ladder_routing.py`) |
 | Ladder data checks: long tail, base vs ladder 15.5k | `ladder_distribution.py`, `ladder_vs_phase2.py` |
 | Same-specimen copies between training and validation | `near_duplicates.py`, `near_duplicates_precise.py`, `part4_leakage.py` |
+| Bias-corrected and size-matched Fisher; compactness = within-species spread x alignment | `geometry_robustness.py`, `geometry_robustness_part2.py` |
+| Geometry of the ConvNeXt / DINOv2 models (base data) | `backbone_geometry.py` (`run_backbone_geom.sh`: feature passes, then the analysis) |
+| Ladder geometry, validation and training images, every loss and backbone | `ladder_diagnostics.py`, `ladder_geometry_full.py` (`run_ladder_geom.sh`, `run_ladder_geom_normface.sh`, `run_backbone_ladder_geom.sh`, `run_convnext_ladder_geom.sh`) |
+| Supplement geometry table | `supplement_table.py` |
+| Who pays for a margin (common-species cost by margin size) | `who_pays.py` |
 | Feature geometry helpers | `phase3_geometry.py`, `repgeom_geometry.py` |
+
+### Sibling margin (follow-up, not in the paper)
+
+A genus-aware pairwise margin, tested on the 32k rung; it did not beat DBM (EXPERIMENT_LOG, 2026-11-23).
+
+| Question | Script |
+|---|---|
+| How much can a family / genus oracle recover; error taxonomy | `sibling_ceiling.py` |
+| Siblings vs the same number of nearest class templates | `sibling_matched_control.py` |
+| The margin on the real training sets | `sibling_margin_distribution.py` |
+| Results at 32k: per-band F1 vs NormFace and DBM, error relations, realised gaps | `sibling_results.py` (test: `sibling_results_test.py`) |
 
 ## Trainer options added for this work (`SWIN_finetuning_advanced.py`)
 
@@ -69,5 +89,6 @@ runs resume from the newest checkpoint across 12–24 h scheduler slots.
 - `loss_registry.margin_warmup_epochs` (registry ArcFace) and `arcface.margin_warmup_epochs` (native ArcFace)
 - Logit adjustment (`long_tail.logit_adjustment`) on the registry softmax head (training only)
 - Multi-GPU evaluation gathers predictions from all ranks
+- `loss_registry.head: sibling` (needs `genus` and `family` columns in the dataset)
 - ArcFace heads lower-bound `1 - cos^2` at 1e-7 before the square root, so the gradient stays finite as
   `cos -> 1` (without it the s=15 ArcFace run went NaN in epoch 22)

@@ -1,0 +1,98 @@
+# Eval-only re-score of the sibling-margin model (32k rung, run R3); from swin_base_384_ladder_n32k_sibling_margin.yml
+model:
+  model_name_or_path: microsoft/swin-base-patch4-window12-384-in22k
+  config_name: null
+  cache_dir: null
+  model_revision: main
+  image_processor_name: null
+  token: null
+  trust_remote_code: false
+  ignore_mismatched_sizes: true
+data:
+  dataset_name: null
+  dataset_config_name: null
+  data_file: null
+  data_dir: null
+  train_file: /projectnb/herbdl/workspaces/faridkar/herbdl/data/ladder/n32k_train.json
+  validation_file: /projectnb/herbdl/workspaces/faridkar/herbdl/data/ladder/n32k_val.json
+  image_column_name: filepath
+  label_column_name: scientificNameEncoded
+  max_seq_length: 15
+  max_train_samples: null
+  max_eval_samples: null
+  overwrite_cache: false
+  preprocessing_num_workers: null
+  train_val_split: 0.2
+training:
+  output_dir: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/LADDER_EVAL/n32k_sibling
+  logging_dir: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/LADDER_EVAL/n32k_sibling
+  do_train: false
+  do_eval: true
+  per_device_train_batch_size: 64
+  per_device_eval_batch_size: 64
+  learning_rate: 0.0001
+  num_train_epochs: 50
+  max_steps: 131250
+  warmup_steps: 500
+  weight_decay: 0.01
+  optim: adamw_torch_fused
+  gradient_accumulation_steps: 2
+  lr_scheduler_type: cosine
+  logging_strategy: epoch
+  save_strategy: epoch
+  save_total_limit: 3
+  eval_strategy: 'no'
+  eval_steps: 26250
+  report_to: none
+  bf16: true
+  dataloader_num_workers: 8
+  remove_unused_columns: false
+  overwrite_output_dir: false
+  resume_from_checkpoint: null
+  seed: 42
+custom:
+  lr_type: cosine
+  frozen: false
+  frozen_type: none
+  run_group: SWIN_Base_LADDER_N32K_SIBLING_R3
+  run_name: SWIN_Base_LADDER_N32K_SIBLING_R3
+  run_id: swin_base_ladder_n32k_sibling_r3
+  run_notes: Eval-only re-score of the sibling-margin model trained on the 32k rung
+    (run R3).
+augmentation:
+  use_advanced: false
+multi_task:
+  enabled: false
+arcface:
+  enabled: false
+hace:
+  enabled: false
+loss_registry:
+  enabled: true
+  head: sibling
+  head_kwargs:
+    s: 30.0
+    m_max: 0.15
+    tau: 1.0
+    family_weight: 0.0
+    genus_weight: 1.0
+    log_every: 1000
+  aux: []
+long_tail:
+  logit_adjustment: false
+ema:
+  enabled: false
+multi_crop:
+  enabled: false
+  crop_sizes:
+  - 224
+  target_size: 224
+wandb:
+  enabled: false
+  entity: gardoslab
+  project: herbdl
+  resume: allow
+evaluation:
+  init_weights: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_LADDER_N32K_SIBLING_R3/model.safetensors
+  predictions_path: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/LADDER_EVAL/n32k_sibling/predictions.npz
+  features_path: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/LADDER_GEOM/n32k_sibling/features.npy

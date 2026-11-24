@@ -112,3 +112,4 @@ wandb:
 evaluation:
   init_weights: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/SWIN_BASE_LADDER_N32K_COSINE_M0/model.safetensors
   predictions_path: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/LADDER_EVAL/n32k_cosine_m0/predictions.npz
+  features_path: /projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN/LADDER_GEOM/n32k_cosine_m0/features.npy

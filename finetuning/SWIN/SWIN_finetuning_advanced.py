@@ -1863,7 +1863,7 @@ def main():
     # verbatim since it answers the identical question ("how many training images per
     # species id").
     loss_registry_class_counts = None
-    if use_loss_registry and loss_registry_head in ("kappaface", "dbm"):
+    if use_loss_registry and loss_registry_head in ("kappaface", "dbm", "sibling"):
         from collections import Counter as _Counter
         _cnt = _Counter(dataset["train"][data_args.label_column_name])
         loss_registry_class_counts = [_cnt.get(i, 0) for i in range(num_labels)]
@@ -1874,6 +1874,21 @@ def main():
                               "class_counts > 0 for every class")
         print(f"__CUSTOM__: loss_registry class_counts built for {loss_registry_head}: "
               f"min={min(loss_registry_class_counts)}, max={max(loss_registry_class_counts)}")
+
+    # Sibling margin: which species share a genus or a family, from the same training rows
+    # (rule and checks in loss_ablation/sibling_margin.py).
+    loss_registry_taxonomy = None
+    if use_loss_registry and loss_registry_head == "sibling":
+        from loss_ablation.sibling_margin import taxonomy_arrays
+        if 'genus' not in dataset_column_names or 'family' not in dataset_column_names:
+            raise ValueError("head='sibling' needs 'genus' and 'family' columns in the dataset; "
+                              f"found columns: {dataset_column_names}")
+        loss_registry_taxonomy = taxonomy_arrays(
+            dataset["train"][data_args.label_column_name], dataset["train"]["genus"],
+            dataset["train"]["family"], num_labels)
+        _gid, _fid = loss_registry_taxonomy
+        print(f"__CUSTOM__: sibling-margin taxonomy: {len(set(_gid.tolist()))} genera, "
+              f"{len(set(_fid.tolist()))} families over {num_labels} species")
 
     # Single-head (non-multi-task) runs: save encoded-id -> "Family Genus species" so
     # downstream analysis can turn predictions back into species names. Multi-task runs
@@ -2152,8 +2167,10 @@ def main():
             ignore_mismatched_sizes=model_args.ignore_mismatched_sizes,
         )
         _head_kwargs = dict(loss_registry_head_kwargs)
-        if loss_registry_head in ("kappaface", "dbm"):
+        if loss_registry_head in ("kappaface", "dbm", "sibling"):
             _head_kwargs["class_counts"] = loss_registry_class_counts
+        if loss_registry_head == "sibling":
+            _head_kwargs["genus_ids"], _head_kwargs["family_ids"] = loss_registry_taxonomy
         if use_tara:
             # Frozen BioCLIP teacher, one copy per rank on that rank's own GPU. It is NOT an
             # nn.Module attribute of the model (TARAAux gets a plain embed callable), so it
