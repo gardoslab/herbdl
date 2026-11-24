@@ -16,7 +16,7 @@ Method (same as near_duplicates.py, so the numbers are comparable):
   4. For every saved prediction set (Part 1 / Part 4 models): accuracy and macro-F1 on all
      validation images, on the images WITHOUT a copy ("clean"), plus accuracy on the copies.
 
-Usage (1 GPU): python loss_ablation/part4_leakage.py
+Usage (1 GPU): python loss_ablation/analysis/part4_leakage.py
 """
 
 import json

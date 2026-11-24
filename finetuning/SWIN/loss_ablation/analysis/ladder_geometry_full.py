@@ -11,7 +11,7 @@ Inputs: validation  LADDER_GEOM/<rung>_<loss>/features.npy + LADDER_EVAL/<rung>_
 Classifier rows: head.weight (cosine heads) or head.linear.weight (plain CE; bias ignored).
 Output: lines prefixed __LADDERFULL__; LADDER_GEOM/analysis/ladder_geometry_full.json (merged, so
 cells can be added in later passes).
-Usage: python loss_ablation/ladder_geometry_full.py --rungs n15k --losses dbm arcface --splits val train
+Usage: python loss_ablation/analysis/ladder_geometry_full.py --rungs n15k --losses dbm arcface --splits val train
 """
 
 import argparse

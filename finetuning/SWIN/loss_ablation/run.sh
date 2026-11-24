@@ -11,4 +11,4 @@ shift
 module load miniconda
 module load academic-ml/fall-2026
 conda activate fall-2026-pyt || exit 1
-exec python "loss_ablation/${SCRIPT}" "$@"
+exec python "loss_ablation/analysis/${SCRIPT}" "$@"

@@ -4,7 +4,7 @@
 #   output/features/predictions -> PHASE3_GEOM_TRAIN/arcface
 #   per_device_eval_batch_size 64 -> 128
 # do_train is false: one forward pass per image, no gradients, no training.
-# The features feed loss_ablation/head_swap.py; the labels come from predictions.npz.
+# The features feed loss_ablation/analysis/head_swap.py; the labels come from predictions.npz.
 model:
   model_name_or_path: microsoft/swin-base-patch4-window12-384-in22k
   config_name: null

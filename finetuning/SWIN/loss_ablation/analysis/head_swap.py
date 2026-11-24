@@ -35,7 +35,7 @@ Inputs (SCC paths):
 
 Output: PHASE3_GEOM/analysis/head_swap.json
 
-Usage: python loss_ablation/head_swap.py [--epochs 30] [--lr 1e-3] [--bodies dbm arcface]
+Usage: python loss_ablation/analysis/head_swap.py [--epochs 30] [--lr 1e-3] [--bodies dbm arcface]
 """
 
 import argparse
@@ -48,7 +48,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # losses.py lives one level up
 import losses  # noqa: E402
 
 OUT = "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN"

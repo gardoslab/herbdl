@@ -33,7 +33,7 @@ PHASE3_GEOM/<model>/boundary.npz for the per-image cos_true written by
 boundary_margins.py.
 Output: PHASE3_GEOM/analysis/paper_separability.json
 
-Usage: python loss_ablation/paper_separability.py [--models dbm arcface]
+Usage: python loss_ablation/analysis/paper_separability.py [--models dbm arcface]
 """
 
 import argparse

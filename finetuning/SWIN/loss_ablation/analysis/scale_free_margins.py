@@ -35,7 +35,7 @@ file prints a MISSING line and is skipped.
 
 Output: MARGIN_DIAG/scale_free_margins.json.  Prefix __SCALEFREE__.
 
-Usage: python loss_ablation/scale_free_margins.py [--models dbm kappaface ...]
+Usage: python loss_ablation/analysis/scale_free_margins.py [--models dbm kappaface ...]
 """
 
 import argparse

@@ -17,7 +17,7 @@ Features live in LADDER_GEOM/<rung>_<loss>/features.npy; labels come from
 LADDER_EVAL/<rung>_<loss>/predictions.npz, written by the same eval pass.
 Train counts for the rarity bands come from the rung's own train JSON.
 
-Usage: python loss_ablation/ladder_diagnostics.py [--rungs n15k ...]
+Usage: python loss_ablation/analysis/ladder_diagnostics.py [--rungs n15k ...]
 """
 
 import argparse

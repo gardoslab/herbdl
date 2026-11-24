@@ -26,7 +26,7 @@ Outputs (SCC paths below):
                                               joined to geometry_summary.json, plus the
                                               difference from ArcFace per band.
 
-Usage: python loss_ablation/boundary_margins.py [--selftest] [--models dbm arcface]
+Usage: python loss_ablation/analysis/boundary_margins.py [--selftest] [--models dbm arcface]
 """
 
 import argparse

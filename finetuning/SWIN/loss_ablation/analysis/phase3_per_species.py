@@ -19,7 +19,7 @@ Macro-F1 follows sklearn/evaluate's average='macro': the mean over every class t
 appears in the labels OR the predictions (a class that is only ever predicted counts
 with F1 = 0). This is what the training script's eval_f1 reports.
 
-Usage: python loss_ablation/phase3_per_species.py   (paths below are the SCC ones)
+Usage: python loss_ablation/analysis/phase3_per_species.py   (paths below are the SCC ones)
 """
 
 import json

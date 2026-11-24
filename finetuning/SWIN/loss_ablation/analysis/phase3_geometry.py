@@ -20,7 +20,7 @@ Classifier directions: native ArcFace/sub-center (arcface.weight, rows c*k+j), r
 heads (head.weight), HACE (first 15,501 rows of hace.linear.weight). For sub-center k=3,
 alignment uses sub-center 0 like repgeom; the best of the 3 sub-centers is also reported.
 
-Usage: python loss_ablation/phase3_geometry.py   (GPU if available; SCC paths below)
+Usage: python loss_ablation/analysis/phase3_geometry.py   (GPU if available; SCC paths below)
 """
 
 import json
