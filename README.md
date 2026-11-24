@@ -28,14 +28,14 @@ SWIN Transformer training and evaluation.
 
 - `SWIN_finetuning_advanced.py` - the only training script; every technique is a YAML config section
 - `train_advanced.sh` - SCC job entry point (`CONFIG_FILE=...`); see `AGENTS.md`
-- `configs_advanced/` - run configs, including all loss-ablation and scaling-ladder runs
+- `configs_advanced/` - run configs; three loss-ablation examples, with the fields to change described in its README
 - `loss_ablation/` - the loss functions and their analysis scripts (see below)
 
 #### Loss-function ablations
 - The losses themselves: `finetuning/SWIN/loss_ablation/losses.py` (HACE in `hierarchy.py`, ECC/TARA in `aux.py`)
-- Their run configs: `finetuning/SWIN/configs_advanced/swin_base_384_*.yml`; the same losses on other backbones:
-  `configs_advanced/backbones/` (training) and `backbone_eval/` (re-scoring); heavy-augmentation DBM: `swin_base_384_dbm_heavyaug.yml`
-- Everything else (tests, analysis scripts: ensembles, same-specimen copies, geometry by rarity, trainer options): `finetuning/SWIN/loss_ablation/README.md`
+- Example configs (base data, ladder, other backbone) and how to change loss, backbone, dataset or seed:
+  `finetuning/SWIN/configs_advanced/README.md`
+- The analysis scripts behind the paper's numbers and the trainer options: `finetuning/SWIN/loss_ablation/README.md`
 - Results write-up: the project's "Loss Function Ablations" document (kept outside this repo)
 
 #### `ConvNeXt/`, `DinoV2/`, `EfficientNet_B6/`, `CoAtNet/`

@@ -161,7 +161,7 @@ qsub -l h_rt=12:00:00 -P herbdl -l gpus=2 -l gpu_c=8.0 -l gpu_memory=48G \
 ```
 
 Eval-only re-scoring of a finished model: a config with `do_train: false`, `evaluation.init_weights` and
-`evaluation.predictions_path` (see `configs_advanced/phase3_eval/`).
+`evaluation.predictions_path` (see the "Loss-ablation configs" section of `configs_advanced/README.md`).
 
 ### Running BioCLIP Evaluation
 

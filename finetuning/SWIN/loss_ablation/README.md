@@ -34,9 +34,9 @@ runs resume from the newest checkpoint across 12–24 h scheduler slots.
 
 ## Configs
 
-One training config per model, dataset and loss in `finetuning/SWIN/configs_advanced/`; its README
-(section "Loss-ablation configs") lists them and explains how to change the seed, margin, scale or
-training length, and how to write an eval-only scoring config.
+`finetuning/SWIN/configs_advanced/` keeps three example configs (base data, ladder, other backbone); its README
+(section "Loss-ablation configs") explains the config structure and which fields to change for another
+loss, backbone, dataset, seed or training length, and how to write an eval-only scoring config.
 
 ## Analyses (`analysis/`)
 

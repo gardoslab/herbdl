@@ -206,35 +206,54 @@ Check `ADVANCED_TECHNIQUES.md` for more details on all techniques.
 
 ## Loss-ablation configs
 
-One training config per model, dataset and loss; the code that reads them is described in
-`../loss_ablation/README.md`. Seed repeats, margin and scale controls, the epoch-matched check and
-all eval-only scoring passes were run from copies of these files with a few keys changed. Those
-copies are not kept: make your own copy and change the keys below.
+Three example configs cover the kinds of run in the loss-ablation work (code in `../loss_ablation/`).
+Every other run was a copy of one of these with a few fields changed, as listed below.
 
-| Group | Files |
+| Example | What it shows |
 |---|---|
-| SWIN-Base 384, 15.5k base data | `swin_base_384_{ce,ce_la,cosine_m0}.yml`, `swin_base_384_arcface_ablation.yml`, `swin_base_384_{dbm,kappaface,subcenter_arcface,x2softmax,hace,arcface_tara,arcface_ecc}_pilot.yml` |
-| SWIN-Base 384, ladder (15.5k / 32k / 64k species) | `swin_base_384_ladder_{n15k,n32k,n64k}_{ce,cosine_m0,dbm,kappaface,arcface}.yml`; sibling margin: `swin_base_384_ladder_n32k_sibling_margin.yml` |
-| ConvNeXt / DINOv2, base data | `backbones/{convnext,dinov2}_{ce,ce_la,cosine_m0,dbm,arcface}.yml` |
-| ConvNeXt / DINOv2, ladder | `backbones/ladder/{convnext,dinov2}_{n32k,n64k}_{cosine_m0,dbm,arcface}.yml` |
-| SWIN-L 384 hybrid ArcFace + multitask (Kaggle 2022) | `swin_large_384_arcface_hybrid_multitask.yml` |
+| `swin_base_384_dbm_pilot.yml` | SWIN-Base 384 on the 15.5k Herbarium 2022 data with a registry head (DBM), 50 epochs, 2 GPUs |
+| `swin_base_384_ladder_n32k_cosine_m0.yml` | The species-count ladder (32k species), fixed step budget, ArcFace head with margin 0 (NormFace) |
+| `convnext_base_224_dbm.yml` | The same loss on a different backbone (ConvNeXt-Base), with that backbone's own learning rate and batch size |
 
-`arcface_tara` needs a BioCLIP teacher module that is not in this branch, so it does not run as is.
+### Structure of a config
 
-### Changing a run
+Each config has the same top-level sections; `SWIN_finetuning_advanced.py` reads them.
 
-Always give the copy its own `training.output_dir` and `custom.run_name` / `custom.run_id`;
-otherwise it resumes from, or overwrites, the original run's checkpoints.
+| Section | What it controls |
+|---|---|
+| `model` | Backbone checkpoint (`model_name_or_path`) |
+| `data` | Training and validation manifests, image and label columns |
+| `training` | Output folder, batch size, learning rate, epochs or steps, evaluation schedule, seed, resuming |
+| `custom` | Run name, id and notes (used for logging) |
+| `augmentation`, `ema`, `multi_crop` | Augmentation and training extras; the loss ablation used only a random crop and flip |
+| `loss_registry` | The classifier head and its settings (see below) |
+| `arcface`, `hace`, `multi_task`, `long_tail` | Older native heads, HACE, family/genus/species heads, logit adjustment |
+| `wandb` | Weights & Biases logging |
+| `evaluation` | Eval-only scoring (see below) |
 
-- **Seed**: `training.seed` (the paper's second seed is 43).
-- **Margin and logit scale** (registry heads): `loss_registry.head_kwargs.m` and `.s`. ArcFace with
-  `m: 0.0` is NormFace (the `cosine_m0` configs); the margin control used `m: 0.1`, the scale
-  control `s: 15.0`.
-- **Training length**: `training.num_train_epochs` on the base data. The ladder configs fix the
-  budget with `training.max_steps: 131250` (50 epochs of the 15.5k data); for an epoch-matched run,
-  remove `max_steps` and set `num_train_epochs`.
-- **GPUs**: keep the effective batch (per-device batch x `gradient_accumulation_steps` x GPUs) unchanged
-  when changing `NPROC_PER_NODE`.
+### Fields to change
+
+Always give a copy its own `training.output_dir` and `custom.run_name` / `custom.run_id`; otherwise it
+resumes from, or overwrites, the original run's checkpoints.
+
+- **Loss.** `loss_registry.head` is one of `softmax`, `arcface`, `subcenter_arcface`, `kappaface`,
+  `x2softmax`, `dbm`, `sibling`; its settings go in `loss_registry.head_kwargs`: the logit scale `s` for
+  every margin head, the margin `m` for `arcface` (`m: 0.0` is NormFace), `k` sub-centres for
+  `subcenter_arcface`, the base margin `m0` for `kappaface`, `K` and `tau` for `dbm`.
+  Plain cross-entropy is `head: softmax`; adding `long_tail.logit_adjustment: true` (with `tau`) gives
+  CE + logit adjustment. For HACE, set `hace.enabled: true` and `loss_registry.enabled: false`.
+  `loss_registry.aux: [ecc]` adds the ECC auxiliary loss.
+- **Backbone.** `model.model_name_or_path`, e.g. `microsoft/swin-base-patch4-window12-384-in22k`,
+  `facebook/convnext-base-224-22k`, `facebook/dinov2-base`. Each backbone keeps its own learning rate,
+  batch size and schedule; start from the ConvNeXt example for a non-SWIN backbone.
+- **Dataset.** `data.train_file`, `data.validation_file`, `data.image_column_name`,
+  `data.label_column_name`. The ladder manifests are `data/ladder/{n15k,n32k,n64k}_{train,val}.json`
+  (image column `filepath`); see the ladder example.
+- **Training length.** `training.num_train_epochs` on the base data. The ladder fixes the budget with
+  `training.max_steps: 131250` (50 epochs of the 15.5k data) at every rung.
+- **Seed.** `training.seed` (the paper's second seed is 43).
+- **GPUs.** `NPROC_PER_NODE` at launch; keep the effective batch (per-device batch x
+  `gradient_accumulation_steps` x GPUs) unchanged. KappaFace and ECC run on 1 GPU only.
 
 ### Scoring a finished model (eval only)
 
