@@ -16,11 +16,12 @@ Method (same as near_duplicates.py, so the numbers are comparable):
   4. For every saved prediction set (Part 1 / Part 4 models): accuracy and macro-F1 on all
      validation images, on the images WITHOUT a copy ("clean"), plus accuracy on the copies.
 
-Usage (1 GPU): python loss_ablation/analysis/part4_leakage.py
+Usage (1 GPU, from finetuning/SWIN): python loss_ablation/analysis/leakage.py
 """
 
 import json
 import os
+import sys
 
 import numpy as np
 import torch
@@ -29,11 +30,10 @@ from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from transformers import AutoModel
 
-OUT = "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN"
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from common import LABEL, OUT, TRAIN_JSON, VAL_JSON, load_rows as load, macro_f1_labels as macro_f1  # noqa: E402
+
 FEAT = f"{OUT}/NEARDUP/full"
-TRAIN_JSON = "/projectnb/herbdl/data/kaggle-herbaria/train_2022.json"
-VAL_JSON = "/projectnb/herbdl/data/kaggle-herbaria/val_2022.json"
-LABEL = "scientificNameEncoded"
 BACKBONE = "microsoft/swin-base-patch4-window7-224-in22k"
 THRESHOLDS = [0.90, 0.93, 0.95, 0.98, 0.99]
 COPY_T = 0.93
@@ -51,11 +51,6 @@ PRED_DIRS = {  # model -> predictions dir
     "cnx_ce_llindon": "PHASE4_EVAL_FULL/convnext_ce", "dino_ce_llindon": "PHASE4_EVAL_FULL/dinov2_ce",
     "coatnet_ce_llindon": "PHASE4_EVAL_FULL/coatnet_ce", "effnet_ce_llindon": "PHASE4_EVAL_FULL/efficientnet_ce",
 }
-
-
-def load(p):
-    with open(p) as f:
-        return [json.loads(line) for line in f if line.strip()]
 
 
 class Images(Dataset):
@@ -98,14 +93,6 @@ def embed(paths, name, model, device):
     np.save(path, out)
     print(f"__LEAK__ {name}: embedded {done:,} images ({bad} unreadable -> zero vectors)", flush=True)
     return out
-
-
-def macro_f1(y, p, n):
-    tp = np.bincount(y[p == y], minlength=n).astype(np.float64)
-    nt = np.bincount(y, minlength=n).astype(np.float64)
-    npd = np.bincount(p, minlength=n).astype(np.float64)
-    keep = (nt + npd) > 0
-    return float(np.mean(2 * tp[keep] / (nt[keep] + npd[keep])))
 
 
 def main():

@@ -13,7 +13,7 @@ in configs_advanced/phase3_geom_train/ (do_train: false, one forward pass per im
 Every head is then trained on a body's frozen train features with the same protocol
 (AdamW, 30 epochs, batch 4096, OneCycle) and scored on the same cached val_2022 features
 with the project's macro-F1 (mean per-class F1 over classes present in labels or
-predictions -- phase3_per_species.py's definition).
+predictions -- per_band.py's definition).
 
 Reading the result:
   diagonal cells        a fresh head on its own body: does retraining reproduce the run?
@@ -35,7 +35,7 @@ Inputs (SCC paths):
 
 Output: PHASE3_GEOM/analysis/head_swap.json
 
-Usage: python loss_ablation/analysis/head_swap.py [--epochs 30] [--lr 1e-3] [--bodies dbm arcface]
+Usage (from finetuning/SWIN): python loss_ablation/analysis/head_swap.py [--epochs 30] [--lr 1e-3] [--bodies dbm arcface]
 """
 
 import argparse
@@ -48,13 +48,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # losses.py lives one level up
 import losses  # noqa: E402
-
-OUT = "/projectnb/herbdl/workspaces/faridkar/herbdl/finetuning/output/SWIN"
-GEOM = f"{OUT}/PHASE3_GEOM"
-TRAIN = f"{OUT}/PHASE3_GEOM_TRAIN"
-N = 15501
+from common import N, OUT, PHASE3_GEOM as GEOM, PHASE3_GEOM_TRAIN as TRAIN, class_directions  # noqa: E402
+from margins import boundary_scores  # noqa: E402
 BODY_RUN = {  # checkpoint directory, and the tensor name class_directions expects
     "dbm": ("SWIN_BASE_DBM_384_PILOT", "registry"),
     "arcface": ("SWIN_BASE_ARCFACE_384", "arcface"),
@@ -130,9 +128,6 @@ def main():
     ap.add_argument("--lr", type=float, default=1e-3)
     ap.add_argument("--batch", type=int, default=4096)
     args = ap.parse_args()
-
-    from phase3_geometry import class_directions  # needs safetensors; val reference only
-    from boundary_margins import boundary_scores  # reuse the same cosine-argmax math
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"__HEADSWAP__ device={device} epochs={args.epochs} lr={args.lr} "

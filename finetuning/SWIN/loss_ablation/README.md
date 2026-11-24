@@ -13,7 +13,7 @@ cd finetuning/SWIN
 HERBDL_NO_RELOCATE=1 NPROC_PER_NODE=2 CONFIG_FILE=configs_advanced/swin_base_384_dbm_pilot.yml bash train_advanced.sh
 HERBDL_NO_RELOCATE=1 CONFIG_FILE=configs_advanced/<eval-only copy>.yml bash train_advanced.sh   # see configs_advanced/README.md
 # run an analysis
-bash loss_ablation/run.sh paper_measures.py
+bash loss_ablation/run.sh geometry.py base
 ```
 
 KappaFace and ECC train on 1 GPU (their per-species buffers are not synced across GPUs). Long
@@ -40,23 +40,19 @@ loss, backbone, dataset, seed or training length, and how to write an eval-only 
 
 ## Analyses (`analysis/`)
 
-Each script reads saved predictions or pooled features written by an eval-only scoring pass (see
-`configs_advanced/README.md`) and writes JSON under `output/SWIN/MARGIN_DIAG`. Only the final version of each
-analysis is kept; earlier versions are in the experiment branches.
+Six files. Each script reads saved predictions or pooled features written by an eval-only scoring pass
+(see `configs_advanced/README.md`) and writes JSON under `output/SWIN/MARGIN_DIAG`. Only the final
+version of each measure is kept; earlier versions are in the experiment branches. Run from
+`finetuning/SWIN` with `bash loss_ablation/run.sh <file> <command>`.
 
-| Paper element | Script |
-|---|---|
-| Main-table intervals, per-band F1 (base) | `phase3_per_species.py`, `main_table_ci.py` |
-| Per-band comparison with NormFace (base and ladder) | `cosine_band_compare.py` |
-| Margins each loss trains with (scale-normalised) | `scale_free_margins.py` |
-| Compactness angle and bias-corrected Fisher: SWIN losses, scale control, cone pairs, ladder | `geometry_robustness.py`, `geometry_robustness_part2.py` |
-| Same, ConvNeXt / DINOv2 on the base data | `backbone_geometry.py` |
-| Same, every loss and backbone on the ladder, validation and training images | `ladder_geometry_full.py` |
-| Supplement geometry table | `supplement_table.py` |
-| Mechanism test (train vs val by band, far misses, sister-species separability) | `cone_test.py` |
-| Head swap | `head_swap.py` |
-| Same-specimen copies between training and validation; scores without them | `part4_leakage.py` |
-| Shared helpers imported by the scripts above | `paper_measures.py`, `paper_separability.py`, `phase3_geometry.py`, `repgeom_geometry.py`, `boundary_margins.py`, `ladder_diagnostics.py` |
+| File | What it computes | Commands |
+|---|---|---|
+| `per_band.py` | Everything prediction-based: macro-F1 and per-species F1 by rarity band, bootstrap intervals of the main table, per-band comparison of each loss with NormFace (base data and ladder), and where far misses fall in the taxonomy | `species`, `ci`, `compare`, `taxonomy` |
+| `geometry.py` | The geometry measures (compactness angle, bias-corrected Fisher separability, compactness split) for the SWIN losses, the logit-scale control, sister-species pairs, ConvNeXt / DINOv2, the ladder (validation and training images), and the supplement table | `base`, `scale`, `cone`, `backbones`, `ladder`, `table` |
+| `margins.py` | The margins each loss trains with and scale-free decision margins | none (`--models`) |
+| `head_swap.py` | Retrains classifiers on frozen features to separate a head effect from a feature effect | none |
+| `leakage.py` | Same-specimen copies between training and validation images, and scores with and without them | none |
+| `common.py` | Shared paths, constants, loaders and macro-F1 helpers (not run directly) | |
 
 ## Trainer options added for this work (`SWIN_finetuning_advanced.py`)
 
